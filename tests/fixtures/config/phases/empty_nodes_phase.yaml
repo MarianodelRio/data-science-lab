@@ -1,0 +1,8 @@
+# Falsy-but-valid values: empty nodes/sequence/parallel_nodes lists must load,
+# not be rejected (the required-field check must be `is None`, not truthiness).
+name: empty
+nodes: []
+sequence: []
+parallel_nodes: []
+critic: null
+interrupt_after: false

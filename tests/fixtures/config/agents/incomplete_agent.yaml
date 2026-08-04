@@ -1,0 +1,8 @@
+# Same shape as example_agent.yaml but missing the required "max_tokens" field.
+name: solution_architect
+model_role: reasoning
+prompt_version: v1
+tools:
+  - rag
+  - workspace_reader
+output_file_pattern: "design/iteration_{iteration}/solution_plan.json"

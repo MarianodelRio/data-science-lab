@@ -1,0 +1,11 @@
+# Same shape as example_phase.yaml but with no critic configured.
+name: research
+nodes:
+  - literature_researcher
+  - web_researcher
+sequence:
+  - literature_researcher
+  - web_researcher
+parallel_nodes: [literature_researcher, web_researcher]
+critic: null
+interrupt_after: false

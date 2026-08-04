@@ -67,3 +67,12 @@ that comment would render as broken text, not a table row, silently breaking the
 above the table. Also logged an `OPEN` entry in `context/discoveries.md` flagging the expected
 `README.md` merge overlap with T-001 (both create it independently — project description/doc
 links vs. setup steps; reconcile by keeping both sections on merge).
+
+**Post-merge conflict resolution:** after T-001 and T-038 merged to main, rebased and resolved 3
+conflicts — `README.md` (kept T-001's setup/dev-commands content, added T-045's "Documentation"
+links section after "Architecture"), `docs/api.md` (T-038 had pre-populated it with a real
+endpoint table + "Frontend client" section per its own discovery note asking T-045 to reconcile
+rather than overwrite; restructured T-038's entries into the REST/SSE/WebSocket headings and
+preserved the "Frontend client" section), and `context/discoveries.md` (append-only, kept all
+entries, marked the two this merge resolved as `resolved in T-045`). All links re-verified to
+resolve post-merge. See PR #3 comment for the full breakdown.

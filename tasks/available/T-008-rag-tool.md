@@ -3,7 +3,7 @@ id: T-008
 phase: 1
 agent: infra-agent
 depends_on: [T-001]
-status: blocked
+status: available
 folders: ["src/tools/", "src/memory/"]
 outputs: [RagStore.index, .query with metadata filter, local embeddings, structured extraction schema]
 size: M

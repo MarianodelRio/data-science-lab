@@ -3,7 +3,7 @@ id: T-044
 phase: 5
 agent: infra-agent
 depends_on: [T-001]
-status: blocked
+status: available
 folders: [".github/"]
 outputs: [.github/workflows/ci.yml]
 size: S

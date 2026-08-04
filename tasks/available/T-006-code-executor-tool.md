@@ -3,7 +3,7 @@ id: T-006
 phase: 1
 agent: infra-agent
 depends_on: [T-001]
-status: blocked
+status: available
 folders: ["src/tools/"]
 outputs: [code_executor.execute(code, cwd, timeout) -> ExecResult]
 size: S

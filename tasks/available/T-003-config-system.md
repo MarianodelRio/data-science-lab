@@ -3,7 +3,7 @@ id: T-003
 phase: 0
 agent: infra-agent
 depends_on: [T-001]
-status: blocked
+status: available
 folders: ["src/config/", "config/"]
 outputs: [settings.yaml, Settings loader, AgentConfig, PhaseConfig, PromptLoader]
 size: M

@@ -3,7 +3,7 @@ id: T-002
 phase: 0
 agent: infra-agent
 depends_on: [T-001]
-status: blocked
+status: available
 folders: ["src/"]
 outputs: [LabState TypedDict, state helper functions]
 size: S

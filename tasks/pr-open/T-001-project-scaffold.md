@@ -3,12 +3,12 @@ id: T-001
 phase: 0
 agent: infra-agent
 depends_on: []
-status: in-progress
+status: pr-open
 folders: [".", "src/", "tests/"]
 outputs: [pyproject.toml, .env.example, ruff+mypy+pytest config, src/ package tree, tests/ tree]
 size: S
 branch: feature/T-001-project-scaffold
-pr: ~
+pr: "https://github.com/MarianodelRio/data-science-lab/pull/2"
 ---
 
 ## Project scaffold

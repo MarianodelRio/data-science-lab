@@ -138,3 +138,48 @@ Discarded: changing `experiment_dir` to check `exp_id` for `is_absolute()` befor
 would deviate from the approved class design's literal code without sign-off; noted here instead
 as a candidate follow-up if a future task's threat model requires exp_id-level absolute-path
 rejection.
+
+## 2026-08-04 — T-005 [infra-agent]
+Decided: `write_json`/`write_text`/`write_notebook` write to a sibling `.{name}.{uuid}.tmp` file
+in the same directory, then `os.replace(tmp_path, path)` (atomic on POSIX) into place. On any
+exception during the write, `_atomic_write` unlinks the temp file (`missing_ok=True`, since some
+failure modes never create it) and re-raises, leaving the original file untouched. The except
+clause catches `BaseException`, not `Exception`, so cleanup also runs on `KeyboardInterrupt` /
+`SystemExit` mid-write, not just ordinary errors.
+Why: adversarial review found the original truncating-open-in-place writes corrupted the target
+file on a mid-serialization failure (e.g. a non-JSON-serializable value later in the dict left a
+partially-written file), and caused concurrent readers to observe truncated/empty files — up to
+85%+ `JSONDecodeError` under the reviewer's concurrent read/write repro. design.md allows up to 2
+LLM agents to run concurrently, so concurrent access to the same relative path is a realistic
+scenario, not a hypothetical.
+Affects: src/workspace/workspace_manager.py (`_atomic_write`, `write_json`, `write_text`,
+`write_notebook`), tests/workspace/test_workspace_manager.py.
+Discarded: file locking (`fcntl`/`portalocker`) — solves a different problem (serializing
+concurrent writers) and adds a new dependency; atomic rename alone is sufficient to guarantee
+readers only ever see a fully-written file, which was the actual failure mode reported.
+
+## 2026-08-04 — T-005 [infra-agent]
+Decided: `_resolve` now also rejects an empty string and `"."` with `ValueError`, in addition to
+absolute paths and `..` traversal.
+Why: adversarial review found `_resolve("")` passed both existing checks and returned
+`self.workspace_path` itself, so every read/write method leaked a raw `IsADirectoryError` instead
+of the class's own `ValueError` — an inconsistent error contract for a de facto "point at the
+workspace root" input that should never be a valid relative path.
+Affects: src/workspace/workspace_manager.py (`_resolve`), tests/workspace/test_workspace_manager.py.
+Discarded: leaving `experiment_dir`'s empty/`.` `exp_id` unaddressed — it prefixes with
+`"experiments/"` before resolving, so an empty/`.` `exp_id` normalizes to the harmless
+`experiments` directory itself, never the workspace root; there was no bug there to fix.
+
+## 2026-08-04 — T-005 [infra-agent]
+Decided: `write_notebook` now validates each `cell` is a `dict` and each `source` is a `str`
+before touching `nbformat`, raising `ValueError` in both cases; the "unsupported cell_type" error
+message now names the valid options.
+Why: adversarial review found malformed `cells` input leaked raw, non-`ValueError` exception
+types past the class's documented error contract: a non-dict cell raised `AttributeError` from
+`.get()`, and a non-string `source` sailed through into `nbformat.validate()`, which raises
+`nbformat.reader.NotebookValidationError` — not a `ValueError` subclass — deep inside a
+third-party library instead of at the API boundary.
+Affects: src/workspace/workspace_manager.py (`write_notebook`), tests/workspace/test_workspace_manager.py.
+Discarded: catching `NotebookValidationError` and re-raising as `ValueError` around the
+`nbformat.validate()` call instead — validating our own input shape earlier gives a clearer error
+message pointing at the actual malformed cell, rather than a generic schema-validation failure.

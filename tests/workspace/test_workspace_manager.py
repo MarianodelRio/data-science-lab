@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import nbformat
@@ -70,6 +71,11 @@ def test_write_text_returns_absolute_path_string(wm: WorkspaceManager) -> None:
     result = wm.write_text("a.txt", "hi")
     assert isinstance(result, str)
     assert Path(result).is_absolute()
+
+
+def test_write_text_auto_creates_missing_parent_dirs(wm: WorkspaceManager) -> None:
+    wm.write_text("deeply/nested/dir/file.txt", "content")
+    assert (wm.workspace_path / "deeply" / "nested" / "dir" / "file.txt").exists()
 
 
 # --- path safety: absolute paths ---------------------------------------------
@@ -142,6 +148,31 @@ def _call_with_path_arg(method, method_name: str, path_value: str) -> None:
         method(path_value)
 
 
+@pytest.mark.parametrize(
+    "method_name",
+    [
+        "read_json",
+        "write_json",
+        "read_text",
+        "write_text",
+        "write_notebook",
+        "ensure_dir",
+        # NOTE: experiment_dir is intentionally excluded here too. "" / "." only reach the
+        # empty-path check in _resolve when they *are* the full relative_path; experiment_dir
+        # always prefixes with "experiments/" first, so an empty/"." exp_id normalizes to the
+        # harmless "experiments" directory itself, not the workspace root — no bug, nothing to
+        # reject.
+    ],
+)
+@pytest.mark.parametrize("empty_like", ["", "."])
+def test_empty_or_dot_relative_path_raises_value_error(
+    wm: WorkspaceManager, method_name: str, empty_like: str
+) -> None:
+    method = getattr(wm, method_name)
+    with pytest.raises(ValueError):
+        _call_with_path_arg(method, method_name, empty_like)
+
+
 def test_literal_dotdot_substring_in_filename_does_not_raise(wm: WorkspaceManager) -> None:
     # "report..v2.json" contains ".." as a substring but is a single path component,
     # not a traversal component — must NOT be rejected.
@@ -211,12 +242,51 @@ def test_write_notebook_invalid_cell_type_raises_value_error(wm: WorkspaceManage
         wm.write_notebook("bad.ipynb", [{"cell_type": "raw", "source": "x"}])
 
 
+def test_write_notebook_invalid_cell_type_error_names_valid_options(
+    wm: WorkspaceManager,
+) -> None:
+    with pytest.raises(ValueError, match="expected 'code' or 'markdown'"):
+        wm.write_notebook("bad.ipynb", [{"cell_type": "raw", "source": "x"}])
+
+
+def test_write_notebook_non_dict_cell_raises_value_error(wm: WorkspaceManager) -> None:
+    with pytest.raises(ValueError):
+        wm.write_notebook("bad.ipynb", ["not a dict"])  # type: ignore[list-item]
+
+
+def test_write_notebook_non_string_source_raises_value_error(wm: WorkspaceManager) -> None:
+    with pytest.raises(ValueError):
+        wm.write_notebook("bad.ipynb", [{"cell_type": "code", "source": 12345}])
+
+
 def test_write_notebook_empty_cells_produces_loadable_empty_notebook(
     wm: WorkspaceManager,
 ) -> None:
     result = wm.write_notebook("empty.ipynb", [])
     nb = nbformat.read(result, as_version=4)
     assert nb["cells"] == []
+
+
+def test_write_notebook_calls_nbformat_validate(
+    wm: WorkspaceManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Locks in that nbformat.validate() is actually invoked (a mutation deleting that call
+    # previously survived, since no prior test's input was rejected *only* by validate()).
+    calls: list = []
+    original_validate = nbformat.validate
+
+    def spy_validate(nb: object, *args: object, **kwargs: object) -> None:
+        calls.append(nb)
+        original_validate(nb, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(nbformat, "validate", spy_validate)
+
+    wm.write_notebook("spy.ipynb", [{"cell_type": "code", "source": "1 + 1"}])
+
+    # nbformat.validate() recurses internally (it validates nested cell structures via the
+    # same module-level function we patched), so assert it fired at least once rather than
+    # pinning an exact call count.
+    assert len(calls) >= 1
 
 
 # --- constructor ---------------------------------------------------------------
@@ -239,3 +309,90 @@ def test_write_methods_return_str_and_dir_methods_return_path(wm: WorkspaceManag
     assert isinstance(wm.write_notebook("t3.ipynb", []), str)
     assert isinstance(wm.ensure_dir("t4dir"), Path)
     assert isinstance(wm.experiment_dir("exp1"), Path)
+
+
+# --- atomic writes: original content preserved on failed write -----------------
+
+
+class _Unserializable:
+    """Deliberately not JSON-serializable, to trigger a genuine mid-write failure."""
+
+
+def test_write_json_preserves_old_content_on_serialization_failure(
+    wm: WorkspaceManager,
+) -> None:
+    wm.write_json("data.json", {"good": "content"})
+
+    with pytest.raises(TypeError):
+        wm.write_json("data.json", {"bad": _Unserializable()})
+
+    assert wm.read_json("data.json") == {"good": "content"}
+    # no leftover temp file in the target directory
+    leftovers = [p for p in wm.workspace_path.iterdir() if p.name != "data.json"]
+    assert leftovers == []
+
+
+def test_write_text_preserves_old_content_on_failed_write(
+    wm: WorkspaceManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wm.write_text("notes.txt", "original content")
+
+    def boom(self: Path, *args: object, **kwargs: object) -> int:
+        raise OSError("simulated disk failure")
+
+    monkeypatch.setattr(Path, "write_text", boom)
+    with pytest.raises(OSError):
+        wm.write_text("notes.txt", "new content")
+    monkeypatch.undo()
+
+    assert wm.read_text("notes.txt") == "original content"
+    leftovers = [p for p in wm.workspace_path.iterdir() if p.name != "notes.txt"]
+    assert leftovers == []
+
+
+def test_write_notebook_preserves_old_content_on_failed_write(
+    wm: WorkspaceManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wm.write_notebook("nb.ipynb", [{"cell_type": "code", "source": "1 + 1"}])
+    original_bytes = (wm.workspace_path / "nb.ipynb").read_bytes()
+
+    def boom(nb: object, path: object, *args: object, **kwargs: object) -> None:
+        raise OSError("simulated disk failure")
+
+    monkeypatch.setattr(nbformat, "write", boom)
+    with pytest.raises(OSError):
+        wm.write_notebook("nb.ipynb", [{"cell_type": "code", "source": "2 + 2"}])
+    monkeypatch.undo()
+
+    assert (wm.workspace_path / "nb.ipynb").read_bytes() == original_bytes
+    leftovers = [p for p in wm.workspace_path.iterdir() if p.name != "nb.ipynb"]
+    assert leftovers == []
+
+
+def test_write_json_atomic_replace_is_used(
+    wm: WorkspaceManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Locks in that the swap goes through os.replace (the atomic rename), not some other
+    # non-atomic copy mechanism.
+    calls: list = []
+    original_replace = os.replace
+
+    def spy_replace(src: object, dst: object) -> None:
+        calls.append((src, dst))
+        original_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", spy_replace)
+    wm.write_json("atomic.json", {"a": 1})
+
+    assert len(calls) == 1
+
+
+# --- empty relative_path edge cases ---------------------------------------------
+
+
+def test_empty_relative_path_does_not_touch_workspace_root(wm: WorkspaceManager) -> None:
+    # Guards the fix: _resolve("") used to silently return the workspace root itself,
+    # leaking a raw IsADirectoryError from read/write calls instead of ValueError.
+    with pytest.raises(ValueError):
+        wm.read_json("")
+    assert wm.workspace_path.exists()  # root itself untouched/still a directory

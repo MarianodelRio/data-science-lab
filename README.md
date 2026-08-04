@@ -32,6 +32,13 @@ cp .env.example .env   # fill in API keys and WORKSPACE_ROOT
 See [`design.md`](design.md) for the full system architecture and
 [`plan.md`](plan.md) for the task graph.
 
+## Documentation
+
+- [Pipeline reference](docs/pipeline.md) — state, graph topology, the 7 phases, node classification, tools, RAG, observability, invariants
+- [Agent reference](docs/agents.md) — all agents, their phase, model role, and output file
+- [Configuration guide](docs/configuration.md) — settings.yaml schema, changing models, adding/removing agents, prompt versioning
+- [API reference](docs/api.md) — REST, SSE, and WebSocket endpoints
+
 ## Docker / CI
 
 Not yet available — deferred to tasks T-043 and T-044.

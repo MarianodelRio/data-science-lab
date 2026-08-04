@@ -94,3 +94,92 @@ Affects: conftest.py (repo-wide pytest behavior) — this will keep masking a ge
 accidentally collects zero tests will still exit 0 instead of failing loudly.
 Discarded: leaving exit code 5 as a "failure" — would break the task's own literal acceptance
 criterion and block early scaffold/infra PRs that legitimately ship no tests yet.
+
+## 2026-08-04 — T-005 [infra-agent]
+Decided: `_resolve` rejects `..`-traversal and absolute paths syntactically (component-wise
+check on `Path.parts` / `Path.is_absolute()`) but does not resolve symlinks or verify the
+final path stays under `workspace_path` on disk.
+Why: the task's Done-when criterion is "a path containing `..` raises ValueError" — a syntactic
+check on untrusted relative-path arguments. Following it with `.resolve()` + prefix comparison
+would additionally guard against symlink escapes already inside a trusted workspace tree, which
+is a different threat model not covered by any Done-when item, and risks changing error semantics
+in ways untested by this task's suite.
+Affects: src/workspace/workspace_manager.py
+Discarded: `.resolve()` + `is_relative_to()` prefix check — deferred as a possible hardening if a
+future task's threat model requires defending against symlinks planted inside the workspace.
+
+## 2026-08-04 — T-005 [infra-agent]
+Decided: `experiment_dir(exp_id)` returns the path without creating the directory; `ensure_dir`
+is the only method that creates directories on demand.
+Why: design.md's `LabState` stores file *pointers*, not existence guarantees — keeping
+`experiment_dir` a side-effect-free path getter avoids a "getter"-named method silently mutating
+the filesystem. Callers needing the directory to exist call `ensure_dir(...)` explicitly, or rely
+on `write_json`/`write_text`/`write_notebook`'s own parent-dir auto-creation.
+Affects: src/workspace/workspace_manager.py
+Discarded: having `experiment_dir` also create the directory — would make it behaviorally
+identical to `ensure_dir` with a hardcoded `experiments/` prefix, removing the useful distinction
+between "compute a path" and "guarantee a path exists".
+
+## 2026-08-04 — T-005 [infra-agent]
+Decided: `experiment_dir` does not reject an absolute-looking `exp_id` (e.g. `"/etc/passwd"`)
+with `ValueError`, unlike every other method. It builds `f"experiments/{exp_id}"` before
+resolving; `Path("experiments//etc/passwd")` normalizes to the *relative* path
+`experiments/etc/passwd` rather than an absolute one, so `_resolve`'s `is_absolute()` check
+never trips. `..`-traversal in `exp_id` still correctly raises, since `..` survives the string
+concatenation as its own path component.
+Why: the approved implementation plan's code (verbatim, not to be relitigated) prepends the
+`"experiments/"` prefix inside `experiment_dir` itself; the plan's own test list marked
+`experiment_dir`'s absolute-path case "ideally" (optional) for exactly this reason. Rather than
+assert a false ValueError in the test suite, the test
+(`test_absolute_path_raises_value_error`) excludes `experiment_dir` and a dedicated test
+(`test_experiment_dir_absolute_looking_exp_id_is_not_rejected`) documents the actual behavior.
+Affects: src/workspace/workspace_manager.py, tests/workspace/test_workspace_manager.py
+Discarded: changing `experiment_dir` to check `exp_id` for `is_absolute()` before prefixing —
+would deviate from the approved class design's literal code without sign-off; noted here instead
+as a candidate follow-up if a future task's threat model requires exp_id-level absolute-path
+rejection.
+
+## 2026-08-04 — T-005 [infra-agent]
+Decided: `write_json`/`write_text`/`write_notebook` write to a sibling `.{name}.{uuid}.tmp` file
+in the same directory, then `os.replace(tmp_path, path)` (atomic on POSIX) into place. On any
+exception during the write, `_atomic_write` unlinks the temp file (`missing_ok=True`, since some
+failure modes never create it) and re-raises, leaving the original file untouched. The except
+clause catches `BaseException`, not `Exception`, so cleanup also runs on `KeyboardInterrupt` /
+`SystemExit` mid-write, not just ordinary errors.
+Why: adversarial review found the original truncating-open-in-place writes corrupted the target
+file on a mid-serialization failure (e.g. a non-JSON-serializable value later in the dict left a
+partially-written file), and caused concurrent readers to observe truncated/empty files — up to
+85%+ `JSONDecodeError` under the reviewer's concurrent read/write repro. design.md allows up to 2
+LLM agents to run concurrently, so concurrent access to the same relative path is a realistic
+scenario, not a hypothetical.
+Affects: src/workspace/workspace_manager.py (`_atomic_write`, `write_json`, `write_text`,
+`write_notebook`), tests/workspace/test_workspace_manager.py.
+Discarded: file locking (`fcntl`/`portalocker`) — solves a different problem (serializing
+concurrent writers) and adds a new dependency; atomic rename alone is sufficient to guarantee
+readers only ever see a fully-written file, which was the actual failure mode reported.
+
+## 2026-08-04 — T-005 [infra-agent]
+Decided: `_resolve` now also rejects an empty string and `"."` with `ValueError`, in addition to
+absolute paths and `..` traversal.
+Why: adversarial review found `_resolve("")` passed both existing checks and returned
+`self.workspace_path` itself, so every read/write method leaked a raw `IsADirectoryError` instead
+of the class's own `ValueError` — an inconsistent error contract for a de facto "point at the
+workspace root" input that should never be a valid relative path.
+Affects: src/workspace/workspace_manager.py (`_resolve`), tests/workspace/test_workspace_manager.py.
+Discarded: leaving `experiment_dir`'s empty/`.` `exp_id` unaddressed — it prefixes with
+`"experiments/"` before resolving, so an empty/`.` `exp_id` normalizes to the harmless
+`experiments` directory itself, never the workspace root; there was no bug there to fix.
+
+## 2026-08-04 — T-005 [infra-agent]
+Decided: `write_notebook` now validates each `cell` is a `dict` and each `source` is a `str`
+before touching `nbformat`, raising `ValueError` in both cases; the "unsupported cell_type" error
+message now names the valid options.
+Why: adversarial review found malformed `cells` input leaked raw, non-`ValueError` exception
+types past the class's documented error contract: a non-dict cell raised `AttributeError` from
+`.get()`, and a non-string `source` sailed through into `nbformat.validate()`, which raises
+`nbformat.reader.NotebookValidationError` — not a `ValueError` subclass — deep inside a
+third-party library instead of at the API boundary.
+Affects: src/workspace/workspace_manager.py (`write_notebook`), tests/workspace/test_workspace_manager.py.
+Discarded: catching `NotebookValidationError` and re-raising as `ValueError` around the
+`nbformat.validate()` call instead — validating our own input shape earlier gives a clearer error
+message pointing at the actual malformed cell, rather than a generic schema-validation failure.

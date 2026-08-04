@@ -5,9 +5,10 @@ changes an agent's prompt/model role.
 
 ## Agents
 
+Each agent-adding task appends one row to the table below. Do not remove or reorder existing rows.
+
 | Agent | Pipeline phase | model_role | Output file |
 |---|---|---|---|
-<!-- Each agent-adding task appends one row here. Do not remove or reorder existing rows. -->
 
 ## Adding an agent
 

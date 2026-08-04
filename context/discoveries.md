@@ -19,7 +19,9 @@ owned by pipeline-agent) is expected to (re)create `docs/api.md` as a fuller "en
 reference skeleton (REST + SSE + WebSocket)". When T-045 runs, reconcile rather than
 overwrite: merge the existing "Endpoints" table and preserve the "Frontend client"
 section from T-038's version into the new skeleton.
-Status: open
+Status: resolved in T-045 — merged during rebase: T-038's endpoint entries were split into
+REST / SSE / WebSocket tables per T-045's skeleton headings, and the "Frontend client"
+section was preserved unchanged.
 
 ## OPEN — 2026-08-04 [frontend-agent → api-agent]
 `frontend/src/api/types.ts` (T-038) defines provisional TypeScript interfaces for
@@ -39,3 +41,9 @@ nothing was changed system-wide. When `docker/` and `.github/` CI config are set
 pin the frontend build/test image and any Node-based CI job to Node `>=20.19` (LTS 22/24
 recommended) to match `frontend/package.json` engines.
 Status: open
+
+## OPEN — 2026-08-04 [pipeline-agent (T-045) → infra-agent (T-001)]
+T-045 created README.md with a "## What is this" + "## Documentation" (doc links) section, since it didn't exist yet when T-045 ran. T-001's Done-when checklist also requires "README updated with setup steps" — expect a whole-file conflict on README.md when both PRs merge (both branches independently create/modify it with non-overlapping intent: project description + doc links vs. setup/install steps). Whoever merges second should reconcile by keeping BOTH sections, not picking one side. Not an architecture issue — routine merge resolution, but flagging so it isn't silently resolved by dropping one section.
+Status: resolved in T-045 — merged during rebase: README.md now keeps T-001's project
+description, Prerequisites, Setup, Development commands, and Docker/CI sections, plus a
+new "Documentation" section (added right after "Architecture") linking to all four docs.

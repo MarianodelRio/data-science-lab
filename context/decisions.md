@@ -183,3 +183,15 @@ Affects: src/workspace/workspace_manager.py (`write_notebook`), tests/workspace/
 Discarded: catching `NotebookValidationError` and re-raising as `ValueError` around the
 `nbformat.validate()` call instead — validating our own input shape earlier gives a clearer error
 message pointing at the actual malformed cell, rather than a generic schema-validation failure.
+
+## 2026-08-04 — T-002 [infra-agent]
+Decided: `new_state()` defaults `max_iterations=10` and `phase=""`.
+Why: neither default is specified by design.md's `LabState` TypedDict block itself.
+`max_iterations=10` is sourced from design.md's documented `execution.max_iterations: 10`
+setting (the `config/settings.yaml` this maps to doesn't exist as a file yet). `phase=""` is
+used instead of hardcoding a starting pipeline phase name, since phase-name conventions belong
+to pipeline-agent's `src/graph/` work, not this protected `src/state.py` contract.
+Affects: src/state.py (`new_state` defaults)
+Discarded: hardcoding a phase name like `"understanding"` — would bake a pipeline-agent naming
+convention into a protected infra-agent contract, creating a cross-module coupling this task
+has no visibility to keep in sync.

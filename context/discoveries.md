@@ -42,6 +42,46 @@ pin the frontend build/test image and any Node-based CI job to Node `>=20.19` (L
 recommended) to match `frontend/package.json` engines.
 Status: open
 
+## OPEN — 2026-08-04 [infra-agent (T-002) → pipeline-agent (T-031 score_evaluator)]
+Adversarial review of T-002 flagged that `LabState.best_score`/`last_score` have no documented
+polarity convention. `new_state()` defaults `best_score=float("-inf")`, which correctly lets the
+first experiment always register as an improvement, but only if downstream comparisons assume
+"higher score is better." Kaggle competitions routinely use minimize-oriented metrics (RMSE,
+LogLoss, MAE). If `score_evaluator` (Pipeline Phase 6) does a naive `last_score > best_score`
+without first normalizing/sign-flipping minimize metrics, `best_score`/`best_experiment_path`
+will silently freeze after the first experiment and never update again for those competitions —
+a silent violation of invariant #3 (best-score-only-on-improvement) that no test would catch
+since `float` accepts either polarity. Action needed: `score_evaluator` must normalize all scores
+to "higher is better" before writing `last_score`, or `LabState` needs an explicit polarity
+field — decide when T-031 is implemented. Documented in `docs/pipeline.md` § State in the
+meantime.
+Status: open
+
+## OPEN — 2026-08-04 [infra-agent (T-002) → pipeline-agent (T-009 GraphBuilder)]
+Adversarial review of T-002 flagged that only `LabState.messages` has a LangGraph reducer
+(`add_messages`); every other field defaults to the `LastValue` channel, which raises
+`InvalidUpdateError` if two nodes write the same key in the same super-step. `design.md`'s Phase
+2 topology runs `literature_researcher` and `web_researcher` concurrently — the only sanctioned
+parallel step in the pipeline (CLAUDE.md invariant #6 / design.md invariant #6, max 2 concurrent
+LLM agents). When T-009 wires up the actual graph/supervisor, verify whether these two nodes (or
+any future concurrent pair) ever write the same `LabState` key in the same step; if so, that
+field needs an explicit reducer (e.g. an accumulator for `experiments`) before it can be safely
+written concurrently — this would be a `LabState` contract change requiring the same
+explicit-approval process as T-002. Documented in `docs/pipeline.md` § State in the meantime.
+Status: open
+
+## OPEN — 2026-08-04 [infra-agent (T-002) → pipeline-agent (any node writing `experiments`)]
+Adversarial review of T-002 noted `LabState.experiments: list[dict]` has no nested type — the
+entry shape (`{id, path, cv_score, iteration, model}`) lives only in a trailing comment in
+`design.md`/`src/state.py`, not enforced by mypy. Low risk today (no code writes to this field
+yet), but as ~25 future nodes come to read/write it, key-name drift (`cv_score` vs `score`, `id`
+vs `exp_id`) becomes possible with no type-checker guardrail. Consider a nested
+`ExperimentEntry(TypedDict)` when the first node that populates `experiments` is implemented
+(likely T-020 baseline_runner or T-029 coder) — this would be a `LabState` type change and needs
+the same explicit-approval process as T-002, so raise it as a proposed design.md amendment at
+that time rather than drifting the type silently.
+Status: open
+
 ## OPEN — 2026-08-04 [pipeline-agent (T-045) → infra-agent (T-001)]
 T-045 created README.md with a "## What is this" + "## Documentation" (doc links) section, since it didn't exist yet when T-045 ran. T-001's Done-when checklist also requires "README updated with setup steps" — expect a whole-file conflict on README.md when both PRs merge (both branches independently create/modify it with non-overlapping intent: project description + doc links vs. setup/install steps). Whoever merges second should reconcile by keeping BOTH sections, not picking one side. Not an architecture issue — routine merge resolution, but flagging so it isn't silently resolved by dropping one section.
 Status: resolved in T-045 — merged during rebase: README.md now keeps T-001's project

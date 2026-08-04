@@ -6,9 +6,62 @@ this file tracks the current implemented state.
 
 ## State
 
-> Skeleton — populated when `src/state.py` lands (T-002). Document the `LabState` TypedDict
-> fields (input, file pointers, control, scores, experiment index, checkpoint) and any
-> state-mutation rules.
+`LabState` (`src/state.py`) is the single shared coordinator state threaded through every
+LangGraph node in the pipeline. It holds only file paths, scalars, and control fields — no
+large data structures in memory. Content produced by nodes (EDA reports, experiment results,
+generated code) lives on disk in the workspace; the state only holds pointers to it.
+
+Field groups:
+
+- **Input** — `competition_name`, `workspace_path`: identify the run and its workspace root.
+- **File pointers** — `eda_report_path`, `problem_definition_path`, `validation_config_path`,
+  `baseline_results_path`, `solution_plan_path`, `feature_spec_path`: paths into the workspace
+  for artifacts produced by earlier phases.
+- **Control** — `phase`, `current_iteration`, `max_iterations`,
+  `iterations_without_improvement`: drive the supervisor's routing and the iteration loop's
+  stop conditions.
+- **Scores** — `baseline_score`, `best_score`, `last_score`, `score_delta`: the permanent
+  benchmark, the running best, the most recent experiment's score, and the delta between them.
+- **Experiment index** — `experiments` (metadata only: id/path/cv_score/iteration/model) and
+  `best_experiment_path`: a lightweight index over experiments whose full results live in
+  workspace files.
+- **Human checkpoint** — `checkpoint_summary` (markdown rendered in the UI),
+  `human_feedback`: the interrupt/resume contract with the human reviewer.
+- **LLM context** — `messages`: trimmed per node (last N messages + node-specific input),
+  merged via LangGraph's `add_messages` reducer.
+
+`new_state(competition_name, workspace_path)` is a pure factory with no I/O that builds a
+fresh `LabState` for a new run: `current_iteration=0`, `iterations_without_improvement=0`,
+`max_iterations=10` (override via keyword arg; matches `config/settings.yaml`'s
+`execution.max_iterations`), `phase=""`, `best_score=float("-inf")` (so the first experiment
+always counts as an improvement), all other scores `0.0`, all path-pointer/checkpoint fields
+`""`, and fresh `experiments`/`messages` list literals (never shared across calls).
+
+**State-mutation rules:**
+
+- `validation_config_path` is immutable after Pipeline Phase 1.
+- `baseline_results_path` and `baseline_score` are set once (Pipeline Phase 3) and never
+  overwritten.
+- `best_experiment_path` and `best_score` update only when a new experiment's score improves
+  on the current best. **Scores must be normalized so that "higher is better" before being
+  written to `last_score`/`best_score`** — the state contract itself has no polarity field, so
+  whichever node computes `last_score` (Pipeline Phase 6, `score_evaluator`) is responsible for
+  sign-flipping minimize-oriented metrics (RMSE, LogLoss, MAE, etc.) before writing.
+- `messages` is trimmed per node via the `add_messages` reducer plus
+  `context.trim_strategy`/`max_messages_per_node` from `config/settings.yaml`.
+
+**Field write-ownership not yet defined:** `phase` (which node sets it and when — expected to be
+set by the supervisor/graph entry on each phase transition) and the exact formula for
+`score_delta` (vs. best? vs. baseline? vs. previous iteration?) are not specified by `LabState`
+itself. These are contracts for the implementing nodes to establish, not this module — see
+`context/discoveries.md` for the open item tracking this.
+
+**Concurrent-write note:** only `messages` has a LangGraph reducer (`add_messages`). All other
+fields use the default `LastValue` channel, which raises `InvalidUpdateError` if two nodes write
+the same key within one super-step. Pipeline Phase 2 runs `literature_researcher` and
+`web_researcher` concurrently (design.md's one sanctioned parallel step) — any future node pair
+that needs to write the same `LabState` key in the same step will need that field upgraded with
+an explicit reducer. See `context/discoveries.md`.
 
 ## Graph topology
 

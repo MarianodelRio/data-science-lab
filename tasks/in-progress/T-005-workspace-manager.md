@@ -3,11 +3,11 @@ id: T-005
 phase: 0
 agent: infra-agent
 depends_on: [T-001]
-status: available
+status: in-progress
 folders: ["src/workspace/"]
 outputs: [WorkspaceManager read/write json/text/notebook, experiment_dir, ensure_dir]
 size: M
-branch: ~
+branch: feature/T-005-workspace-manager
 pr: ~
 ---
 

@@ -3,11 +3,11 @@ id: T-038
 phase: 4
 agent: frontend-agent
 depends_on: []
-status: available
+status: in-progress
 folders: ["frontend/"]
 outputs: [React+Vite+TS app, layout shell, typed API client, dev proxy]
 size: M
-branch: ~
+branch: feature/T-038-frontend-scaffold
 pr: ~
 ---
 

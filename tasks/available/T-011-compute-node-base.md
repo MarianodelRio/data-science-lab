@@ -3,7 +3,7 @@ id: T-011
 phase: 1
 agent: pipeline-agent
 depends_on: [T-002]
-status: blocked
+status: available
 folders: ["src/nodes/"]
 outputs: [ComputeNode base class, node lifecycle without LLM]
 size: S

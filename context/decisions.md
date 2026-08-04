@@ -56,3 +56,18 @@ shell, no functionality" as stated in the task's Delivers section.
 Affects: frontend/src/components/Sidebar.tsx.
 Discarded: wiring it to `listRuns()` now — would pull live-data concerns into a
 scaffold-only task.
+
+## 2026-08-04 — T-038 [frontend-agent]
+Decided: `ChatConnection` (returned by `connectChat` in `frontend/src/api/client.ts`)
+exposes `onError`/`onClose` callbacks, symmetric with the SSE side's `RunEventHandlers.onError`.
+Both `onmessage` handlers (SSE and WS) now wrap `JSON.parse` in try/catch and route
+parse failures through the relevant `onError` instead of throwing uncaught inside the
+event callback.
+Why: found during adversarial review — a dropped chat connection or malformed message
+was previously silently swallowed with no way for a future `Chat` component to detect
+it; `onError`'s type was widened to `Event | Error` so both a native socket error and a
+caught parse `Error` can flow through the same callback.
+Affects: frontend/src/api/client.ts (`ChatConnection`, `RunEventHandlers`,
+`subscribeToRunEvents`, `connectChat`), frontend/src/api/client.test.ts.
+Discarded: adding reconnect logic — still explicitly out of scope for this task
+(future task's job), `onClose`/`onError` only surface the event.

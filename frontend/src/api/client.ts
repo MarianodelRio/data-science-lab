@@ -63,7 +63,8 @@ export function createRun(
 /** Handlers for a live SSE subscription created by subscribeToRunEvents. */
 export interface RunEventHandlers {
   onEvent: (event: PipelineEvent) => void
-  onError?: (error: Event) => void
+  /** Fired on a connection error, or when a message payload fails to parse. */
+  onError?: (error: Event | Error) => void
 }
 
 /**
@@ -80,7 +81,11 @@ export function subscribeToRunEvents(
   )
 
   source.onmessage = (message: MessageEvent<string>) => {
-    handlers.onEvent(JSON.parse(message.data) as PipelineEvent)
+    try {
+      handlers.onEvent(JSON.parse(message.data) as PipelineEvent)
+    } catch (error) {
+      handlers.onError?.(error as Error)
+    }
   }
 
   if (handlers.onError) {
@@ -94,12 +99,17 @@ export function subscribeToRunEvents(
 export interface ChatConnection {
   send: (content: string) => void
   onMessage: (listener: (message: ChatMessage) => void) => void
+  /** Fired when the socket errors, including malformed message payloads. */
+  onError: (listener: (error: Event | Error) => void) => void
+  /** Fired when the socket closes, for any reason (including a clean close). */
+  onClose: (listener: (event: CloseEvent) => void) => void
   close: () => void
 }
 
 /**
  * WS /api/runs/{id}/chat — bidirectional chat with the explainer agent.
- * No reconnect logic here by design — that is a future task's job.
+ * No reconnect logic here by design — that is a future task's job; onClose
+ * only surfaces the event so a future caller can decide what to do.
  */
 export function connectChat(
   runId: string,
@@ -110,12 +120,28 @@ export function connectChat(
     `${wsBase}/api/runs/${encodeURIComponent(runId)}/chat`,
   )
 
+  let errorListener: ((error: Event | Error) => void) | undefined
+
+  socket.onerror = (event: Event) => {
+    errorListener?.(event)
+  }
+
   return {
     send: (content: string) => socket.send(JSON.stringify({ content })),
     onMessage: (listener: (message: ChatMessage) => void) => {
       socket.onmessage = (message: MessageEvent<string>) => {
-        listener(JSON.parse(message.data) as ChatMessage)
+        try {
+          listener(JSON.parse(message.data) as ChatMessage)
+        } catch (error) {
+          errorListener?.(error as Error)
+        }
       }
+    },
+    onError: (listener: (error: Event | Error) => void) => {
+      errorListener = listener
+    },
+    onClose: (listener: (event: CloseEvent) => void) => {
+      socket.onclose = listener
     },
     close: () => socket.close(),
   }

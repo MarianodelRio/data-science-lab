@@ -101,9 +101,39 @@ pr: ~
   than silently, wherever this repo is built next (dev machine or CI).
 
 **Decisions and why:** see `context/decisions.md` (2026-08-04, T-038,
-5 entries — package manager, test stack, ESLint config format, no MSW,
-static Sidebar).
+6 entries — package manager, test stack, ESLint config format, no MSW,
+static Sidebar, `ChatConnection` onError/onClose).
 
 **Verification:** `npm install && npm run lint && npm run build && npm test`
 all exit 0 (see PR/commit for full output). `npm run format:check` also
 passes.
+
+**Fix pass (post-review, on top of `82c2f25`/`c3bd868`):** the adversarial
+reviewer found real gaps; code-quality/security/smoke-tester came back clean.
+- `frontend/src/components/Layout.tsx`: the tablist had roving `tabIndex`
+  but no `onKeyDown` handler, so keyboard users could reach "Pipeline" via
+  Tab but never the other three tabs (`tabIndex=-1` skips them, and Tab
+  exits the tablist). Added the standard ARIA tab pattern —
+  `ArrowRight`/`ArrowLeft` move focus+selection to the next/previous tab
+  (wrapping), `Home`/`End` jump to first/last — via a ref map to each tab
+  button. Added two new tests in `Layout.test.tsx` driving this with
+  `userEvent.keyboard`.
+- `frontend/src/api/client.ts`: `ChatConnection` (from `connectChat`) had no
+  error/close signal, asymmetric with the SSE side's `RunEventHandlers.onError`.
+  Added `onError`/`onClose` callbacks (no reconnect logic — still explicitly
+  out of scope). Also wrapped both SSE and WS `onmessage` `JSON.parse` calls
+  in try/catch, routing parse failures through the respective `onError`
+  instead of throwing uncaught inside the callback. `onError`'s type is
+  `Event | Error` to carry both a native socket/connection error and a
+  caught parse error through one callback.
+- `frontend/src/api/client.test.ts` (new): 14 tests covering REST happy
+  path (URL/method/headers/parsed JSON), the 204→`undefined` case, the
+  `!response.ok`→throw case, and SSE/WS wiring (message parsing, malformed
+  payload → onError, connection error → onError, WS close → onClose,
+  unsubscribe/close actually closing the connection) — all via injected
+  `fetchImpl`/`EventSourceImpl`/`WebSocketImpl` stubs, no mocking framework.
+- Logged the `ChatConnection` onError/onClose shape as a new decision in
+  `context/decisions.md`.
+- Full suite now: 20/20 tests passing (6 in `Layout.test.tsx`, 14 in
+  `client.test.ts`). `npm run lint`, `npm run build`, `npm test`, and
+  `npm run format:check` all green.

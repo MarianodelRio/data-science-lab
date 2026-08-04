@@ -3,11 +3,11 @@ id: T-001
 phase: 0
 agent: infra-agent
 depends_on: []
-status: available
+status: in-progress
 folders: [".", "src/", "tests/"]
 outputs: [pyproject.toml, .env.example, ruff+mypy+pytest config, src/ package tree, tests/ tree]
 size: S
-branch: ~
+branch: feature/T-001-project-scaffold
 pr: ~
 ---
 

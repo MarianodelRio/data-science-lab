@@ -43,9 +43,25 @@ always counts as an improvement), all other scores `0.0`, all path-pointer/check
 - `baseline_results_path` and `baseline_score` are set once (Pipeline Phase 3) and never
   overwritten.
 - `best_experiment_path` and `best_score` update only when a new experiment's score improves
-  on the current best.
+  on the current best. **Scores must be normalized so that "higher is better" before being
+  written to `last_score`/`best_score`** — the state contract itself has no polarity field, so
+  whichever node computes `last_score` (Pipeline Phase 6, `score_evaluator`) is responsible for
+  sign-flipping minimize-oriented metrics (RMSE, LogLoss, MAE, etc.) before writing.
 - `messages` is trimmed per node via the `add_messages` reducer plus
   `context.trim_strategy`/`max_messages_per_node` from `config/settings.yaml`.
+
+**Field write-ownership not yet defined:** `phase` (which node sets it and when — expected to be
+set by the supervisor/graph entry on each phase transition) and the exact formula for
+`score_delta` (vs. best? vs. baseline? vs. previous iteration?) are not specified by `LabState`
+itself. These are contracts for the implementing nodes to establish, not this module — see
+`context/discoveries.md` for the open item tracking this.
+
+**Concurrent-write note:** only `messages` has a LangGraph reducer (`add_messages`). All other
+fields use the default `LastValue` channel, which raises `InvalidUpdateError` if two nodes write
+the same key within one super-step. Pipeline Phase 2 runs `literature_researcher` and
+`web_researcher` concurrently (design.md's one sanctioned parallel step) — any future node pair
+that needs to write the same `LabState` key in the same step will need that field upgraded with
+an explicit reducer. See `context/discoveries.md`.
 
 ## Graph topology
 

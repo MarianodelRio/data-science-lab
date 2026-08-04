@@ -3,7 +3,7 @@ id: T-038
 phase: 4
 agent: frontend-agent
 depends_on: []
-status: pr-open
+status: done
 folders: ["frontend/"]
 outputs: [React+Vite+TS app, layout shell, typed API client, dev proxy]
 size: M

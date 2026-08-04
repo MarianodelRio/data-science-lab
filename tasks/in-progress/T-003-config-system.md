@@ -3,11 +3,11 @@ id: T-003
 phase: 0
 agent: infra-agent
 depends_on: [T-001]
-status: available
+status: in-progress
 folders: ["src/config/", "config/"]
 outputs: [settings.yaml, Settings loader, AgentConfig, PhaseConfig, PromptLoader]
 size: M
-branch: ~
+branch: feature/T-003-config-system
 pr: ~
 ---
 

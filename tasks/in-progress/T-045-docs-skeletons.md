@@ -3,11 +3,11 @@ id: T-045
 phase: 5
 agent: pipeline-agent
 depends_on: []
-status: available
-folders: ["docs/"]
+status: in-progress
+folders: ["docs/", "README.md"]
 outputs: [docs/pipeline.md, docs/agents.md, docs/configuration.md, docs/api.md, README sections]
 size: S
-branch: ~
+branch: feature/T-045-docs-skeletons
 pr: ~
 ---
 

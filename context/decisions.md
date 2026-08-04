@@ -94,3 +94,47 @@ Affects: conftest.py (repo-wide pytest behavior) — this will keep masking a ge
 accidentally collects zero tests will still exit 0 instead of failing loudly.
 Discarded: leaving exit code 5 as a "failure" — would break the task's own literal acceptance
 criterion and block early scaffold/infra PRs that legitimately ship no tests yet.
+
+## 2026-08-04 — T-005 [infra-agent]
+Decided: `_resolve` rejects `..`-traversal and absolute paths syntactically (component-wise
+check on `Path.parts` / `Path.is_absolute()`) but does not resolve symlinks or verify the
+final path stays under `workspace_path` on disk.
+Why: the task's Done-when criterion is "a path containing `..` raises ValueError" — a syntactic
+check on untrusted relative-path arguments. Following it with `.resolve()` + prefix comparison
+would additionally guard against symlink escapes already inside a trusted workspace tree, which
+is a different threat model not covered by any Done-when item, and risks changing error semantics
+in ways untested by this task's suite.
+Affects: src/workspace/workspace_manager.py
+Discarded: `.resolve()` + `is_relative_to()` prefix check — deferred as a possible hardening if a
+future task's threat model requires defending against symlinks planted inside the workspace.
+
+## 2026-08-04 — T-005 [infra-agent]
+Decided: `experiment_dir(exp_id)` returns the path without creating the directory; `ensure_dir`
+is the only method that creates directories on demand.
+Why: design.md's `LabState` stores file *pointers*, not existence guarantees — keeping
+`experiment_dir` a side-effect-free path getter avoids a "getter"-named method silently mutating
+the filesystem. Callers needing the directory to exist call `ensure_dir(...)` explicitly, or rely
+on `write_json`/`write_text`/`write_notebook`'s own parent-dir auto-creation.
+Affects: src/workspace/workspace_manager.py
+Discarded: having `experiment_dir` also create the directory — would make it behaviorally
+identical to `ensure_dir` with a hardcoded `experiments/` prefix, removing the useful distinction
+between "compute a path" and "guarantee a path exists".
+
+## 2026-08-04 — T-005 [infra-agent]
+Decided: `experiment_dir` does not reject an absolute-looking `exp_id` (e.g. `"/etc/passwd"`)
+with `ValueError`, unlike every other method. It builds `f"experiments/{exp_id}"` before
+resolving; `Path("experiments//etc/passwd")` normalizes to the *relative* path
+`experiments/etc/passwd` rather than an absolute one, so `_resolve`'s `is_absolute()` check
+never trips. `..`-traversal in `exp_id` still correctly raises, since `..` survives the string
+concatenation as its own path component.
+Why: the approved implementation plan's code (verbatim, not to be relitigated) prepends the
+`"experiments/"` prefix inside `experiment_dir` itself; the plan's own test list marked
+`experiment_dir`'s absolute-path case "ideally" (optional) for exactly this reason. Rather than
+assert a false ValueError in the test suite, the test
+(`test_absolute_path_raises_value_error`) excludes `experiment_dir` and a dedicated test
+(`test_experiment_dir_absolute_looking_exp_id_is_not_rejected`) documents the actual behavior.
+Affects: src/workspace/workspace_manager.py, tests/workspace/test_workspace_manager.py
+Discarded: changing `experiment_dir` to check `exp_id` for `is_absolute()` before prefixing —
+would deviate from the approved class design's literal code without sign-off; noted here instead
+as a candidate follow-up if a future task's threat model requires exp_id-level absolute-path
+rejection.

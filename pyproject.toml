@@ -18,6 +18,7 @@ dependencies = [
     "optuna",
     "mlflow",
     "kaggle",
+    "nbformat",
     "scikit-learn",
     "xgboost",
     "lightgbm",

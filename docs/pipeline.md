@@ -31,6 +31,25 @@ this file tracks the current implemented state.
 > Skeleton — one subsection per tool (`code_executor`, `kaggle_client`, `rag`,
 > `workspace_manager`), populated by the task that implements each tool.
 
+### workspace_manager
+
+`src/workspace/workspace_manager.py` — `WorkspaceManager` is the sole file-I/O point to the
+generated ML workspace (`~/competitions/{competition_name}/`). All nodes and tools write through
+it; no other module touches the workspace filesystem directly.
+
+**API** (see `design.md` § WorkspaceManager API for the full contract):
+- `read_json` / `write_json` — JSON round-trip; `write_json` creates parent dirs and returns the
+  absolute path written
+- `read_text` / `write_text` — plain text, UTF-8
+- `write_notebook(relative_path, cells)` — builds a valid `.ipynb` via `nbformat`; `cells` is a
+  list of `{"cell_type": "code" | "markdown", "source": str}` dicts
+- `experiment_dir(exp_id) -> Path` — computes `experiments/{exp_id}` without creating it
+- `ensure_dir(relative_path) -> Path` — creates (idempotently) and returns the directory
+
+**Path safety:** every method accepting `relative_path` rejects absolute paths and any `..`
+traversal component, raising `ValueError` — the workspace root cannot be escaped from a relative
+path argument.
+
 ## RAG
 
 > Skeleton — vector store, embeddings, indexing pipeline, and retrieval pattern, populated by the

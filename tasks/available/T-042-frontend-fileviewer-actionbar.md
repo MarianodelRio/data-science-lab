@@ -3,7 +3,7 @@ id: T-042
 phase: 4
 agent: frontend-agent
 depends_on: [T-038]
-status: blocked
+status: available
 folders: ["frontend/"]
 outputs: [FileViewer component, ActionBar component]
 size: S

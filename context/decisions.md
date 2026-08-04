@@ -282,3 +282,17 @@ into it.
 Affects: config/ (directory layout).
 Discarded: pre-creating empty dirs with `.gitkeep` placeholders — adds tracked no-op files for
 directories no code in this task reads from yet.
+
+## 2026-08-04 — T-003 [infra-agent]
+Decided: `CriticConfig.targets`, `AgentConfig.tools`, and `PhaseConfig.nodes`/`sequence`/
+`parallel_nodes` are `tuple[str, ...]`, not `list[str]` as originally specced. `loaders.py`
+coerces the parsed YAML lists into tuples when constructing these dataclasses.
+Why: post-review hardening (protected-contract shape fix, before T-004/T-009/T-010/T-011 start
+importing the shape as-is). `list` isn't hashable, so `@dataclass(frozen=True)` instances
+containing a list field are themselves unhashable despite `frozen=True` — inconsistent with the
+"frozen means immutable and hashable" contract. `list` is also only shallowly immutable: a caller
+holding a reference to `agent_config.tools` could mutate it in place, silently corrupting the
+frozen dataclass from outside. Tuples close both gaps.
+Affects: src/config/schema.py, src/config/loaders.py, tests/unit/config/test_loaders.py.
+Discarded: leaving list fields as originally specced and documenting "don't mutate" as a
+convention — unenforceable, and defeats the purpose of `frozen=True` in the first place.

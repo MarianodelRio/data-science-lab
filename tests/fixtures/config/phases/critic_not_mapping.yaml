@@ -1,0 +1,9 @@
+# Same shape as example_phase.yaml but "critic" is a string instead of a mapping.
+name: research
+nodes:
+  - literature_researcher
+sequence:
+  - literature_researcher
+parallel_nodes: []
+critic: not_a_mapping
+interrupt_after: false

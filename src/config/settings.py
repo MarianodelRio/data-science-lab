@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +20,12 @@ from src.config.paths import SETTINGS_PATH
 
 _ENV_VAR_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
+# Matches anything that still looks like an unresolved/malformed env var reference
+# AFTER the main substitution pass has run — e.g. `${HYPHEN-NAME}` (invalid identifier,
+# never matched by _ENV_VAR_PATTERN so it survives verbatim) or a bare `$VAR` (no
+# braces at all, so _ENV_VAR_PATTERN never touches it either).
+_UNRESOLVED_REF_PATTERN = re.compile(r"\$\{|\$[A-Za-z_]")
+
 
 def _resolve_env_vars(value: Any, *, source: str | Path) -> Any:
     """Recursively resolve ${ENV_VAR} references in a parsed YAML structure."""
@@ -28,13 +34,24 @@ def _resolve_env_vars(value: Any, *, source: str | Path) -> Any:
         def repl(m: re.Match[str]) -> str:
             var_name = m.group(1)
             try:
-                return os.environ[var_name]
+                resolved = os.environ[var_name]
             except KeyError:
                 raise ConfigError(
                     f"Missing required environment variable '{var_name}' referenced in {source}"
                 ) from None
+            if resolved == "":
+                raise ConfigError(
+                    f"Environment variable '{var_name}' referenced in {source} is set but empty"
+                )
+            return resolved
 
-        return _ENV_VAR_PATTERN.sub(repl, value)
+        resolved_string = _ENV_VAR_PATTERN.sub(repl, value)
+        if _UNRESOLVED_REF_PATTERN.search(resolved_string):
+            raise ConfigError(
+                f"Malformed or unresolved environment variable reference in {value!r} "
+                f"(source: {source})"
+            )
+        return resolved_string
     if isinstance(value, dict):
         return {k: _resolve_env_vars(v, source=source) for k, v in value.items()}
     if isinstance(value, list):
@@ -76,11 +93,11 @@ class ModelsConfig:
 
 @dataclass(frozen=True)
 class ApiKeysConfig:
-    anthropic: str
-    deepseek: str
-    groq: str
+    anthropic: str = field(repr=False)
+    deepseek: str = field(repr=False)
+    groq: str = field(repr=False)
     kaggle_username: str
-    kaggle_key: str
+    kaggle_key: str = field(repr=False)
 
 
 @dataclass(frozen=True)
@@ -137,7 +154,7 @@ class Settings:
     @classmethod
     def load(cls, path: str | Path = SETTINGS_PATH) -> Settings:
         source = path
-        raw_text = Path(path).read_text()
+        raw_text = Path(path).read_text(encoding="utf-8")
         raw = yaml.safe_load(raw_text) or {}
         if not isinstance(raw, dict):
             raise ConfigError(f"Expected a YAML mapping at the top level of {source}")

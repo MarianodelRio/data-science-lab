@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from src.config.loaders import validate_identifier
 from src.config.paths import PROMPTS_DIR
 
 
@@ -15,5 +16,7 @@ class PromptLoader:
         A missing file lets `Path.read_text()`'s native `FileNotFoundError`
         propagate as-is — its message/args already contain the path.
         """
+        validate_identifier(agent, label="agent")
+        validate_identifier(version, label="version")
         path = self._prompts_dir / agent / f"{version}.md"
-        return path.read_text()
+        return path.read_text(encoding="utf-8")

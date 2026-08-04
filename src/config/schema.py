@@ -10,7 +10,7 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class CriticConfig:
     node: str
-    targets: list[str]
+    targets: tuple[str, ...]
     max_retries: int
 
 
@@ -19,7 +19,7 @@ class AgentConfig:
     name: str
     model_role: str
     prompt_version: str
-    tools: list[str]
+    tools: tuple[str, ...]
     output_file_pattern: str
     max_tokens: int
     temperature: float | None = None
@@ -28,8 +28,8 @@ class AgentConfig:
 @dataclass(frozen=True)
 class PhaseConfig:
     name: str
-    nodes: list[str]
-    sequence: list[str]
-    parallel_nodes: list[str]
+    nodes: tuple[str, ...]
+    sequence: tuple[str, ...]
+    parallel_nodes: tuple[str, ...]
     critic: CriticConfig | None
     interrupt_after: bool

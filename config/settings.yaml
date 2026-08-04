@@ -1,0 +1,50 @@
+
+models:
+  advisor:                # high-risk architecture decisions (Advisor agent)
+    provider: anthropic
+    model: claude-opus-5
+    temperature: 0.3
+    max_tokens: 4096
+  reasoning:          # solution_architect, feature_engineer, hypothesis_generator, experiment_designer
+    provider: deepseek
+    model: deepseek-v4-flash
+    temperature: 0.5
+  implementation:     # coder, code_critic, baseline_designer
+    provider: deepseek
+    model: deepseek-v4-flash
+    temperature: 0.2
+  research:           # literature_researcher, web_researcher, competition_analyst, report_writer
+    provider: deepseek
+    model: deepseek-v3-2
+    temperature: 0.5
+  fast:               # analysis_critic, memory_manager, problem_framer, validation_strategist
+    provider: groq
+    model: llama-4-maverick
+    temperature: 0.1
+
+api_keys:
+  anthropic: ${ANTHROPIC_API_KEY}
+  deepseek: ${DEEPSEEK_API_KEY}
+  groq: ${GROQ_API_KEY}
+  kaggle_username: ${KAGGLE_USERNAME}
+  kaggle_key: ${KAGGLE_KEY}
+
+context:
+  trim_strategy: last_n_messages
+  max_messages_per_node: 10
+
+workspace:
+  root: /competitions            # inside Docker (host path in docker-compose.yml)
+  chroma_host: chroma
+  chroma_port: 8000
+  mlflow_tracking_uri: http://mlflow:5000
+
+optuna:
+  n_trials: 50
+  early_stopping_patience: 20
+
+execution:
+  max_parallel_agents: 2
+  code_executor_timeout_seconds: 3600
+  max_critic_retries: 3
+  max_iterations: 10

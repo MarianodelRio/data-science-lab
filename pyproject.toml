@@ -26,6 +26,7 @@ dependencies = [
     "shap",
     "fastapi",
     "uvicorn[standard]",
+    "PyYAML>=6.0",
 ]
 
 [project.optional-dependencies]

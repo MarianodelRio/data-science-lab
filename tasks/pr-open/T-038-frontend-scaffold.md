@@ -3,12 +3,12 @@ id: T-038
 phase: 4
 agent: frontend-agent
 depends_on: []
-status: in-progress
+status: pr-open
 folders: ["frontend/"]
 outputs: [React+Vite+TS app, layout shell, typed API client, dev proxy]
 size: M
 branch: feature/T-038-frontend-scaffold
-pr: ~
+pr: "https://github.com/MarianodelRio/data-science-lab/pull/1"
 ---
 
 ## React scaffold + layout + API client (frontend/)

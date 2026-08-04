@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "data-science-lab"
+version = "0.1.0"
+description = "Multi-agent LangGraph system that produces reproducible ML competition repositories"
+requires-python = ">=3.10"
+readme = "README.md"
+dependencies = [
+    "langgraph>=0.3",
+    "langchain-openai",
+    "langchain-anthropic",
+    "langchain-groq",
+    "chromadb",
+    "sentence-transformers",
+    "optuna",
+    "mlflow",
+    "kaggle",
+    "scikit-learn",
+    "xgboost",
+    "lightgbm",
+    "catboost",
+    "shap",
+    "fastapi",
+    "uvicorn[standard]",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "ruff",
+    "mypy",
+]
+
+[tool.setuptools.packages.find]
+include = ["src*"]
+
+[tool.pytest.ini_options]
+addopts = "--cov=src --cov-report=term-missing"
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["src"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+no_implicit_optional = true
+ignore_missing_imports = true

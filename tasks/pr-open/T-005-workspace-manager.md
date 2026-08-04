@@ -3,12 +3,12 @@ id: T-005
 phase: 0
 agent: infra-agent
 depends_on: [T-001]
-status: in-progress
+status: pr-open
 folders: ["src/workspace/"]
 outputs: [WorkspaceManager read/write json/text/notebook, experiment_dir, ensure_dir]
 size: M
 branch: feature/T-005-workspace-manager
-pr: ~
+pr: "https://github.com/MarianodelRio/data-science-lab/pull/4"
 ---
 
 ## WorkspaceManager (src/workspace/)

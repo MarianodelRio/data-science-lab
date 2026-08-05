@@ -3,7 +3,7 @@ id: T-004
 phase: 0
 agent: infra-agent
 depends_on: [T-003]
-status: pr-open
+status: done
 folders: ["src/llm/"]
 outputs: [LLMFactory.get(role), provider wrappers for anthropic/deepseek/groq/gemini/openai]
 size: M

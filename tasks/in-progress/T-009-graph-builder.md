@@ -3,11 +3,11 @@ id: T-009
 phase: 1
 agent: pipeline-agent
 depends_on: [T-002, T-003]
-status: available
+status: in-progress
 folders: ["src/graph/", "config/phases/"]
 outputs: [GraphBuilder, supervisor routing, 7 phase YAMLs, SQLite checkpointer]
 size: M
-branch: ~
+branch: feature/T-009-graph-builder
 pr: ~
 ---
 

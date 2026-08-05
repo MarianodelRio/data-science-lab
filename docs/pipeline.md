@@ -84,6 +84,18 @@ an explicit reducer. See `context/discoveries.md`.
 > Skeleton — one subsection per tool (`code_executor`, `kaggle_client`, `rag`,
 > `workspace_manager`), populated by the task that implements each tool.
 
+### code_executor
+
+`src/tools/code_executor.py` — runs arbitrary Python source in a subprocess and returns an
+`ExecResult` (`returncode`, `stdout`, `stderr`, `timed_out`); never raises on nonzero exit.
+
+- Code is run via `sys.executable -c <code>` (no temp files).
+- Runs in its own process group (`start_new_session=True`); on timeout the whole group is
+  killed via `os.killpg` + `SIGKILL`, so no orphaned children survive.
+- `timeout` defaults to `settings.execution.code_executor_timeout_seconds` when the caller
+  passes `None`/omits it; callers that pass an explicit value never trigger a `Settings.load()`
+  call.
+
 ### workspace_manager
 
 `src/workspace/workspace_manager.py` — `WorkspaceManager` is the sole file-I/O point to the

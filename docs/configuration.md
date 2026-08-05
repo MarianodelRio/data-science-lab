@@ -87,10 +87,29 @@ Edit `models.{role}.model` (and optionally `temperature` / `max_tokens`) in
 `config/settings.yaml`. Every agent whose `AgentConfig.model_role` matches that role picks up the
 change automatically — no code change needed.
 
-`Settings.load()` re-parses and re-resolves the file on every call in this task (no caching), but
-the eventual consumer (`LLMFactory`, added in a later task) is expected to call it once at process
-startup and hold the resulting `Settings` instance — so a **running process still needs a restart**
-to pick up a model change, even though the loader itself is always fresh.
+`Settings.load()` itself re-parses and re-resolves the file on every call — no caching at that
+layer. `LLMFactory` (`src/llm/factory.py`, T-004) is the actual long-lived consumer: it calls
+`Settings.load()` once, on the first `LLMFactory.get(role)` in the process, and caches the
+resulting `Settings` instance on the class for every subsequent `.get()` call. So a **running
+process still needs a restart** to pick up a model change, even though `Settings.load()` itself is
+always fresh.
+
+`LLMFactory.get(role)` resolves `role` (`"advisor"`, `"reasoning"`, `"implementation"`,
+`"research"`, or `"fast"`) to a `ModelRoleConfig` via an explicit mapping — an unrecognized role
+raises `KeyError(role)`, never `AttributeError`. It then dispatches `role_config.provider` to the
+matching LangChain chat model class, also via an explicit mapping:
+
+| `provider` | LangChain class | Notes |
+|---|---|---|
+| `anthropic` | `ChatAnthropic` | `api_key=settings.api_keys.anthropic` |
+| `deepseek` | `ChatOpenAI` | `base_url="https://api.deepseek.com"`, `api_key=settings.api_keys.deepseek` |
+| `groq` | `ChatGroq` | `api_key=settings.api_keys.groq` |
+| `openai` | `ChatOpenAI` | no `settings.api_keys.openai` field — relies on `ChatOpenAI`'s own `OPENAI_API_KEY` env fallback |
+| `gemini` | `ChatGoogleGenerativeAI` | no `settings.api_keys.gemini` field — relies on `ChatGoogleGenerativeAI`'s own `GOOGLE_API_KEY` env fallback |
+
+An unrecognized `provider` string raises `ValueError(f"Unknown provider: {provider!r}")`. Every
+wrapper passes `model` and `temperature` from the resolved `ModelRoleConfig`, and adds
+`max_tokens` only when it is not `None` (today, only the `advisor` role sets it).
 
 Before:
 ```yaml

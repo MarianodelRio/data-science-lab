@@ -1,0 +1,11 @@
+# Mirrors design.md's § The seven phases → Phase 3 — Baseline.
+name: baseline
+nodes:
+  - baseline_designer
+  - baseline_runner
+sequence:
+  - baseline_designer
+  - baseline_runner
+parallel_nodes: []
+critic: null
+interrupt_after: false

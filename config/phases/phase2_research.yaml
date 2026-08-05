@@ -1,0 +1,15 @@
+# Mirrors design.md's § The seven phases → Phase 2 — Research.
+name: research
+nodes:
+  - literature_researcher
+  - web_researcher
+  - competition_analyst
+  - memory_manager
+sequence:
+  - literature_researcher
+  - web_researcher
+  - competition_analyst
+  - memory_manager
+parallel_nodes: [literature_researcher, web_researcher]
+critic: null
+interrupt_after: false

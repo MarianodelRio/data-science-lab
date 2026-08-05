@@ -1,0 +1,17 @@
+# Mirrors design.md's § The seven phases → Phase 6 — Evaluation.
+name: evaluation
+nodes:
+  - score_evaluator
+  - feature_importance_extractor
+  - error_analyst
+  - hypothesis_generator
+  - experiment_designer
+sequence:
+  - score_evaluator
+  - feature_importance_extractor
+  - error_analyst
+  - hypothesis_generator
+  - experiment_designer
+parallel_nodes: []
+critic: null
+interrupt_after: true

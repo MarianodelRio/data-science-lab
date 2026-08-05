@@ -65,9 +65,120 @@ an explicit reducer. See `context/discoveries.md`.
 
 ## Graph topology
 
-> Skeleton — populated when `src/graph/` lands. Document the main graph diagram (phase sequence,
-> interrupt points, the phase4↔phase6 iteration loop), the supervisor conditional edge, and the
-> SQLite checkpointer setup.
+`config/phases/*.yaml` is the **only** place phases are composed — the 7 files list each phase's
+`nodes`, `sequence`, `parallel_nodes`, `critic`, and `interrupt_after`. Node tasks never edit
+these files; they only add a node name to an existing phase's `nodes`/`sequence` list (or, per
+CLAUDE.md's modularity section, register a brand-new agent this way). `PhaseConfig`
+(`src/config/schema.py`) is the frozen shape every YAML must validate against, loaded via
+`load_phase_config` (`src/config/loaders.py`).
+
+### Node-module convention
+
+A node lives at `src/nodes/{llm|compute}/{name}.py` and exposes exactly one class, **defined in
+that module** (not merely imported into it), with:
+- a `name` class attribute equal to the module's filename stem
+- a no-argument constructor
+- `__call__(self, state: LabState) -> dict` — a partial `LabState` update, following LangGraph's
+  node-return convention
+
+`src/graph/node_resolver.py`'s `resolve_node(name)` is how every node name in a phase YAML
+becomes an actual callable: it tries `src.nodes.llm.{name}` then `src.nodes.compute.{name}`, finds
+the matching class via `_find_node_class`, and instantiates it. If neither module exists yet
+(`ModuleNotFoundError`), it falls back to `NoOpNode(name)` (`src/graph/nodes_noop.py`) — a
+placeholder that never raises and never mutates `LabState` beyond an empty return. This is what
+lets `GraphBuilder.build()` compile a full 7-phase graph today, before any node task has landed a
+single real node. If a module *does* exist but exposes zero or more than one matching class, that's
+a real bug in a landed node — `resolve_node` raises `GraphBuilderError` (`src/graph/errors.py`)
+rather than silently no-opping.
+
+### Phase subgraph assembly
+
+Each phase is its own compiled LangGraph subgraph, built generically by
+`src/graph/phases/generic.py`'s `build_phase_subgraph(config, resolve_node)` from nothing but its
+`PhaseConfig`:
+- every name in `nodes` becomes a graph node via `resolve_node`
+- with no `parallel_nodes`, `sequence` is chained pairwise
+- with `parallel_nodes` set (only Phase 2 today — `literature_researcher ‖ web_researcher`), the
+  contiguous run of parallel nodes inside `sequence` fans out from the node before it (or `START`)
+  and fans back in to the node after it (or `END`); the rest of `sequence` chains normally
+- entry/finish points are `sequence[0]`/`sequence[-1]`
+
+Each of the 7 thin `src/graph/phases/phase{N}_{name}.py` modules just calls this with its own
+`load_phase_config(...)` result — no per-phase wiring logic duplicated.
+
+### Main graph — `GraphBuilder`
+
+`src/graph/builder.py`'s `GraphBuilder.build(run_id, runs_dir=None)` assembles the 7 compiled
+phase subgraphs into the single top-level graph:
+
+```
+START
+  → phase1_understanding  (interrupt)
+  → phase2_research
+      ├─ current_iteration == 0 → phase3_baseline → phase4_design
+      └─ otherwise              → phase4_design
+  → phase4_design          (interrupt)
+  → phase5_implementation
+  → phase6_evaluation      (interrupt)
+      ├─ iterations_without_improvement >= max_iterations → phase7_delivery
+      └─ otherwise                                        → phase4_design (loop)
+  → phase7_delivery
+  → END
+```
+
+Each phase subgraph is wrapped so its top-level node also stamps `phase={stem}` into the returned
+state delta — this is how the supervisor (see below), running at the top level, learns which
+phase just finished. `LabState.phase`'s write-ownership was previously undefined; `GraphBuilder`
+establishes it here.
+
+`interrupt_after` is computed dynamically from the 7 loaded `PhaseConfig`s (never hardcoded):
+today it resolves to `["phase1_understanding", "phase4_design", "phase6_evaluation"]`, matching
+design.md's three mandatory human checkpoints.
+
+### Supervisor
+
+`src/graph/supervisor.py`'s `supervisor(state) -> str` is the pipeline's only conditional-edge
+routing logic — pure Python, deterministic, no LLM. It is called from two places:
+- after `phase2_research`: routes to `phase3_baseline` only when `current_iteration == 0`
+  (CLAUDE.md invariant #4 — baseline runs exactly once), otherwise straight to `phase4_design`
+- after `phase6_evaluation`: routes to `phase7_delivery` once
+  `iterations_without_improvement >= max_iterations`, otherwise loops back to `phase4_design`
+
+Called from any other phase, it raises `GraphBuilderError` — that's a real assembly bug, not a
+normal code path.
+
+**Critic-retry and specialist-dispatch are deliberately not supervisor concerns.** `LabState` has
+no verdict/retry-count/selected-specialist field (adding one is a protected-contract change, not
+yet approved), so `analysis_critic`, `code_critic`, and `specialist_selector` own their control
+flow internally instead: a critic's own node function re-invokes its target node(s) directly (via
+the same `resolve_node` mechanism) up to `max_retries`, entirely inside its own function, and
+`specialist_selector` internally invokes exactly one chosen specialist the same way. Neither
+surfaces as a graph-level conditional edge. This means `PhaseConfig.sequence` for phase1/phase4/
+phase5 stays a flat one-pass list — the YAML lists every specialist/critic node in sequence, but
+the *actual* runtime dispatch/retry behavior lives inside the node implementations landed by
+T-016/T-023/T-030, not in `GraphBuilder`. See `context/decisions.md` (T-009) for the full
+rationale.
+
+### Checkpointer
+
+`src/graph/checkpointer.py`'s `build_checkpointer(run_id, runs_dir=None)` builds a `SqliteSaver`
+backed by `{runs_dir}/{run_id}/checkpoint.db` (`runs_dir` defaults to the repo-root `runs/`
+directory; the parameter exists purely for test injection, mirroring `src/config/loaders.py`'s
+`base_dir` convention). It's constructed via `SqliteSaver(sqlite3.connect(path,
+check_same_thread=False))` rather than `SqliteSaver.from_conn_string(...)` — in the installed
+`langgraph-checkpoint-sqlite` version, `from_conn_string` is a context-manager generator, which is
+awkward for a checkpointer that needs to stay alive for the lifetime of the compiled graph well
+past `GraphBuilder.build()`'s return.
+
+Resuming after a crash/restart: build a new `GraphBuilder` pointed at the same `runs_dir`/`run_id`
+and `graph.invoke(None, config={"configurable": {"thread_id": run_id}})` — LangGraph's checkpoint
+mechanism skips already-completed nodes and continues from the next one.
+
+### Interrupt placement
+
+Interrupts fire *after* a whole phase subgraph completes (not after individual nodes inside it) —
+`interrupt_after` names top-level phase-stem nodes (`phase1_understanding`, `phase4_design`,
+`phase6_evaluation`), never nodes inside a phase's `sequence`.
 
 ## The 7 phases
 

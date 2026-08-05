@@ -1,0 +1,16 @@
+# Mirrors design.md's § The seven phases → Phase 4 — Design.
+name: design
+nodes:
+  - solution_architect
+  - feature_engineer
+  - analysis_critic
+sequence:
+  - solution_architect
+  - feature_engineer
+  - analysis_critic
+parallel_nodes: []
+critic:
+  node: analysis_critic
+  targets: [solution_architect, feature_engineer]
+  max_retries: 3
+interrupt_after: true

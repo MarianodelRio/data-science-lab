@@ -344,3 +344,28 @@ no-caching behavior, but reintroduces file I/O and env-var resolution on every L
 across ~25 agents, and defeats the "process needs a restart to pick up a model change" contract
 already documented in docs/configuration.md § Changing a model); `getattr`-based role resolution
 (fails the KeyError requirement, see above).
+
+## 2026-08-05 — T-009 [pipeline-agent]
+Decided: `analysis_critic`, `code_critic`, and `specialist_selector` own their control flow
+internally instead of the graph exposing critic-retry or specialist-dispatch as conditional
+edges. A critic's own node function re-invokes its target node(s) directly (via the same
+`resolve_node` mechanism `GraphBuilder` uses) up to `max_retries`, entirely inside its own
+`__call__`/`run`, never surfacing as a graph-level conditional edge; `specialist_selector`
+internally invokes exactly one chosen specialist the same way. Applied consistently to both.
+Why: the Planner flagged that critics/`specialist_selector` need verdict/retry-count/selected-
+specialist state to drive branching, but `LabState` has none of those fields, and adding one is a
+protected-contract change requiring separate human approval that this task does not have. Keeping
+the control flow inside the owning node's own function sidesteps the need for new `LabState`
+fields entirely — the node can loop/dispatch using purely local variables — while leaving the door
+open for a future task to promote this to real conditional edges if a shared-state need for
+retry/verdict visibility emerges later.
+Affects: `config/phases/phase1_understanding.yaml`, `phase4_design.yaml`,
+`phase5_implementation.yaml` (`sequence` stays a flat one-pass list — critics/specialists are
+listed once each, not branched); `src/graph/builder.py` and `src/graph/supervisor.py` (no
+critic-retry or specialist-dispatch branching logic — the graph wires phases sequentially per
+`sequence`, full stop). Does not affect any critic/specialist node implementation itself — those
+are future tasks (T-016, T-023, T-030), not built by T-009.
+Discarded: adding `critic_verdict`/`retry_count`/`selected_specialist` fields to `LabState` now to
+support graph-level conditional edges for retry/dispatch — would be the more "idiomatic" LangGraph
+pattern, but requires modifying a protected contract (`src/state.py`) without approval; deferred
+to whichever future task actually needs cross-node visibility into that state.

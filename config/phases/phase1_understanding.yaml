@@ -1,0 +1,20 @@
+# Mirrors design.md's § The seven phases → Phase 1 — Understanding.
+name: understanding
+nodes:
+  - data_analyst
+  - problem_framer
+  - validation_strategist
+  - leakage_auditor
+  - analysis_critic
+sequence:
+  - data_analyst
+  - problem_framer
+  - validation_strategist
+  - leakage_auditor
+  - analysis_critic
+parallel_nodes: []
+critic:
+  node: analysis_critic
+  targets: [data_analyst, problem_framer, validation_strategist, leakage_auditor]
+  max_retries: 3
+interrupt_after: true

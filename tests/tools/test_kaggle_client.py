@@ -86,6 +86,29 @@ def test_download_creates_dest_dir_if_missing(tmp_path: Path) -> None:
     assert dest_dir.exists()
 
 
+@pytest.mark.parametrize("bad_competition", ["/etc/passwd", "../evil", "../../etc/passwd"])
+def test_download_rejects_traversal_or_absolute_competition(
+    tmp_path: Path, bad_competition: str
+) -> None:
+    dest_dir = tmp_path / "data"
+    api = MagicMock()
+
+    with pytest.raises(ValueError, match="Invalid competition slug"):
+        download(bad_competition, str(dest_dir), api=api)
+
+    api.competition_download_files.assert_not_called()
+
+
+def test_download_accepts_normal_slug(tmp_path: Path) -> None:
+    dest_dir = tmp_path / "data"
+    api = MagicMock()
+    api.competition_download_files.side_effect = _write_zip_side_effect({"train.csv": "x"})
+
+    result = download("house-prices-advanced-regression-techniques", str(dest_dir), api=api)
+
+    assert result == [str(dest_dir / "train.csv")]
+
+
 def test_submit_passes_args_and_returns_none() -> None:
     api = MagicMock()
 
@@ -104,9 +127,10 @@ def test_get_score_selects_latest_by_date_not_list_order() -> None:
     api = MagicMock()
     earlier = _fake_submission("0.70", datetime(2024, 1, 1))
     later = _fake_submission("0.85", datetime(2024, 6, 1))
-    # Later-dated submission first in the list, earlier-dated last — proves
-    # selection is by max(date), not by index/order.
-    api.competition_submissions.return_value = [later, earlier]
+    # Earlier-dated submission first in the list, later-dated last — proves
+    # selection is by max(date), not by index/order (index 0 would be wrong
+    # here, unlike a fixture where the correct answer happens to sit first).
+    api.competition_submissions.return_value = [earlier, later]
 
     result = get_score("titanic", api=api)
 

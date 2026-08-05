@@ -20,8 +20,23 @@ checks the env vars itself first, via `_require_env`, and only imports
 from __future__ import annotations
 
 import os
+import re
 import zipfile
 from typing import Any, Protocol
+
+# Kaggle competition slugs are alphanumeric with internal `-`/`_` (e.g.
+# "titanic", "house-prices-advanced-regression-techniques"). Validating
+# against this shape before any path construction rejects `competition`
+# values like "/etc/passwd" or "../evil" — `os.path.join(dest_dir, ...)`
+# silently discards `dest_dir` entirely when the second argument is
+# absolute, which would otherwise hand an attacker-chosen absolute path to
+# `os.remove()` in `download()`.
+_COMPETITION_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+
+
+def _validate_competition(competition: str) -> None:
+    if not _COMPETITION_SLUG_RE.match(competition):
+        raise ValueError(f"Invalid competition slug: {competition!r}")
 
 
 class KaggleApiProtocol(Protocol):
@@ -64,6 +79,7 @@ def download(competition: str, dest_dir: str, api: KaggleApiProtocol | None = No
     built-in unzip — it writes a single `{dest_dir}/{competition}.zip`, which
     is extracted here and then removed.
     """
+    _validate_competition(competition)
     resolved_api = api or _default_api()
     os.makedirs(dest_dir, exist_ok=True)
     resolved_api.competition_download_files(competition, path=dest_dir, force=True, quiet=True)
@@ -83,6 +99,7 @@ def submit(
     message: str,
     api: KaggleApiProtocol | None = None,
 ) -> None:
+    _validate_competition(competition)
     resolved_api = api or _default_api()
     resolved_api.competition_submit(
         file_name=file_path, message=message, competition=competition, quiet=True
@@ -96,6 +113,7 @@ def get_score(competition: str, api: KaggleApiProtocol | None = None) -> dict[st
     `kaggle` API does not document `competition_submissions` as returning a
     sorted list.
     """
+    _validate_competition(competition)
     resolved_api = api or _default_api()
     submissions = resolved_api.competition_submissions(competition)
     if not submissions:

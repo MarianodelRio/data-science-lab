@@ -105,3 +105,23 @@ the same way `anthropic`/`deepseek`/`groq` already work, or explicitly document 
 behavior in `.env.example` and `docs/configuration.md` so it isn't a silent gap when the process
 env lacks the var (current behavior: the SDK raises its own error, not `ConfigError`).
 Status: open
+
+## OPEN — 2026-08-05 [infra-agent (T-007) → any future task calling kaggle_client.get_score/download]
+Adversarial review of T-007 found two latent, low-probability failure modes in
+`src/tools/kaggle_client.py`, both left unhandled as accepted low-severity gaps (not blocking
+merge):
+1. `get_score`'s `max(submissions, key=lambda s: s.date)` will raise a bare, decontextualized
+   `TypeError` if any submission in the list has `date=None` (verified against installed
+   `kagglesdk`'s `ApiSubmission`: `.date` has no `None`-safe fallback, unlike `.public_score`
+   which is always coerced to `str`). Unconfirmed whether the real Kaggle API ever actually
+   returns `date=None` for a real submission.
+2. `download()` assumes the downloaded archive is always named `{competition}.zip`, but the real
+   filename is server-URL-derived (per `kaggle`'s own `competition_download_files`
+   implementation) and not guaranteed to be `.zip`. A mismatch produces a bare
+   `FileNotFoundError` pointing at an invented path, with the actually-downloaded file silently
+   orphaned in `dest_dir`.
+If a future task hits either of these in practice (e.g. T-018 competition_analyst, T-033
+reviewer+report_writer+kaggle_client node, or T-037 API kaggle+mlflow endpoints), wrap the
+relevant call with a clearer error message naming the competition and the actual failure, rather
+than letting the bare exception propagate.
+Status: open

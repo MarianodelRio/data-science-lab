@@ -203,6 +203,55 @@ def test_query_rejects_non_positive_n_results() -> None:
         store.query("some document", n_results=-5)
 
 
+def test_index_and_query_round_trip_empty_list_valued_fields() -> None:
+    """Regression test: Chroma's metadata schema rejects empty-list values
+    outright (`ValueError: Expected metadata list value for key '...' to be
+    non-empty`), so IndexDocuments with a genuinely empty methods_used/
+    dataset_characteristics (e.g. before an LLM extraction pass has found
+    any) used to crash `.index()`. Empty list-valued fields must now be
+    omitted from Chroma metadata on write and reconstructed back to `[]`
+    on read.
+    """
+    store = RagStore(competition_name="comp-empty-list-fields")
+    doc = _make_doc(
+        "A document about gradient boosting with no methods or dataset tags yet.",
+        methods_used=[],
+        dataset_characteristics=[],
+    )
+
+    store.index([doc])  # must not raise
+
+    results = store.query("gradient boosting")
+    matches = [result for result in results if result.id == doc.id]
+    assert len(matches) == 1
+    assert matches[0].methods_used == []
+    assert matches[0].dataset_characteristics == []
+    assert matches[0].problem_type == doc.problem_type
+
+
+def test_query_in_filter_excludes_doc_with_empty_list_valued_field() -> None:
+    store = RagStore(competition_name="comp-empty-list-filter")
+    doc_with_methods = _make_doc(
+        "Document that lists xgboost as a method.",
+        methods_used=["xgboost"],
+    )
+    doc_without_methods = _make_doc(
+        "Document with no methods listed at all.",
+        methods_used=[],
+    )
+
+    store.index([doc_with_methods, doc_without_methods])
+    results = store.query(
+        "document methods",
+        where={"methods_used": {"$in": ["xgboost"]}},
+        n_results=10,
+    )
+
+    result_ids = {result.id for result in results}
+    assert doc_with_methods.id in result_ids
+    assert doc_without_methods.id not in result_ids
+
+
 class TestSanitizeCollectionName:
     def test_normal_slug(self) -> None:
         result = sanitize_collection_name("titanic")

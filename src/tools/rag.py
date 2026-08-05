@@ -98,19 +98,34 @@ class RagStore:
             )
 
         texts = [doc.text for doc in documents]
-        metadatas = [
-            {
-                "source": doc.source,
-                "problem_type": doc.problem_type,
-                "methods_used": doc.methods_used,
-                "dataset_characteristics": doc.dataset_characteristics,
-                "key_findings": doc.key_findings,
-                "relevance_score": doc.relevance_score,
-            }
-            for doc in documents
-        ]
+        metadatas = [self._flatten_metadata(doc) for doc in documents]
 
         self._collection.upsert(ids=ids, documents=texts, metadatas=metadatas)  # type: ignore[arg-type]
+
+    @staticmethod
+    def _flatten_metadata(doc: IndexDocument) -> dict[str, Any]:
+        """Flatten an `IndexDocument`'s fields into a Chroma metadata dict.
+
+        List-valued fields (`problem_type`, `methods_used`,
+        `dataset_characteristics`) are omitted entirely when empty: Chroma's
+        metadata schema rejects empty-list values outright (`ValueError:
+        Expected metadata list value for key '...' to be non-empty`), and a
+        document with no known values for a field is semantically the same
+        as that field being absent — it should never match any `$in`/
+        `$contains` filter on that field either way. `.query()`'s
+        reconstruction already reads these back via `metadata.get(field,
+        [])`, so a missing key round-trips to `[]` correctly.
+        """
+        metadata: dict[str, Any] = {
+            "source": doc.source,
+            "key_findings": doc.key_findings,
+            "relevance_score": doc.relevance_score,
+        }
+        for field_name in ("problem_type", "methods_used", "dataset_characteristics"):
+            value = getattr(doc, field_name)
+            if value:
+                metadata[field_name] = value
+        return metadata
 
     def query(
         self,

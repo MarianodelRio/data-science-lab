@@ -141,12 +141,78 @@ def test_ragstore_with_no_host_port_uses_ephemeral_client() -> None:
     assert any(result.id == doc.id for result in results)
 
 
+def test_query_combines_in_filter_and_literal_or_with_and_not_overwrite() -> None:
+    """Regression test for a review-found BLOCKER: translate_where used to
+    let a literal `$or` key silently overwrite the `$or` clauses generated
+    from an `$in` translation, so a `problem_type` filter was dropped
+    entirely and only the literal `$or` condition was applied — returning
+    too-permissive, wrong results with no error. Both conditions must now
+    be enforced (ANDed together), end-to-end against a real query().
+    """
+    store = RagStore(competition_name="comp-combined-filter")
+    matches_both = _make_doc(
+        "Binary classification document from source B.",
+        source="src-B",
+        problem_type=["binary_classification"],
+    )
+    matches_source_only = _make_doc(
+        "Multiclass document from source B.",
+        source="src-B",
+        problem_type=["multiclass_classification"],
+    )
+    matches_problem_type_only = _make_doc(
+        "Binary classification document from source A.",
+        source="src-A",
+        problem_type=["binary_classification"],
+    )
+
+    store.index([matches_both, matches_source_only, matches_problem_type_only])
+    results = store.query(
+        "classification document",
+        where={
+            "problem_type": {"$in": ["binary_classification"]},
+            "$or": [{"source": "src-B"}, {"source": "src-C"}],
+        },
+        n_results=10,
+    )
+
+    result_ids = {result.id for result in results}
+    assert result_ids == {matches_both.id}
+
+
+def test_index_raises_on_duplicate_id_and_writes_nothing() -> None:
+    store = RagStore(competition_name="comp-duplicate-id")
+    doc_a = _make_doc("First document with a shared id.")
+    doc_b = _make_doc("Second document with the same shared id.")
+    object.__setattr__(doc_b, "id", doc_a.id)
+
+    with pytest.raises(ValueError, match="Duplicate IndexDocument id"):
+        store.index([doc_a, doc_b])
+
+    assert store.query("shared id") == []
+
+
+def test_query_rejects_non_positive_n_results() -> None:
+    store = RagStore(competition_name="comp-bad-n-results")
+    store.index([_make_doc("Some document.")])
+
+    with pytest.raises(ValueError, match="n_results must be positive"):
+        store.query("some document", n_results=0)
+
+    with pytest.raises(ValueError, match="n_results must be positive"):
+        store.query("some document", n_results=-5)
+
+
 class TestSanitizeCollectionName:
     def test_normal_slug(self) -> None:
-        assert sanitize_collection_name("titanic") == "rag_titanic"
+        result = sanitize_collection_name("titanic")
+        assert result.startswith("rag_titanic_")
+        # deterministic: same input always sanitizes to the same name.
+        assert result == sanitize_collection_name("titanic")
 
     def test_slug_with_hyphens(self) -> None:
-        assert sanitize_collection_name("house-prices-advanced") == "rag_house-prices-advanced"
+        result = sanitize_collection_name("house-prices-advanced")
+        assert result.startswith("rag_house-prices-advanced_")
 
     def test_slug_requiring_char_replacement(self) -> None:
         result = sanitize_collection_name("Some Comp!!")
@@ -158,6 +224,22 @@ class TestSanitizeCollectionName:
     def test_empty_string_raises(self) -> None:
         with pytest.raises(ValueError, match="Invalid competition_name"):
             sanitize_collection_name("")
+
+    def test_distinct_names_that_sanitize_to_the_same_readable_part_do_not_collide(self) -> None:
+        """Regression test for a review-found BLOCKER: lossy character
+        replacement made "foo bar" (space) and "foo_bar" (literal
+        underscore) sanitize to the same collection name, and "comp!" and
+        "comp" also collided after trailing-char stripping — silently
+        merging two different competitions' RAG collections into one
+        (a cross-tenant data leak). Collection names must now be a
+        deterministic, effectively-injective function of the raw input.
+        """
+        assert sanitize_collection_name("foo bar") != sanitize_collection_name("foo_bar")
+        assert sanitize_collection_name("comp!") != sanitize_collection_name("comp")
+
+    def test_collection_name_within_chroma_length_bounds(self) -> None:
+        name = sanitize_collection_name("a" * 200)
+        assert 3 <= len(name) <= 63
 
 
 class TestTranslateWhere:
@@ -195,3 +277,30 @@ class TestTranslateWhere:
                 {"$or": [{"problem_type": {"$contains": "a"}}]},
             ]
         }
+
+    def test_in_value_not_a_list_raises_value_error(self) -> None:
+        with pytest.raises(ValueError, match=r"\$in value must be a list"):
+            translate_where({"problem_type": {"$in": "not_a_list"}})
+
+    def test_in_value_empty_list_raises_clear_value_error(self) -> None:
+        with pytest.raises(ValueError, match=r"\$in value must not be empty"):
+            translate_where({"problem_type": {"$in": []}})
+
+    def test_literal_or_combined_with_in_filter_does_not_overwrite(self) -> None:
+        """Regression test for the BLOCKER: a literal `$or` key used to
+        silently overwrite the `$or` clauses generated from translating an
+        `$in` field, dropping that filter entirely. Both must now survive,
+        combined via `$and`.
+        """
+        result = translate_where(
+            {
+                "problem_type": {"$in": ["binary_classification"]},
+                "$or": [{"source": "src-B"}, {"source": "src-C"}],
+            }
+        )
+
+        assert result is not None
+        assert "$and" in result
+        clauses = result["$and"]
+        assert {"$or": [{"problem_type": {"$contains": "binary_classification"}}]} in clauses
+        assert {"$or": [{"source": "src-B"}, {"source": "src-C"}]} in clauses

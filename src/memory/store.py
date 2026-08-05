@@ -8,6 +8,7 @@ and how to shape/translate metadata filters.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import uuid
 from dataclasses import dataclass, field
@@ -21,8 +22,9 @@ _EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 LIST_VALUED_METADATA_FIELDS = frozenset({"problem_type", "methods_used", "dataset_characteristics"})
 
 _MAX_COLLECTION_NAME_LEN = 63
-_MIN_COLLECTION_NAME_LEN = 3
 _COLLECTION_NAME_PREFIX = "rag_"
+_READABLE_PART_MAX_LEN = 30
+_HASH_DIGEST_LEN = 16
 _INVALID_CHARS_RE = re.compile(r"[^a-zA-Z0-9_-]")
 _TRAILING_NON_ALNUM_RE = re.compile(r"[_-]+$")
 
@@ -45,25 +47,28 @@ class IndexDocument:
 
 
 def sanitize_collection_name(competition_name: str) -> str:
-    """Build a Chroma-safe collection name from `competition_name`.
+    """Build a Chroma-safe, collision-proof collection name from
+    `competition_name`.
 
-    `f"rag_{competition_name}"`, with any character outside
-    `[a-zA-Z0-9_-]` replaced by `_`, trailing `_`/`-` runs stripped, and the
-    result clamped to 63 characters (truncating the competition-name portion,
-    never the `rag_` prefix). Raises `ValueError` if the sanitized name would
-    be shorter than 3 characters.
+    The name is `rag_{readable}_{digest}`: `digest` is a 16-hex-char prefix
+    of `sha256(competition_name)` — a deterministic, effectively-injective
+    function of the raw input, so two distinct `competition_name` values can
+    never collide on collection name. `readable` is a best-effort, purely
+    cosmetic slug (invalid chars replaced by `_`, trailing `_`/`-` stripped,
+    clamped to 30 chars, falling back to `"x"` if it sanitizes to nothing) —
+    it exists only for human debuggability in the Chroma admin UI/CLI and
+    plays no role in uniqueness. Raises `ValueError` if `competition_name` is
+    empty.
     """
-    sanitized_suffix = _INVALID_CHARS_RE.sub("_", competition_name)
-    max_suffix_len = _MAX_COLLECTION_NAME_LEN - len(_COLLECTION_NAME_PREFIX)
-    sanitized_suffix = sanitized_suffix[:max_suffix_len]
-    sanitized_suffix = _TRAILING_NON_ALNUM_RE.sub("", sanitized_suffix)
-
-    # The "rag_" prefix alone is already _MIN_COLLECTION_NAME_LEN long, so the
-    # only way the final name can be too short is an empty sanitized suffix.
-    if not sanitized_suffix:
+    if not competition_name:
         raise ValueError(f"Invalid competition_name: {competition_name!r}")
 
-    return f"{_COLLECTION_NAME_PREFIX}{sanitized_suffix}"
+    digest = hashlib.sha256(competition_name.encode("utf-8")).hexdigest()[:_HASH_DIGEST_LEN]
+
+    readable = _INVALID_CHARS_RE.sub("_", competition_name)[:_READABLE_PART_MAX_LEN]
+    readable = _TRAILING_NON_ALNUM_RE.sub("", readable) or "x"
+
+    return f"{_COLLECTION_NAME_PREFIX}{readable}_{digest}"
 
 
 def build_client(host: str | None, port: int | None) -> chromadb.ClientAPI:
@@ -91,25 +96,42 @@ def translate_where(where: dict[str, Any] | None) -> dict[str, Any] | None:
     does not match list-valued metadata directly (only `$contains`, a
     membership check, does). Recurses into `$and`/`$or` clause lists.
     Everything else (including `None`) passes through unchanged.
+
+    Every top-level key of the input `where` becomes its own single-key
+    clause, and all clauses (translated `$in` clauses and everything else)
+    are combined under one `$and` when there is more than one — never
+    merged into a single multi-key dict and never allowed to silently
+    overwrite one another (in particular, a literal `$or`/`$and` key in the
+    input can never clobber an `$in`-derived `$or` clause, or vice versa,
+    even when both are present in the same `where`).
     """
     if where is None:
         return None
 
-    translated: dict[str, Any] = {}
+    clauses: list[dict[str, Any]] = []
     for key, value in where.items():
         if key in ("$and", "$or") and isinstance(value, list):
-            translated[key] = [
+            translated_list = [
                 translated_clause
                 for clause in value
                 if (translated_clause := translate_where(clause)) is not None
             ]
+            clauses.append({key: translated_list})
             continue
 
         if key in LIST_VALUED_METADATA_FIELDS and isinstance(value, dict) and "$in" in value:
-            translated.setdefault("$or", [])
-            translated["$or"].extend({key: {"$contains": member}} for member in value["$in"])
+            in_values = value["$in"]
+            if not isinstance(in_values, list):
+                raise ValueError(f"$in value must be a list, got {in_values!r} for field {key!r}")
+            if not in_values:
+                raise ValueError(f"$in value must not be empty for field {key!r}")
+            clauses.append({"$or": [{key: {"$contains": member}} for member in in_values]})
             continue
 
-        translated[key] = value
+        clauses.append({key: value})
 
-    return translated
+    if not clauses:
+        return {}
+    if len(clauses) == 1:
+        return clauses[0]
+    return {"$and": clauses}

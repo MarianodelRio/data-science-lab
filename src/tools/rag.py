@@ -10,6 +10,7 @@ objects itself and passes them to RagStore.index().
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any
 
 import chromadb
@@ -79,11 +80,23 @@ class RagStore:
         """Embed `documents` locally and upsert into this competition's
         collection. No-op on an empty list (Chroma's `.add()` errors on
         empty batches).
+
+        Raises `ValueError` naming the offending id(s) if `documents`
+        contains duplicate `.id` values — Chroma's own
+        `DuplicateIDError` for this would otherwise abort the whole batch
+        (including the non-duplicate docs) with an opaque error.
         """
         if not documents:
             return
 
         ids = [doc.id for doc in documents]
+        id_counts = Counter(ids)
+        duplicate_ids = sorted(doc_id for doc_id, count in id_counts.items() if count > 1)
+        if duplicate_ids:
+            raise ValueError(
+                f"Duplicate IndexDocument id(s) in a single index() call: {duplicate_ids!r}"
+            )
+
         texts = [doc.text for doc in documents]
         metadatas = [
             {
@@ -108,7 +121,13 @@ class RagStore:
         """Dense-similarity query, embedded locally, with an optional
         metadata filter (translated via `translate_where`). Returns `[]` if
         the collection is empty or nothing matches.
+
+        Raises `ValueError` if `n_results` is not positive (Chroma itself
+        raises an opaque `TypeError` for this).
         """
+        if n_results <= 0:
+            raise ValueError(f"n_results must be positive, got {n_results}")
+
         results = self._collection.query(
             query_texts=[text],
             n_results=n_results,

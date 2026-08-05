@@ -402,3 +402,24 @@ Affects: src/memory/store.py (translate_where, LIST_VALUED_METADATA_FIELDS),
 src/tools/rag.py (RagStore.query).
 Discarded: storing problem_type etc. as a single scalar "primary" value — would silently
 drop information for multi-label documents and contradicts the list[str] schema.
+
+## 2026-08-05 — T-008 [infra-agent] (correction, review round 1)
+Decided: `sanitize_collection_name` (`src/memory/store.py`) is corrected from pure
+lossy-character-sanitization to `rag_{readable}_{digest}`, where `digest` is a 16-hex-char
+`sha256(competition_name)` prefix and is the sole source of uniqueness; `readable` is now
+purely a cosmetic debug aid with no uniqueness guarantee.
+Why: code review (independently reproduced against a live `chromadb.EphemeralClient()`) found
+the original char-replace-then-strip scheme collided on distinct inputs — `"foo bar"` vs.
+`"foo_bar"` (space vs. literal `_`) and `"comp!"` vs. `"comp"` (trailing-char stripping after
+replacement) both sanitized to the identical collection name. Two different competitions could
+therefore silently share one Chroma collection, making one competition's indexed RAG documents
+retrievable by another — a real cross-tenant data leak, not a cosmetic naming edge case. This
+supersedes the original "collision-free via character clamping" assumption implicit in the
+first-pass `sanitize_collection_name` (not separately logged as a decision at the time).
+Affects: src/memory/store.py (sanitize_collection_name); every existing/future
+`RagStore(competition_name=...)` caller — collection names change shape but the public
+`RagStore`/`IndexDocument` API is unaffected.
+Discarded: tightening the character-replacement/stripping rules further to try to make
+sanitization itself injective — rejected because any purely lossy text transform is
+fundamentally not guaranteed collision-free against arbitrary input; hashing the raw input is
+the only approach that actually guarantees it.

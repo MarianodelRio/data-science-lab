@@ -3,7 +3,7 @@ id: T-006
 phase: 1
 agent: infra-agent
 depends_on: [T-001]
-status: pr-open
+status: done
 folders: ["src/tools/"]
 outputs: [code_executor.execute(code, cwd, timeout) -> ExecResult]
 size: S

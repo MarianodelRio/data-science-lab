@@ -3,11 +3,11 @@ id: T-004
 phase: 0
 agent: infra-agent
 depends_on: [T-003]
-status: available
+status: in-progress
 folders: ["src/llm/"]
 outputs: [LLMFactory.get(role), provider wrappers for anthropic/deepseek/groq/gemini/openai]
 size: M
-branch: ~
+branch: feature/T-004-llm-factory
 pr: ~
 ---
 

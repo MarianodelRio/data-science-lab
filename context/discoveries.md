@@ -87,3 +87,21 @@ T-045 created README.md with a "## What is this" + "## Documentation" (doc links
 Status: resolved in T-045 — merged during rebase: README.md now keeps T-001's project
 description, Prerequisites, Setup, Development commands, and Docker/CI sections, plus a
 new "Documentation" section (added right after "Architecture") linking to all four docs.
+
+## OPEN — 2026-08-05 [infra-agent (T-004) → future task touching src/llm/ or config/settings.yaml]
+`ApiKeysConfig` (`src/config/settings.py`) only has fields for `anthropic`, `deepseek`, `groq`,
+`kaggle_username`, `kaggle_key` — there is no `openai` or `gemini` field, because
+`config/settings.yaml`'s `api_keys` section only lists keys for providers the current
+`models.{role}` assignments actually use. `LLMFactory`'s `openai` and `gemini` provider wrappers
+(`src/llm/factory.py`) are implemented and dispatchable (any role's `provider` can be set to
+`openai`/`gemini` in `config/settings.yaml`), but they construct `ChatOpenAI`/
+`ChatGoogleGenerativeAI` with no `api_key` kwarg at all — they rely entirely on the SDKs' own env
+fallback (`OPENAI_API_KEY` / `GOOGLE_API_KEY` read directly from the process environment, bypassing
+`Settings`/`${ENV_VAR}` resolution and its "missing var raises `ConfigError` naming the file"
+guarantee). This is intentional for T-004 (matches the task's approved design), not a bug — but if
+a future task actually routes a role to `openai` or `gemini` in `config/settings.yaml`, either add
+`openai`/`gemini` fields to `ApiKeysConfig` and thread them through `_build_openai`/`_build_gemini`
+the same way `anthropic`/`deepseek`/`groq` already work, or explicitly document the env-fallback
+behavior in `.env.example` and `docs/configuration.md` so it isn't a silent gap when the process
+env lacks the var (current behavior: the SDK raises its own error, not `ConfigError`).
+Status: open

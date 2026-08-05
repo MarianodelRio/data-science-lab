@@ -13,6 +13,7 @@ dependencies = [
     "langchain-openai",
     "langchain-anthropic",
     "langchain-groq",
+    "langchain-google-genai",
     "chromadb",
     "sentence-transformers",
     "optuna",

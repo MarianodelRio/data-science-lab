@@ -96,6 +96,41 @@ an explicit reducer. See `context/discoveries.md`.
   passes `None`/omits it; callers that pass an explicit value never trigger a `Settings.load()`
   call.
 
+### kaggle_client
+
+`src/tools/kaggle_client.py` — thin wrapper around the `kaggle` package for downloading
+competition data, submitting predictions, and reading back the latest score.
+
+- `download(competition, dest_dir, api=None) -> list[str]` — downloads the competition's data
+  via `competition_download_files(competition, path=dest_dir, force=True, quiet=True)`, extracts
+  the resulting `{dest_dir}/{competition}.zip` (this installed `kaggle` version has no built-in
+  unzip), removes the archive, and returns the extracted files as `dest_dir`-joined paths.
+  Creates `dest_dir` if it doesn't exist.
+- `submit(competition, file_path, message, api=None) -> None` — calls
+  `competition_submit(file_name=file_path, message=message, competition=competition,
+  quiet=True)`.
+- `get_score(competition, api=None) -> dict` — calls `competition_submissions(competition)` and
+  returns `{"public_score": float, "submitted_at": str}` for the **latest** submission, selected
+  via `max(submissions, key=lambda s: s.date)` — list order is not documented as sorted, so index
+  0 is not assumed to be latest. Raises `RuntimeError` naming the competition if there are no
+  submissions.
+- **Injectable API:** every function takes an optional `api: KaggleApiProtocol | None`; when
+  omitted, `_default_api()` builds a real `kaggle.api.kaggle_api_extended.KaggleApi` and
+  authenticates it. Tests inject a mock and never hit the network.
+- **Credentials:** `_default_api()` reads `KAGGLE_USERNAME`/`KAGGLE_KEY` directly from
+  `os.environ` (not `Settings`/`ApiKeysConfig`) and raises `RuntimeError(f"Missing required
+  environment variable '{name}'")` if either is unset — checked at call time, not at
+  module-import time.
+- **Why `kaggle` is imported lazily, inside `_default_api()`, after the env check:** the
+  `kaggle` package authenticates eagerly on import — `kaggle/__init__.py` constructs a
+  `KaggleApi` and calls `authenticate()` at module scope, and because Python always initializes
+  a parent package first, even `from kaggle.api.kaggle_api_extended import KaggleApi` triggers
+  it. `authenticate()` reads the same env vars, falls back to `~/.kaggle/kaggle.json`, and raises
+  `OSError` if neither is present. A module-scope `import kaggle` would therefore crash on import
+  in any credential-less environment (e.g. CI) with `kaggle`'s own `OSError`, preempting this
+  module's `RuntimeError`. Deferring the import until after `_require_env` has already passed
+  avoids that.
+
 ### workspace_manager
 
 `src/workspace/workspace_manager.py` — `WorkspaceManager` is the sole file-I/O point to the

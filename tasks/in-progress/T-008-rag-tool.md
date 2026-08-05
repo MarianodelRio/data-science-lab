@@ -3,11 +3,11 @@ id: T-008
 phase: 1
 agent: infra-agent
 depends_on: [T-001]
-status: available
+status: in-progress
 folders: ["src/tools/", "src/memory/"]
 outputs: [RagStore.index, .query with metadata filter, local embeddings, structured extraction schema]
 size: M
-branch: ~
+branch: feature/T-008-rag-tool
 pr: ~
 ---
 

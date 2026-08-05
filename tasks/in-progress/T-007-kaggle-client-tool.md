@@ -3,11 +3,11 @@ id: T-007
 phase: 1
 agent: infra-agent
 depends_on: [T-001]
-status: available
+status: in-progress
 folders: ["src/tools/"]
 outputs: [kaggle_client.download, .submit, .get_score]
 size: S
-branch: ~
+branch: feature/T-007-kaggle-client-tool
 pr: ~
 ---
 

@@ -1,0 +1,13 @@
+# Mirrors design.md's § The seven phases → Phase 7 — Delivery.
+name: delivery
+nodes:
+  - reviewer
+  - report_writer
+  - kaggle_client
+sequence:
+  - reviewer
+  - report_writer
+  - kaggle_client
+parallel_nodes: []
+critic: null
+interrupt_after: false

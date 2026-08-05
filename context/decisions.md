@@ -296,3 +296,29 @@ frozen dataclass from outside. Tuples close both gaps.
 Affects: src/config/schema.py, src/config/loaders.py, tests/unit/config/test_loaders.py.
 Discarded: leaving list fields as originally specced and documenting "don't mutate" as a
 convention — unenforceable, and defeats the purpose of `frozen=True` in the first place.
+
+## 2026-08-05 — T-006 [infra-agent]
+Decided: `code_executor.execute()` builds the child subprocess environment from an explicit
+allow-list (`PATH`, `HOME`, `LANG`, `LC_ALL`, `VIRTUAL_ENV`, `PYTHONPATH`) via `_build_child_env()`,
+rather than inheriting the orchestrator's full `os.environ`.
+Why: adversarial security review found that inheriting `os.environ` wholesale would leak
+`ANTHROPIC_API_KEY`/`DEEPSEEK_API_KEY`/`GROQ_API_KEY`/Kaggle credentials into any subprocess
+running LLM-generated code, and since `ExecResult.stdout`/`stderr` get persisted to
+`runs/{run_id}/execution.jsonl` (design.md § Observability) and feed the RAG store, an accidental
+or prompt-injected `os.environ` dump would become a durable secret leak.
+Affects: src/tools/code_executor.py.
+Discarded: inheriting `os.environ` and relying on generated code never printing it — not
+enforceable against LLM-generated/prompt-injected code, which is the actual threat model here.
+
+## 2026-08-05 — T-006 [infra-agent]
+Decided: the post-`killpg` `communicate()` call is bounded by its own short timeout
+(`_POST_KILL_GRACE_SECONDS = 5`); on a second `TimeoutExpired` the pipes are closed directly and
+best-effort partial output is returned instead of blocking further.
+Why: adversarial review found that if executed code spawns its own `start_new_session=True`
+grandchild process, that grandchild survives `os.killpg` (different process group) but still holds
+the stdout/stderr pipe fds open, so an un-timed second `communicate()` would block forever waiting
+for all writers to close — silently hanging the whole pipeline despite a configured timeout.
+Affects: src/tools/code_executor.py.
+Discarded: relying on `killpg` alone to guarantee pipe closure — verified false for any
+LLM-generated code that itself spawns a detached subprocess, which is realistic given this tool
+runs arbitrary ML training code.

@@ -11,6 +11,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from src.config.schema import PhaseConfig
+from src.graph.errors import GraphBuilderError
 from src.state import LabState
 
 ResolveNode = Callable[[str], Callable[[LabState], dict]]
@@ -52,6 +53,22 @@ def build_phase_subgraph(config: PhaseConfig, resolve_node: ResolveNode) -> Comp
     if parallel_set:
         run_indices = [i for i, node_name in enumerate(sequence) if node_name in parallel_set]
         start, end = run_indices[0], run_indices[-1]
+        # `parallel_nodes` must form one contiguous block within `sequence` —
+        # every index between the first and last match has to actually be a
+        # member of `parallel_nodes`. Otherwise a node in that span that was
+        # NOT listed in `parallel_nodes` (e.g. sequence=[A,B,C,D,E],
+        # parallel_nodes=[B,D]) would silently get mis-wired into the
+        # parallel fan-out/fan-in as if it were part of the parallel run.
+        non_members_in_span = [
+            node_name for node_name in sequence[start : end + 1] if node_name not in parallel_set
+        ]
+        if non_members_in_span:
+            raise GraphBuilderError(
+                f"Phase '{config.name}': parallel_nodes {sorted(parallel_set)} must form a "
+                f"contiguous block within sequence, but {non_members_in_span} fall inside the "
+                f"span of {sequence[start]}..{sequence[end]} without being members of "
+                f"parallel_nodes."
+            )
         before = sequence[start - 1] if start > 0 else START
         after = sequence[end + 1] if end + 1 < len(sequence) else END
         for node_name in sequence[start : end + 1]:

@@ -17,6 +17,7 @@ from src.config.loaders import load_phase_config
 from src.config.schema import PhaseConfig
 from src.graph import node_resolver
 from src.graph.checkpointer import build_checkpointer
+from src.graph.errors import GraphBuilderError
 from src.graph.phases import PHASE_ORDER
 from src.graph.phases.generic import ResolveNode
 from src.graph.supervisor import supervisor
@@ -89,6 +90,23 @@ class GraphBuilder:
             {"phase4_design": "phase4_design", "phase7_delivery": "phase7_delivery"},
         )
 
+        for stem in PHASE_ORDER:
+            value = configs[stem].interrupt_after
+            # `PhaseConfig.interrupt_after: bool` is a dataclass type hint,
+            # not runtime-enforced by the YAML loader (owned by
+            # src/config/, outside this task's scope). A quoted YAML boolean
+            # (`interrupt_after: "false"`) would load as the Python string
+            # "false", and `bool("false")` is `True` — a truthy check alone
+            # would silently give a phase an unwanted human checkpoint.
+            # `isinstance(value, bool)` (not just `type(value) is bool`) is
+            # correct here: `bool` has no subclasses in practice, and this
+            # check exists to catch non-bool values (str, int, None), not to
+            # exclude a bool subclass.
+            if not isinstance(value, bool):
+                raise GraphBuilderError(
+                    f"Phase '{stem}': interrupt_after must be a bool, got "
+                    f"{value!r} ({type(value).__name__})"
+                )
         interrupt_after = [stem for stem in PHASE_ORDER if configs[stem].interrupt_after]
         checkpointer = build_checkpointer(run_id, runs_dir)
 

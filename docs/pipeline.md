@@ -81,15 +81,28 @@ that module** (not merely imported into it), with:
 - `__call__(self, state: LabState) -> dict` — a partial `LabState` update, following LangGraph's
   node-return convention
 
+**`name` must be a plain class attribute** (`name = "..."` at class body level), **not a Pydantic
+model field.** A node class written as a Pydantic v2 `BaseModel` subclass with `name: str = "..."`
+declared as a typed field does NOT satisfy `_find_node_class`'s lookup: Pydantic v2 doesn't expose
+field defaults via plain `getattr` on the class itself (only on instances, after
+validation/`__init__`), so `getattr(cls, "name", None)` sees nothing and the class won't match.
+This already fails loudly — `_find_node_class` raises `GraphBuilderError` for zero matches, it does
+not silently no-op — but the error message alone doesn't explain *why* a seemingly-correct
+Pydantic-style node class doesn't resolve, hence this explicit call-out.
+
 `src/graph/node_resolver.py`'s `resolve_node(name)` is how every node name in a phase YAML
 becomes an actual callable: it tries `src.nodes.llm.{name}` then `src.nodes.compute.{name}`, finds
 the matching class via `_find_node_class`, and instantiates it. If neither module exists yet
-(`ModuleNotFoundError`), it falls back to `NoOpNode(name)` (`src/graph/nodes_noop.py`) — a
-placeholder that never raises and never mutates `LabState` beyond an empty return. This is what
-lets `GraphBuilder.build()` compile a full 7-phase graph today, before any node task has landed a
-single real node. If a module *does* exist but exposes zero or more than one matching class, that's
-a real bug in a landed node — `resolve_node` raises `GraphBuilderError` (`src/graph/errors.py`)
-rather than silently no-opping.
+(`ModuleNotFoundError` raised while importing the `src.nodes.{kind}.{name}` module path itself), it
+falls back to `NoOpNode(name)` (`src/graph/nodes_noop.py`) — a placeholder that never raises and
+never mutates `LabState` beyond an empty return. This is what lets `GraphBuilder.build()` compile a
+full 7-phase graph today, before any node task has landed a single real node. Two other cases raise
+`GraphBuilderError` (`src/graph/errors.py`) instead of silently no-opping, because both indicate a
+real bug in a landed module rather than "not implemented yet":
+- the module exists but one of *its own* transitive imports is missing (a `ModuleNotFoundError`
+  whose `.name` does not match the `src.nodes.{kind}.{name}` path being resolved — i.e. some other,
+  nested import inside the node module failed)
+- the module exists and imports cleanly but exposes zero or more than one matching class
 
 ### Phase subgraph assembly
 
@@ -174,11 +187,33 @@ Resuming after a crash/restart: build a new `GraphBuilder` pointed at the same `
 and `graph.invoke(None, config={"configurable": {"thread_id": run_id}})` — LangGraph's checkpoint
 mechanism skips already-completed nodes and continues from the next one.
 
+**Actual resume granularity is finer than the 7 top-level phase nodes.** It's tempting to assume
+checkpointing only happens at phase-node boundaries (there are only 7 nodes in the top-level
+graph GraphBuilder itself wires), but LangChain-core's ambient `RunnableConfig` context-var
+propagation causes the *same* top-level `SqliteSaver` to also checkpoint individual sub-nodes
+**inside** each phase subgraph — resume after a crash mid-phase does not re-execute sub-nodes of
+that phase already completed before the crash. This has been verified against this task's actual
+code: no re-execution of already-completed sub-nodes on resume, no cross-iteration state leakage
+on the phase6→phase4 loop-back. It is correct, safe behavior, but it is an emergent property of
+LangChain/LangGraph's internals (context-var propagation into nested subgraph invocations), **not**
+an explicit design choice made by `generic.py`/`builder.py`'s own code — neither module configures
+or relies on sub-node checkpointing directly. A future LangChain/LangGraph version bump that
+changes this internal propagation behavior is a risk worth being aware of; it would not show up as
+a diff in this repo.
+
+One more operational note: `checkpoint.db` accumulates one row per sub-node execution over a run's
+lifetime, with no pruning/vacuum logic anywhere in this task's code. Not a bug — just worth
+flagging for whoever eventually needs to manage `runs/` directory growth over long-running or
+many-iteration runs.
+
 ### Interrupt placement
 
 Interrupts fire *after* a whole phase subgraph completes (not after individual nodes inside it) —
 `interrupt_after` names top-level phase-stem nodes (`phase1_understanding`, `phase4_design`,
-`phase6_evaluation`), never nodes inside a phase's `sequence`.
+`phase6_evaluation`), never nodes inside a phase's `sequence`. This is a separate concern from the
+checkpointing-granularity note above: `interrupt_after` controls where the graph *pauses for a
+human*, which stays fixed at the 7 phase-node boundaries by this task's own explicit config; it
+does not change how finely completed work gets persisted for resume.
 
 ## The 7 phases
 

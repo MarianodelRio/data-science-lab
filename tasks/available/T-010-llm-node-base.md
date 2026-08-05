@@ -3,7 +3,7 @@ id: T-010
 phase: 1
 agent: pipeline-agent
 depends_on: [T-002, T-004, T-005]
-status: blocked
+status: available
 folders: ["src/nodes/"]
 outputs: [LLMNode base class, context trimming, standard node lifecycle]
 size: M

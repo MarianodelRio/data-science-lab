@@ -277,6 +277,28 @@ competition data, submitting predictions, and reading back the latest score.
   module's `RuntimeError`. Deferring the import until after `_require_env` has already passed
   avoids that.
 
+### rag
+
+`src/tools/rag.py` (`RagStore`) + `src/memory/store.py` (Chroma wrapper + `IndexDocument`
+schema) — one Chroma collection per competition (`rag_{sanitized(competition_name)}`),
+local embeddings via `sentence-transformers` (`all-MiniLM-L6-v2`), no external API/LLM calls
+in this module.
+
+- `RagStore(competition_name, chroma_host=None, chroma_port=None)` — both host/port given
+  -> `chromadb.HttpClient` (the Docker `chroma` service, `config/settings.yaml`
+  `workspace.chroma_host`/`chroma_port`); omitted -> `chromadb.EphemeralClient()` (in-memory,
+  used by tests, no Docker dependency).
+- `.index(documents: list[IndexDocument]) -> None` / `.query(text, where=None, n_results=10)
+  -> list[IndexDocument]`.
+- `IndexDocument` (`src/memory/store.py`) is the structured-extraction contract populated by
+  research nodes (T-017 `literature_researcher` etc.) before calling `.index()` — this module
+  never extracts metadata itself, it only stores/embeds/retrieves what it's given.
+- `where={"problem_type": {"$in": [...]}}` (and same for `methods_used`,
+  `dataset_characteristics`) is translated internally into a Chroma `$or`-of-`$contains`
+  clause, because these fields are stored as Chroma list-valued metadata and Chroma's `$in`
+  does not match list-valued metadata directly. Scalar-field `where` clauses (`source`,
+  `relevance_score`) pass through unchanged.
+
 ### workspace_manager
 
 `src/workspace/workspace_manager.py` — `WorkspaceManager` is the sole file-I/O point to the

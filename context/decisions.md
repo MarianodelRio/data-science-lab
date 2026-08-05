@@ -369,3 +369,36 @@ Discarded: adding `critic_verdict`/`retry_count`/`selected_specialist` fields to
 support graph-level conditional edges for retry/dispatch — would be the more "idiomatic" LangGraph
 pattern, but requires modifying a protected contract (`src/state.py`) without approval; deferred
 to whichever future task actually needs cross-node visibility into that state.
+
+## 2026-08-05 — T-008 [infra-agent]
+Decided: `IndexDocument` (`src/memory/store.py`) is the frozen dataclass contract for
+everything indexed into the RAG store: id: str (default uuid4), text: str, source: str,
+problem_type: list[str], methods_used: list[str], dataset_characteristics: list[str],
+key_findings: str, relevance_score: float.
+`RagStore` (src/tools/rag.py) never extracts these fields itself — no LLM import anywhere in
+src/tools/rag.py or src/memory/store.py. Callers (T-017 literature_researcher and other
+research/memory nodes) construct IndexDocument objects via their own LLM extraction step and
+pass them to RagStore.index(); RagStore is pure storage/embedding/retrieval.
+Why: design.md classifies `rag` as a Tool (not one of the 21 LLM nodes) and CLAUDE.md
+invariant #8 forbids compute/tool modules from importing an LLM module.
+Affects: src/memory/store.py, src/tools/rag.py, and every future node constructing
+IndexDocument (T-017, T-018, T-019, T-021, T-032 per T-008's task file).
+Discarded: extracting metadata inside RagStore.index() (design.md's "Indexing pipeline" step
+2 reads as if extraction happens as part of indexing) — rejected since it would make
+src/tools/rag.py an LLM-calling module, violating invariant #8.
+
+## 2026-08-05 — T-008 [infra-agent]
+Decided: `RagStore.query(where=...)` accepts design.md's literal
+`{"problem_type": {"$in": [...]}}` shape (also for `methods_used`,
+`dataset_characteristics`) and translates it internally into Chroma's `$or`-of-`$contains`
+before calling the collection — Chroma (chromadb==1.5.9) does not match `$in` against
+list-valued metadata directly (verified empirically), only against scalar metadata fields.
+Why: problem_type/methods_used/dataset_characteristics are list[str] per the IndexDocument
+schema (a document can belong to multiple problem types), but design.md's own retrieval
+example and this task's done-when checklist both hard-code the `$in` call shape —
+translating at the RagStore boundary satisfies both without weakening the schema to
+single-valued scalars.
+Affects: src/memory/store.py (translate_where, LIST_VALUED_METADATA_FIELDS),
+src/tools/rag.py (RagStore.query).
+Discarded: storing problem_type etc. as a single scalar "primary" value — would silently
+drop information for multi-label documents and contradicts the list[str] schema.

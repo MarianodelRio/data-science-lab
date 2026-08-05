@@ -3,11 +3,11 @@ id: T-006
 phase: 1
 agent: infra-agent
 depends_on: [T-001]
-status: available
+status: in-progress
 folders: ["src/tools/"]
 outputs: [code_executor.execute(code, cwd, timeout) -> ExecResult]
 size: S
-branch: ~
+branch: feature/T-006-code-executor-tool
 pr: ~
 ---
 

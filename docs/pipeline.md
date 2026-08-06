@@ -363,8 +363,81 @@ path argument.
 
 ## Observability
 
-> Skeleton — local JSONL logs, MLflow experiment tracking, and opt-in LangSmith tracing, populated
-> by the observability task.
+### Layer 1 — Local JSONL logs (`src/observability/`)
+
+`JsonlCallbackHandler(run_id, runs_dir=None)` (`src/observability/jsonl_callback.py`) is a
+`langchain_core.callbacks.BaseCallbackHandler` subclass that appends one JSON line per node
+entry/exit to `{runs_dir or REPO_ROOT/"runs"}/{run_id}/execution.jsonl`. `runs_dir` exists purely
+for test injection, mirroring `src/graph/checkpointer.py`'s `build_checkpointer` convention.
+
+- `run_id` is validated at construction (rejects empty, `.`/`..`, and any path separator) —
+  raises `ValueError` immediately, since a malformed `run_id` reaching this constructor is a
+  caller bug, not a runtime logging failure.
+- Each line matches design.md § Observability's schema: `{timestamp, run_id, iteration, phase,
+  node, event, duration_ms, tokens_in, tokens_out, model, output_summary}`. `event` is `"start"`
+  or `"end"`; `duration_ms` is `null` on `"start"`, populated on `"end"`.
+- `iteration` is read from the node's **input** state at `on_chain_start` time (LangGraph passes
+  the node function's raw input — the full `LabState` dict — to this hook) and reused for the
+  paired `"end"` line; it is *not* re-derived from `on_chain_end`'s `outputs`, since that's just
+  the node's partial return delta and usually lacks this key.
+- `phase` is derived from LangGraph's own `metadata["langgraph_checkpoint_ns"]` when available
+  (the checkpoint namespace's first `":"`-delimited segment, before any `"|"`, is always the
+  enclosing phase subgraph's stem — e.g. `"phase2_research:<uuid>|researcher:<uuid>"` ->
+  `"phase2_research"`), falling back to `inputs.get("phase")` only when no LangGraph checkpoint
+  namespace is present (e.g. a handler driven directly/standalone, as in this module's own unit
+  tests). This is *not* simply `inputs.get("phase")`: `LabState["phase"]` (per
+  `src/graph/builder.py`'s `_wrap_phase`) is only stamped with a phase name *after* that phase's
+  subgraph finishes, so while `phase2_research`'s nodes are actually running, `inputs["phase"]`
+  still holds the stale `"phase1_understanding"` value left over from the previous phase — reading
+  the checkpoint namespace instead reports the phase whose subgraph is actually on the call stack
+  at `on_chain_start` time, with no `LabState`/builder change required.
+- `tokens_in`/`tokens_out`/`model` are populated by correlating `on_chat_model_start`/`on_llm_end`
+  events (fired for the `self.llm.invoke(...)` call inside `LLMNode.__call__`, via LangChain's
+  ambient `RunnableConfig` callback propagation — no wiring needed in `src/nodes/llm/base.py`)
+  back to their owning node run via `parent_run_id`. For a node with no LLM call (any
+  `ComputeNode`), these three fields are `null`, not `0` — `null` means "no LLM call observed",
+  `0` would incorrectly imply a zero-token LLM call happened. The same `null` (not `0`) is reported
+  when an LLM call *did* happen but its token usage couldn't be extracted from the response (e.g.
+  `FakeListChatModel`, which never sets `usage_metadata`) — the per-node usage bucket tracks each
+  token field as `None`-until-first-known-value rather than starting at `0`, so an unextractable
+  call can't silently masquerade as "a real call that used zero tokens." Multiple real calls with
+  known usage inside one node still sum correctly.
+- `output_summary` is a best-effort, node-agnostic string: the last LLM message's `content` when
+  the node's output includes a `messages` key, otherwise `"updated: {sorted output keys}"`;
+  truncated to 200 characters.
+- Only genuine `add_node`-registered graph nodes produce a log line. In this codebase's topology,
+  `GraphBuilder.build()`'s outer graph invoke and each phase subgraph's own top-level `.invoke()`
+  inside `_wrap_phase` (called with no `config` forwarded) also fire `on_chain_start`/`on_chain_end`
+  — LangChain names these runs generically (`"LangGraph"`), not after any real node. They're
+  filtered out via a positive signal, not a name blocklist: LangChain tags every chain run that
+  occurs while a given graph node is executing with `metadata["langgraph_node"] = <node name>`,
+  but only the node's *own* run has `name == metadata["langgraph_node"]` — the enclosing
+  pregel-loop plumbing runs share that same `langgraph_node` value without matching it as their own
+  `name`. A handler driven directly with no LangGraph context (`metadata` absent or missing
+  `metadata["ls_integration"] == "langgraph"`, as in this module's own unit tests) is always
+  treated as real, so this filter only ever suppresses runs proven to be LangGraph-internal.
+- Logging never raises into the pipeline: any exception (bad path, write failure, unexpected
+  callback shape) is caught in each overridden hook and reported as a one-line warning on stderr.
+- **Not wired up yet** — no caller attaches this handler via `config={"callbacks": [handler]}` at
+  a `graph.invoke(...)` call today; this task delivers the handler standalone, tested directly
+  against LangChain's callback interface (including integration-style tests against a real
+  LangGraph graph mirroring `_wrap_phase`'s exact wiring). Wiring it into `GraphBuilder`/an API
+  entry point is a future task.
+- **Known gap, not fixed here:** `src/graph/checkpointer.py`'s `build_checkpointer(run_id, ...)`
+  still builds `{runs_dir}/{run_id}/checkpoint.db` without the same `run_id` validation (flagged
+  in T-009's forward note) — out of this task's `src/observability/`-only scope.
+- **Known limitation:** `output_summary` includes LLM message content near-verbatim (200-char
+  truncated, no redaction) — see `context/decisions.md` for the latent secret-leak sink this could
+  become once tool/subprocess output is fed through `LabState.messages` for LLM self-correction.
+
+### Layer 2 — MLflow experiment tracking
+
+> Skeleton — embedded MLflow tracking under `workspace/{competition}/mlruns/`, populated by the
+> task that wires MLflow into training nodes.
+
+### Layer 3 — LangSmith (opt-in)
+
+> Skeleton — `LANGCHAIN_TRACING_V2=true` opt-in tracing, populated if/when a task wires it up.
 
 ## Invariants
 

@@ -3,11 +3,11 @@ id: T-010
 phase: 1
 agent: pipeline-agent
 depends_on: [T-002, T-004, T-005]
-status: available
+status: in-progress
 folders: ["src/nodes/"]
 outputs: [LLMNode base class, context trimming, standard node lifecycle]
 size: M
-branch: ~
+branch: feature/T-010-llm-node-base
 pr: ~
 ---
 

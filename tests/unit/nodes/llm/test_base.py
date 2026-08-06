@@ -31,11 +31,13 @@ class UnnamedNode(LLMNode):
     """Deliberately does not override `name` — must raise on construction."""
 
 
-class MissingIterationNode(LLMNode):
+class FrozenOutputNode(LLMNode):
     """Points at a fixture whose `output_file_pattern` has no `{iteration}`
-    placeholder — must raise on construction (T-010 review finding 1)."""
+    placeholder — a legitimate one-time/frozen output (e.g. `fold_config.json`,
+    `eda_report.md`); construction and `_resolve_output_path` must both succeed,
+    writing to the fixed path unchanged."""
 
-    name = "missing_iteration"
+    name = "frozen_output"
 
 
 class ExtraPlaceholderNode(LLMNode):
@@ -110,21 +112,6 @@ def test_init_loads_agent_config_and_prompt(patched_llm_factory, patched_setting
 def test_init_requires_nonempty_name(patched_llm_factory, patched_settings) -> None:
     with pytest.raises(ValueError, match="non-empty class-level 'name'"):
         UnnamedNode(agent_config_dir=AGENT_CONFIG_DIR, prompts_dir=PROMPTS_DIR)
-
-
-def test_init_raises_when_output_file_pattern_missing_iteration_placeholder(
-    patched_llm_factory, patched_settings
-) -> None:
-    """Regression test for review finding 1: a pattern with no `{iteration}`
-    placeholder must fail loudly at construction, not silently overwrite the
-    same output file on every iteration."""
-    with pytest.raises(ValueError, match=r"missing_iteration") as excinfo:
-        MissingIterationNode(agent_config_dir=AGENT_CONFIG_DIR, prompts_dir=PROMPTS_DIR)
-
-    assert "static/output.txt" in str(excinfo.value)
-    assert "{iteration}" in str(excinfo.value)
-    # Must fail before ever touching the LLM.
-    patched_llm_factory.get.assert_not_called()
 
 
 # -- __call__ --
@@ -224,6 +211,21 @@ def test_output_path_uses_current_iteration(
     workspace_instance.write_text.assert_called_once_with(
         "dummy/iteration_3/output.txt", "the response"
     )
+
+
+def test_output_path_allows_frozen_pattern_without_iteration_placeholder(
+    patched_llm_factory, patched_settings, mock_workspace_manager
+) -> None:
+    """A pattern with no `{iteration}` at all (e.g. `validation/fold_config.json`)
+    is legitimate for one-time/frozen outputs — `str.format` harmlessly ignores
+    the unused `iteration` kwarg and the fixed path is written as-is."""
+    _, workspace_instance = mock_workspace_manager
+    node = FrozenOutputNode(agent_config_dir=AGENT_CONFIG_DIR, prompts_dir=PROMPTS_DIR)
+    state = _build_state(messages=[], current_iteration=3)
+
+    node(state)
+
+    workspace_instance.write_text.assert_called_once_with("frozen/fold_config.json", "the response")
 
 
 def test_call_raises_valueerror_on_unresolved_placeholder(

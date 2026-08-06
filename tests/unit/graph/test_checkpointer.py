@@ -1,18 +1,56 @@
 """Unit test for the SQLite checkpointer's resume-after-restart behavior.
 
-No real node implementations exist yet, so every node resolves to a
-`NoOpNode` (see `src.graph.node_resolver`). `node_resolver.resolve_node` is
-monkeypatched to wrap each resolved node in a call counter — this makes
-"did this node actually re-execute" observable without needing a real node.
+Most nodes still resolve to a `NoOpNode` (see `src.graph.node_resolver`), but
+phase1's `data_analyst` (T-013) is a real `LLMNode` subclass now, so these
+tests — which call `GraphBuilder().build()` and then `.invoke()` for real —
+mock the LLM call (`src.nodes.llm.base.LLMFactory`) and set fake values for
+`config/settings.yaml`'s five `${...}`-interpolated env vars, mirroring
+`tests/integration/phases/test_phase_subgraphs_smoke.py`'s convention.
+`node_resolver.resolve_node` is separately monkeypatched to wrap each
+resolved node in a call counter — this makes "did this node actually
+re-execute" observable without needing a real node.
 """
 
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
+from langchain_core.messages import AIMessage
 
 from src.graph import node_resolver
 from src.graph.builder import GraphBuilder
+from src.llm.factory import LLMFactory
 from src.state import new_state
+
+# Satisfies data_analyst's requirement of exactly one fenced ```python block
+# (config/prompts/data_analyst/v1.md); harmless for any other real LLMNode's
+# default `_write_output`, which just writes the raw text as-is.
+_MOCK_LLM_CONTENT = (
+    "## Smoke test narrative\n\nMocked LLM response for the checkpointer test.\n\n"
+    '```python\nprint("checkpointer test")\n```\n'
+)
+
+
+@pytest.fixture(autouse=True)
+def _mock_llm(monkeypatch: pytest.MonkeyPatch) -> None:
+    for var in (
+        "ANTHROPIC_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "GROQ_API_KEY",
+        "KAGGLE_USERNAME",
+        "KAGGLE_KEY",
+    ):
+        monkeypatch.setenv(var, "fake-value-for-settings-load")
+    LLMFactory._settings = None
+
+    mock_llm = MagicMock()
+    mock_llm.invoke.return_value = AIMessage(content=_MOCK_LLM_CONTENT)
+
+    with patch("src.nodes.llm.base.LLMFactory") as mock_factory:
+        mock_factory.get.return_value = mock_llm
+        yield
+
+    LLMFactory._settings = None
 
 
 def _install_counting_resolver(monkeypatch: pytest.MonkeyPatch, call_counts: dict) -> None:
@@ -41,7 +79,7 @@ def test_resume_after_restart_does_not_rerun_completed_phase(
 
     # First "process": build the graph and run it up to the phase1 interrupt.
     first_graph = GraphBuilder().build(run_id=run_id, runs_dir=tmp_path)
-    state = new_state("comp", "/tmp/comp")
+    state = new_state("comp", str(tmp_path / "workspace"))
     first_graph.invoke(state, config=config)
 
     assert call_counts.get("data_analyst", 0) == 1

@@ -1,0 +1,7 @@
+name: data_analyst
+model_role: reasoning
+prompt_version: v1
+tools:
+  - code_executor
+output_file_pattern: "reports/eda_report.md"
+max_tokens: 4096

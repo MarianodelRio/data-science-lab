@@ -4,25 +4,74 @@ its `build(resolve_node)`, compiles and runs one full pass over a fresh
 
 Recommended by design.md's testing-strategy row for `src/graph/` — real
 end-to-end coverage of the parallel fan-out/fan-in wiring (phase2) in
-addition to the plain sequential phases, all with `NoOpNode` placeholders
-since no real node implementations exist yet.
+addition to the plain sequential phases. Most phase nodes are still
+`NoOpNode` placeholders (no implementing task has landed yet), but as real
+`LLMNode` subclasses land (e.g. `data_analyst`, T-013) `resolve_node` picks
+them up for real per its by-convention discovery — so per design.md's
+testing-strategy row for `src/nodes/llm/` ("integration: phase subgraph with
+mock LLM"), the LLM call itself is mocked module-wide here; everything else
+(config/prompt loading, `WorkspaceManager` file writes, `code_executor`
+subprocess execution) runs for real against a tmp workspace.
 """
 
 import importlib
+from unittest.mock import MagicMock, patch
 
 import pytest
+from langchain_core.messages import AIMessage
 
 from src.graph.node_resolver import resolve_node
 from src.graph.phases import PHASE_ORDER
 from src.state import new_state
 
+# Generic enough to satisfy any real `LLMNode` subclass's `_write_output`:
+# the default implementation just writes the raw text, while `data_analyst`
+# additionally requires exactly one fenced ```python block per
+# config/prompts/data_analyst/v1.md.
+_MOCK_LLM_CONTENT = (
+    "## Smoke test narrative\n\nMocked LLM response for the phase-subgraph smoke test.\n\n"
+    '```python\nprint("smoke test")\n```\n'
+)
+
+
+@pytest.fixture(autouse=True)
+def _mock_llm(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mock only the LLM network call for every real `LLMNode` a phase might
+    resolve to, so this smoke test never makes a real network call or
+    depends on provider API keys actually working — mirrors `tests/unit/
+    nodes/llm/test_base.py`'s mocking convention, patched at
+    `src.nodes.llm.base`'s import location. `Settings.load()` itself
+    (read by `LLMNode.__init__` and, for `data_analyst`, by
+    `code_executor.execute`'s real-subprocess path) still runs for real
+    against `config/settings.yaml`, which requires all five
+    `${...}`-interpolated env vars to be *set* (any non-empty value works,
+    matching the fake-key convention in `tests/tools/test_code_executor.py`
+    and `tests/unit/llm/test_factory.py`) even though the LLM call they'd
+    normally authenticate is mocked away.
+    """
+    for var in (
+        "ANTHROPIC_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "GROQ_API_KEY",
+        "KAGGLE_USERNAME",
+        "KAGGLE_KEY",
+    ):
+        monkeypatch.setenv(var, "smoke-test-fake-value")
+
+    mock_llm = MagicMock()
+    mock_llm.invoke.return_value = AIMessage(content=_MOCK_LLM_CONTENT)
+
+    with patch("src.nodes.llm.base.LLMFactory") as mock_factory:
+        mock_factory.get.return_value = mock_llm
+        yield
+
 
 @pytest.mark.parametrize("stem", PHASE_ORDER)
-def test_phase_subgraph_compiles_and_runs(stem: str) -> None:
+def test_phase_subgraph_compiles_and_runs(stem: str, tmp_path) -> None:
     module = importlib.import_module(f"src.graph.phases.{stem}")
     compiled = module.build(resolve_node)
 
-    state = new_state("comp", "/tmp/comp")
+    state = new_state("comp", str(tmp_path))
     result = compiled.invoke(state)
 
     assert result["competition_name"] == "comp"

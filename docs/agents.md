@@ -12,7 +12,27 @@ Each agent-adding task appends one row to the table below. Do not remove or reor
 
 ## Adding an agent
 
-> Skeleton — populated by the first agent-adding task. Cover the concrete steps: create
-> `config/agents/{name}.yaml`, create `config/prompts/{name}/v1.md`, register `{name}` in the
-> relevant `config/phases/{phase}.yaml`, create `src/nodes/llm/{name}.py`, and append a row to the
-> table above. See `design.md` § How to add an agent for the current draft procedure.
+1. Create `config/agents/{name}.yaml` — `model_role`, `prompt_version`, `tools`,
+   `output_file_pattern`, `max_tokens` (see `AgentConfig` in `src/config/schema.py`).
+2. Create `config/prompts/{name}/v1.md` with the system prompt.
+3. Add `{name}` to the relevant `config/phases/{phase}.yaml`'s `nodes` and `sequence` lists.
+4. Create `src/nodes/llm/{name}.py` with one class, `name` as a plain class attribute
+   (not a Pydantic field — see docs/pipeline.md § Node-module convention), subclassing
+   `LLMNode` (`src/nodes/llm/base.py`):
+
+   ```python
+   from src.nodes.llm.base import LLMNode
+
+   class MyAgentNode(LLMNode):
+       name = "my_agent"
+   ```
+
+   That alone is a complete node: `LLMNode.__init__` loads the `AgentConfig` and prompt and
+   resolves the model via `LLMFactory`; `__call__` trims context to
+   `settings.context.max_messages_per_node`, invokes the LLM, writes the response via
+   `WorkspaceManager` to `output_file_pattern.format(iteration=state["current_iteration"])`,
+   and returns `{"messages": [<new response>]}`. Override `_build_messages` (extra input),
+   `_write_output` (structured output, e.g. `workspace.write_json`), `_resolve_output_path`
+   (non-iteration placeholders), or `_build_output_state` (set the node's own `LabState`
+   path field) only for non-default behavior.
+5. Append a row to the table above.

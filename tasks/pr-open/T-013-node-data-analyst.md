@@ -3,12 +3,12 @@ id: T-013
 phase: 2
 agent: pipeline-agent
 depends_on: [T-010, T-006]
-status: ready-for-pr
+status: pr-open
 folders: ["src/nodes/llm/", "config/agents/", "config/prompts/"]
 outputs: [data_analyst node, eda_report.md, notebooks/01_eda.ipynb]
 size: M
 branch: feature/T-013-node-data-analyst
-pr: ~
+pr: https://github.com/MarianodelRio/data-science-lab/pull/15
 ---
 
 ## Node: data_analyst (Pipeline Phase 1)

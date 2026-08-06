@@ -225,6 +225,34 @@ does not change how finely completed work gets persisted for resume.
 
 > Skeleton — table of LLM nodes vs pure Python nodes vs tools, populated as each node lands.
 
+### ComputeNode base class
+
+`src/nodes/compute/base.py` — `ComputeNode` is the base class every pure-Python (non-LLM) node
+under `src/nodes/compute/{name}.py` subclasses. It follows the same node-module convention as LLM
+nodes (see "Node-module convention" above): concrete subclasses declare `name` as a plain class
+attribute equal to the module's filename stem and are constructible with no arguments, so
+`resolve_node`'s `cls()` call works unchanged for compute nodes.
+
+- **Lifecycle:** `__call__(self, state: LabState) -> dict` delegates to an abstract `run(self,
+  state: LabState) -> dict` hook that subclasses implement — `run` computes and returns a partial
+  `LabState` update (the delta), `__call__` is just the LangGraph-facing entrypoint.
+- **`ComputeNode` itself is abstract** (`run` is `@abstractmethod`): instantiating it directly
+  raises `TypeError`, so a landed compute node that forgets to implement `run` fails loudly at
+  `resolve_node`'s `cls()` call, not silently.
+- **Workspace access:** `self.workspace(state) -> WorkspaceManager` builds a `WorkspaceManager`
+  rooted at `state["workspace_path"]`, constructed fresh on every call (there is no `__init__` to
+  cache it in, since nodes are instantiated via `cls()`). This is the only sanctioned way a
+  `ComputeNode` subclass touches the workspace filesystem, per `WorkspaceManager` being the sole
+  file-I/O point.
+- **No LLM anywhere:** unlike `LLMNode` (`src/nodes/llm/base.py`, T-010) — which carries a model,
+  an `AgentConfig`, prompt loading, and context trimming — `ComputeNode` has none of that. It
+  imports nothing from `src/llm` or any `langchain` package; its only dependency beyond `src.state`
+  is `WorkspaceManager`.
+- **Reference example:** `tests/unit/nodes/compute/test_base.py` implements a small
+  `_DoubleIterationNode` fixture that reads `state["current_iteration"]`, writes a marker file via
+  `self.workspace(state)`, and returns `{"last_score": ...}` — the canonical run→delta shape a real
+  compute node follows.
+
 ## Tools
 
 > Skeleton — one subsection per tool (`code_executor`, `kaggle_client`, `rag`,

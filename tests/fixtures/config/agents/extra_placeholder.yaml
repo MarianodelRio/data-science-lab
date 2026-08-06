@@ -1,0 +1,6 @@
+name: extra_placeholder
+model_role: fast
+prompt_version: v1
+tools: []
+output_file_pattern: "cv_results/fold_{fold}_iter_{iteration}.json"
+max_tokens: 256

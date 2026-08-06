@@ -53,6 +53,12 @@ class LLMNode:
         if not self.name:
             raise ValueError(f"{type(self).__name__} must declare a non-empty class-level 'name'")
         self.config: AgentConfig = load_agent_config(self.name, base_dir=agent_config_dir)
+        if "{iteration}" not in self.config.output_file_pattern:
+            raise ValueError(
+                f"output_file_pattern {self.config.output_file_pattern!r} for agent "
+                f"'{self.name}' must contain a '{{iteration}}' placeholder — without it, "
+                "every iteration silently overwrites the same output file"
+            )
         self.llm: BaseChatModel = LLMFactory.get(self.config.model_role)
         loader = PromptLoader(prompts_dir) if prompts_dir is not None else PromptLoader()
         self.system_prompt: str = loader.load(self.name, self.config.prompt_version)
@@ -83,7 +89,14 @@ class LLMNode:
     def _resolve_output_path(self, state: LabState) -> str:
         """Default: interpolate `{iteration}` in `output_file_pattern` from
         `state['current_iteration']`. Override if a pattern needs other placeholders."""
-        return self.config.output_file_pattern.format(iteration=state["current_iteration"])
+        try:
+            return self.config.output_file_pattern.format(iteration=state["current_iteration"])
+        except KeyError as e:
+            raise ValueError(
+                f"output_file_pattern {self.config.output_file_pattern!r} for agent "
+                f"'{self.name}' has an unresolved placeholder {e}; override "
+                "_resolve_output_path for non-iteration placeholders"
+            ) from e
 
     def _write_output(
         self, workspace: WorkspaceManager, relative_path: str, response: BaseMessage

@@ -31,6 +31,22 @@ class UnnamedNode(LLMNode):
     """Deliberately does not override `name` — must raise on construction."""
 
 
+class MissingIterationNode(LLMNode):
+    """Points at a fixture whose `output_file_pattern` has no `{iteration}`
+    placeholder — must raise on construction (T-010 review finding 1)."""
+
+    name = "missing_iteration"
+
+
+class ExtraPlaceholderNode(LLMNode):
+    """Points at a fixture whose `output_file_pattern` has a placeholder
+    besides `{iteration}` (`{fold}`) — construction succeeds, but resolving
+    the output path at call time must raise a clear `ValueError`, not a bare
+    `KeyError` (T-010 review finding 2)."""
+
+    name = "extra_placeholder"
+
+
 def _make_settings(max_messages_per_node: int) -> MagicMock:
     """A MagicMock standing in for a real `Settings` instance, exposing only
     the `.context.max_messages_per_node` path `LLMNode.__init__` reads."""
@@ -94,6 +110,21 @@ def test_init_loads_agent_config_and_prompt(patched_llm_factory, patched_setting
 def test_init_requires_nonempty_name(patched_llm_factory, patched_settings) -> None:
     with pytest.raises(ValueError, match="non-empty class-level 'name'"):
         UnnamedNode(agent_config_dir=AGENT_CONFIG_DIR, prompts_dir=PROMPTS_DIR)
+
+
+def test_init_raises_when_output_file_pattern_missing_iteration_placeholder(
+    patched_llm_factory, patched_settings
+) -> None:
+    """Regression test for review finding 1: a pattern with no `{iteration}`
+    placeholder must fail loudly at construction, not silently overwrite the
+    same output file on every iteration."""
+    with pytest.raises(ValueError, match=r"missing_iteration") as excinfo:
+        MissingIterationNode(agent_config_dir=AGENT_CONFIG_DIR, prompts_dir=PROMPTS_DIR)
+
+    assert "static/output.txt" in str(excinfo.value)
+    assert "{iteration}" in str(excinfo.value)
+    # Must fail before ever touching the LLM.
+    patched_llm_factory.get.assert_not_called()
 
 
 # -- __call__ --
@@ -193,6 +224,23 @@ def test_output_path_uses_current_iteration(
     workspace_instance.write_text.assert_called_once_with(
         "dummy/iteration_3/output.txt", "the response"
     )
+
+
+def test_call_raises_valueerror_on_unresolved_placeholder(
+    patched_llm_factory, patched_settings, mock_workspace_manager
+) -> None:
+    """Regression test for review finding 2: a pattern with an extra/typo'd
+    placeholder besides `{iteration}` must surface as a clear `ValueError`
+    naming the agent/pattern/missing key, not a bare `KeyError`."""
+    node = ExtraPlaceholderNode(agent_config_dir=AGENT_CONFIG_DIR, prompts_dir=PROMPTS_DIR)
+    state = _build_state(messages=[])
+
+    with pytest.raises(ValueError, match=r"extra_placeholder") as excinfo:
+        node(state)
+
+    assert not isinstance(excinfo.value, KeyError)
+    assert "fold" in str(excinfo.value)
+    assert "cv_results/fold_{fold}_iter_{iteration}.json" in str(excinfo.value)
 
 
 def test_default_build_output_state_returns_empty_dict(

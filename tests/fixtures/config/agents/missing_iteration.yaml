@@ -1,0 +1,6 @@
+name: missing_iteration
+model_role: fast
+prompt_version: v1
+tools: []
+output_file_pattern: "static/output.txt"
+max_tokens: 256

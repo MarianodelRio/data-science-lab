@@ -1,5 +1,9 @@
 # Data Science Lab — IDEA.md
 
+> Superseded by `design.md` for exact checkpoint semantics — checkpoints are forward-only
+> (see `docs/pipeline.md` § Human checkpoints); "approves or corrects" (below) does not
+> re-run a completed phase.
+
 ## What problem does this solve?
 
 Doing data science well requires coordinating many parallel workstreams: exploring data, researching prior art, engineering features, training models, diagnosing failures, and iterating. A single person or small team bottlenecks on each step sequentially. This system implements a full data science team as a network of specialized AI agents built on LangGraph — each agent owns a specific role, they communicate through shared state, and the whole system can take a problem + dataset from raw input to a submission-ready solution, iterating autonomously until the user decides to stop.

@@ -371,7 +371,9 @@ START
   → phase3_baseline        [only when current_iteration == 0]
   → phase4_design          (interrupt)  → human approval
   → phase5_implementation
-  → phase6_evaluation      (interrupt)  → human decision: continue / stop
+  → phase6_evaluation      (interrupt)  → automatic continue/stop (iteration counters);
+                                            human reviews and adds feedback for the next
+                                            design iteration, does not override routing
       ↓ continue                            ↓ stop
   → phase4_design (loop)             → phase7_delivery → END
 ```
@@ -546,7 +548,9 @@ Events are emitted to an `asyncio.Queue` and streamed via SSE to the frontend.
 
 Separate LangGraph subgraph invoked via WebSocket. Read-only access to LabState, workspace files,
 and Chroma. Activated automatically at interrupt points; also available on-demand for questions.
-Also serves as the interface for human interrupt decisions (approve / redirect via chat).
+Also serves as the interface for human interrupt decisions (approve / redirect via chat) —
+both call the same forward `resume`; "redirect" carries corrective feedback text for future
+phases to read, it never re-executes the phase that just completed.
 
 ### Frontend — React + Vite (`frontend/`)
 

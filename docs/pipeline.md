@@ -172,6 +172,16 @@ the *actual* runtime dispatch/retry behavior lives inside the node implementatio
 T-016/T-023/T-030, not in `GraphBuilder`. See `context/decisions.md` (T-009) for the full
 rationale.
 
+### Human checkpoints
+
+All 3 interrupts (`phase1_understanding`, `phase4_design`, `phase6_evaluation`) are
+forward-only — there is no mechanism to re-execute a phase that already completed.
+`human_feedback` is a `LastValue` field that persists forward for future nodes to read; no
+node reads it yet. The checkpoint after `phase6_evaluation` does not influence `supervisor`'s
+routing — that stays 100% automatic on `iterations_without_improvement` vs `max_iterations`,
+identical to the other two checkpoints in that the human never changes graph topology. See
+`context/decisions.md` (2026-08-06).
+
 ### Checkpointer
 
 `src/graph/checkpointer.py`'s `build_checkpointer(run_id, runs_dir=None)` builds a `SqliteSaver`

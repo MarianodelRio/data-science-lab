@@ -1,0 +1,6 @@
+name: dummy
+model_role: fast
+prompt_version: v1
+tools: []
+output_file_pattern: "dummy/iteration_{iteration}/output.txt"
+max_tokens: 256

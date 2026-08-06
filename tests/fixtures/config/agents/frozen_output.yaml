@@ -1,0 +1,6 @@
+name: frozen_output
+model_role: fast
+prompt_version: v1
+tools: []
+output_file_pattern: "frozen/fold_config.json"
+max_tokens: 256

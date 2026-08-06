@@ -9,6 +9,7 @@ Each agent-adding task appends one row to the table below. Do not remove or reor
 
 | Agent | Pipeline phase | model_role | Output file |
 |---|---|---|---|
+| `data_analyst` | Phase 1 — Understanding | `reasoning` | `reports/eda_report.md` |
 
 ## Adding an agent
 

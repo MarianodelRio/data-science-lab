@@ -1,11 +1,20 @@
 """Unit tests for `GraphBuilder.build()`.
 
-Runs against the repo's current real state: `src/nodes/{compute,llm}/base.py`
-(T-011/T-010) provide base classes but no concrete node module resolvable by
-name — `base` never appears as a node name in any `config/phases/*.yaml`, so
-`resolve_node` still falls through to `NoOpNode` for every real node. This
-test asserts the whole 7-phase graph still compiles cleanly under that
-condition.
+`GraphBuilder.build()` wires up the 7-phase graph via `build_phase_subgraph`,
+which calls `graph.add_node(name, resolve_node(name))` for every node in
+every phase's `sequence` — `resolve_node(name)` runs, and any real `LLMNode`
+it resolves to gets *constructed*, eagerly at build/compile time (not lazily
+at invoke time). `LLMNode.__init__` reads `Settings.load()` and
+`LLMFactory.get(role)`, which needs `config/settings.yaml`'s five
+`${...}`-interpolated env vars to be set — so ever since a first concrete
+node landed under `src/nodes/llm/` (`data_analyst`, T-013), plain
+`GraphBuilder().build()` needs those env vars present even though these
+tests never call `.invoke()` and so never make a real LLM network call
+(`ChatOpenAI`/`ChatAnthropic`/`ChatGroq` construction itself doesn't touch
+the network — only `.invoke()` would). See the module-level `_fake_api_keys`
+fixture below. Tests that actually *run* a phase (and so also need the LLM
+call itself mocked) live in `tests/unit/graph/test_checkpointer.py` and
+`tests/integration/phases/test_phase_subgraphs_smoke.py`.
 """
 
 from pathlib import Path
@@ -19,24 +28,27 @@ from src.graph import builder as builder_module
 from src.graph.builder import GraphBuilder
 from src.graph.errors import GraphBuilderError
 from src.graph.phases import PHASE_ORDER
+from src.llm.factory import LLMFactory
 
 
-def test_no_real_node_modules_exist_yet() -> None:
-    """Guards the premise of the other tests in this module: if a future task
-    lands a concrete node under `src/nodes/`, this test starts failing and is
-    the signal to revisit `NoOpNode`-dependent assumptions here. `base.py`
-    (T-010/T-011's `LLMNode`/`ComputeNode` base classes) is excluded — it is
-    infrastructure, not itself a node `resolve_node` can ever match by name.
-    """
-    import src.nodes.compute as compute_pkg
-    import src.nodes.llm as llm_pkg
-
-    compute_dir = Path(compute_pkg.__file__).parent
-    llm_dir = Path(llm_pkg.__file__).parent
-    all_py_files = (*compute_dir.glob("*.py"), *llm_dir.glob("*.py"))
-    real_modules = [p for p in all_py_files if p.stem not in ("__init__", "base")]
-
-    assert real_modules == []
+@pytest.fixture(autouse=True)
+def _fake_api_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    for var in (
+        "ANTHROPIC_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "GROQ_API_KEY",
+        "KAGGLE_USERNAME",
+        "KAGGLE_KEY",
+    ):
+        monkeypatch.setenv(var, "fake-value-for-settings-load")
+    # Mirrors tests/unit/llm/test_factory.py's `reset_factory_cache` fixture:
+    # `LLMFactory._settings` is a real class-level cache (not itself mocked
+    # here, since real node construction at build time is exactly what these
+    # tests exercise) — reset it so this file's fake values never leak into,
+    # or get clobbered by, other test files' real `LLMFactory.get()` calls.
+    LLMFactory._settings = None
+    yield
+    LLMFactory._settings = None
 
 
 def test_build_returns_compiled_graph_without_raising(tmp_path: Path) -> None:

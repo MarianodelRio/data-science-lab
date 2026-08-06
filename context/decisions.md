@@ -440,3 +440,26 @@ future node reading `state["human_feedback"]`. Does not affect `src/graph/` — 
 `design.md`/`docs/pipeline.md`/`IDEA.md`/task-file wording that previously implied otherwise.
 Discarded: letting the phase6 checkpoint override `supervisor`'s routing — would require a new
 `LabState` field, out of scope now.
+
+## 2026-08-06 — T-012 [infra-agent] (correction, review round 1)
+Decided: flagging a latent, unfixed security concern surfaced during T-012 review rather than
+addressing it now (documentation only, no code change).
+`JsonlCallbackHandler._summarize_output` (`src/observability/jsonl_callback.py`) writes the
+last LLM message's `content` into `execution.jsonl`'s `output_summary` field near-verbatim —
+200-char truncated, whitespace-collapsed, but not redacted in any way. Today every message
+flowing through `LabState.messages` originates from this codebase's own prompts/LLM responses,
+so this is low-risk. Once a future task feeds tool/subprocess stdout (e.g. a failed code
+execution's traceback, a shell command's output) through `LabState.messages` for LLM
+self-correction — as `design.md`'s Implementation/Evaluation phases are expected to eventually
+need — `output_summary` becomes an unguarded potential secret-leak sink: any credential,
+token, or sensitive path that ends up in that stdout would be copied into the JSONL log
+verbatim.
+Why: out of T-012's `src/observability/`-only scope to design a redaction scheme now (no
+current caller produces sensitive content in `messages`); recording it here so whichever task
+wires tool/subprocess output into `LabState.messages` revisits `_summarize_output` at that
+point rather than shipping the leak silently.
+Affects: `src/observability/jsonl_callback.py` (`_summarize_output`); any future task wiring
+tool/subprocess stdout into `LabState.messages` for LLM self-correction.
+Discarded: adding redaction/scrubbing logic to `_summarize_output` now — no real sensitive-data
+path exists yet to test against, and guessing at a redaction scheme without a concrete threat
+model risks both false confidence and missed patterns.

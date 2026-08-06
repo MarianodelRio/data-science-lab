@@ -55,6 +55,13 @@ class JsonlCallbackHandler(BaseCallbackHandler):
         self._llm_model: dict[UUID, str | None] = {}
         # Keyed by the owning node's chain run id.
         self._llm_usage: dict[UUID, dict[str, Any]] = {}
+        # Chain run ids identified at `on_chain_start` time as LangGraph-internal
+        # pregel-loop plumbing (the outer graph's own `.invoke()`, and each phase
+        # subgraph's own top-level `.invoke()` inside `_wrap_phase`) rather than a
+        # real registered graph node — see `_is_real_node_event`. Their matching
+        # `on_chain_end` is silently skipped too, so neither half of the pair
+        # produces a line.
+        self._skipped_chain_runs: set[UUID] = set()
 
     def _warn(self, exc: Exception) -> None:
         print(
@@ -105,6 +112,8 @@ class JsonlCallbackHandler(BaseCallbackHandler):
     ) -> None:
         try:
             self._starts.pop(run_id, None)
+            self._llm_usage.pop(run_id, None)
+            self._skipped_chain_runs.discard(run_id)
         except Exception as exc:  # noqa: BLE001 - logging must never raise
             self._warn(exc)
 
@@ -179,9 +188,18 @@ class JsonlCallbackHandler(BaseCallbackHandler):
         metadata: dict[str, Any] | None,
         kwargs: dict[str, Any],
     ) -> None:
-        node = kwargs.get("name") or (metadata or {}).get("langgraph_node") or "unknown"
+        name = kwargs.get("name")
+        if not self._is_real_node_event(name, metadata):
+            # LangGraph-internal plumbing run (the outer graph's own `.invoke()`,
+            # or a phase subgraph's own top-level `.invoke()` inside
+            # `_wrap_phase`) — not a registered graph node. Log nothing for
+            # either half of this pair; see `_is_real_node_event`.
+            self._skipped_chain_runs.add(run_id)
+            return
+
+        node = name or (metadata or {}).get("langgraph_node") or "unknown"
         iteration = inputs.get("current_iteration") if isinstance(inputs, dict) else None
-        phase = inputs.get("phase") if isinstance(inputs, dict) else None
+        phase = self._extract_phase(inputs, metadata)
         self._starts[run_id] = {
             "perf_start": time.perf_counter(),
             "node": node,
@@ -203,6 +221,10 @@ class JsonlCallbackHandler(BaseCallbackHandler):
         )
 
     def _on_chain_end_impl(self, outputs: dict[str, Any], *, run_id: UUID) -> None:
+        if run_id in self._skipped_chain_runs:
+            self._skipped_chain_runs.discard(run_id)
+            return
+
         start = self._starts.pop(run_id, None)
         if start is None:
             node, iteration, phase, duration_ms = "unknown", None, None, None
@@ -250,11 +272,93 @@ class JsonlCallbackHandler(BaseCallbackHandler):
         model = self._llm_model.pop(run_id, None)
         tokens_in, tokens_out = self._extract_tokens(response)
         if parent is not None:
-            default_bucket = {"tokens_in": 0, "tokens_out": 0, "model": None}
+            # `None` starts, not `0` — an LLM call that happened but whose
+            # token usage couldn't be extracted must stay `None` ("unknown"),
+            # not collapse into `0` ("really used zero tokens"). Real
+            # extracted values from multiple calls are still summed correctly
+            # via `_sum_optional`.
+            default_bucket: dict[str, Any] = {"tokens_in": None, "tokens_out": None, "model": None}
             bucket = self._llm_usage.setdefault(parent, default_bucket)
-            bucket["tokens_in"] += tokens_in or 0
-            bucket["tokens_out"] += tokens_out or 0
+            bucket["tokens_in"] = self._sum_optional(bucket["tokens_in"], tokens_in)
+            bucket["tokens_out"] = self._sum_optional(bucket["tokens_out"], tokens_out)
             bucket["model"] = bucket["model"] or model
+
+    @staticmethod
+    def _sum_optional(a: int | None, b: int | None) -> int | None:
+        if a is None and b is None:
+            return None
+        return (a or 0) + (b or 0)
+
+    # -- node/phase identification helpers ---------------------------------------
+
+    @staticmethod
+    def _is_real_node_event(name: Any, metadata: dict[str, Any] | None) -> bool:
+        """Distinguish a genuine `add_node`-registered graph node's own chain
+        run from LangGraph-internal pregel-loop plumbing runs.
+
+        LangChain/LangGraph tags every chain run that occurs while a specific
+        graph node is executing with `metadata["langgraph_node"] = <node name>`
+        — including runs that are NOT the node's own invocation, e.g. the
+        outer graph's top-level `.invoke()` pregel loop, or (in this
+        codebase's topology) a phase subgraph's own top-level `.invoke()`
+        inside `_wrap_phase`. Those internal runs share the enclosing node's
+        `langgraph_node` metadata but LangChain names their own run generically
+        ("LangGraph"), not after the node. The node's *own* chain run is the
+        one where the run's `name` actually equals `langgraph_node` — that
+        equality is the positive signal used here, rather than excluding the
+        literal string "LangGraph" (fragile against future LangGraph/LangChain
+        naming changes).
+
+        `metadata["ls_integration"] == "langgraph"` is LangChain's own marker
+        that this run originated from the LangGraph integration at all; a
+        handler driven directly (e.g. every existing unit test, which calls
+        hook methods by hand with only a `name=` kwarg and no LangGraph
+        metadata) has no such context and is always treated as a real event —
+        this filter only ever suppresses runs proven to be LangGraph-internal
+        plumbing, never a plain/standalone call.
+        """
+        if not metadata or metadata.get("ls_integration") != "langgraph":
+            return True
+        return metadata.get("langgraph_node") == name
+
+    def _extract_phase(self, inputs: Any, metadata: dict[str, Any] | None) -> Any:
+        """Prefer the phase derived from LangGraph's own checkpoint namespace
+        (`_phase_from_metadata`) over `inputs.get("phase")`.
+
+        `LabState["phase"]` (per `src/graph/builder.py`'s `_wrap_phase`) is only
+        stamped with the phase that just *finished*, after its subgraph
+        returns — while a phase's nodes are actually running, `inputs["phase"]`
+        still holds the *previous* phase's value. `langgraph_checkpoint_ns`
+        (present on every LangGraph-originated chain run) instead reflects the
+        phase whose subgraph is currently on the call stack, which is exactly
+        "the phase this node execution actually belongs to" and is available
+        at `on_chain_start` time — no `LabState`/builder change needed.
+
+        Falls back to `inputs.get("phase")` when no LangGraph checkpoint
+        namespace is present (e.g. every existing unit test drives this
+        handler directly with no `metadata`) so behavior there is unchanged.
+        """
+        derived = self._phase_from_metadata(metadata)
+        if derived is not None:
+            return derived
+        return inputs.get("phase") if isinstance(inputs, dict) else None
+
+    @staticmethod
+    def _phase_from_metadata(metadata: dict[str, Any] | None) -> str | None:
+        if not metadata:
+            return None
+        checkpoint_ns = metadata.get("langgraph_checkpoint_ns")
+        if not checkpoint_ns or not isinstance(checkpoint_ns, str):
+            return None
+        # `langgraph_checkpoint_ns` looks like "phase1_understanding:<uuid>" at
+        # the phase-subgraph's own top level, or
+        # "phase1_understanding:<uuid>|problem_framer:<uuid>" for a node
+        # nested inside that subgraph — the first ":"-delimited segment before
+        # the first "|" is always the enclosing phase's stem, regardless of
+        # nesting depth.
+        first_segment = checkpoint_ns.split("|", 1)[0]
+        phase = first_segment.split(":", 1)[0]
+        return phase or None
 
     # -- extraction helpers -----------------------------------------------------
 

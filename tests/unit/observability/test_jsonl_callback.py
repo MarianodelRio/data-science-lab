@@ -167,6 +167,64 @@ def test_llm_call_inside_node_populates_tokens_and_model(tmp_path: Path) -> None
     assert end_record["model"] == "deepseek-v4-flash"
 
 
+def test_llm_call_with_unextractable_usage_reports_null_not_zero(tmp_path: Path) -> None:
+    """Bug 3 regression: an LLM call that happened but whose token usage
+    couldn't be extracted (e.g. `FakeListChatModel`, which never sets
+    `usage_metadata`) must report `tokens_in`/`tokens_out` as `null`, matching
+    "no LLM call observed" — not `0`, which would wrongly imply a real,
+    zero-token call happened."""
+    handler = JsonlCallbackHandler("run-10", runs_dir=tmp_path)
+    node_run_id = uuid4()
+    llm_run_id = uuid4()
+
+    handler.on_chain_start({}, {}, run_id=node_run_id, name="node_with_unextractable_usage")
+    handler.on_chat_model_start(
+        {},
+        [[]],
+        run_id=llm_run_id,
+        parent_run_id=node_run_id,
+        invocation_params={"model": "some-model"},
+    )
+    # No usage_metadata on the message, and no llm_output token_usage either —
+    # exactly what a bare FakeListChatModel response looks like.
+    response = LLMResult(
+        generations=[[ChatGeneration(message=AIMessage(content="x"))]], llm_output=None
+    )
+    handler.on_llm_end(response, run_id=llm_run_id, parent_run_id=node_run_id)
+    handler.on_chain_end({"messages": [AIMessage(content="done")]}, run_id=node_run_id)
+
+    lines = _read_lines(handler._log_path)
+    end_record = lines[-1]
+    assert end_record["tokens_in"] is None
+    assert end_record["tokens_out"] is None
+    assert end_record["model"] == "some-model"  # model is still known even though tokens aren't
+
+
+def test_on_chain_error_pops_llm_usage_bucket(tmp_path: Path) -> None:
+    """Housekeeping fix: `on_chain_error` must also discard any accumulated
+    `_llm_usage` bucket for the erroring node's run id, not just `_starts` —
+    otherwise a bucket orphans for the process lifetime on retry-heavy runs."""
+    handler = JsonlCallbackHandler("run-11", runs_dir=tmp_path)
+    node_run_id = uuid4()
+    llm_run_id = uuid4()
+
+    handler.on_chain_start({}, {}, run_id=node_run_id, name="node_that_errors")
+    handler.on_chat_model_start(
+        {}, [[]], run_id=llm_run_id, parent_run_id=node_run_id, invocation_params={"model": "m"}
+    )
+    usage = {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+    response = LLMResult(
+        generations=[[ChatGeneration(message=AIMessage(content="x", usage_metadata=usage))]]
+    )
+    handler.on_llm_end(response, run_id=llm_run_id, parent_run_id=node_run_id)
+    assert node_run_id in handler._llm_usage
+
+    handler.on_chain_error(RuntimeError("boom"), run_id=node_run_id)
+
+    assert node_run_id not in handler._llm_usage
+    assert node_run_id not in handler._starts
+
+
 def test_compute_node_with_no_llm_call_has_null_tokens_and_model(tmp_path: Path) -> None:
     handler = JsonlCallbackHandler("run-6", runs_dir=tmp_path)
     run_id = uuid4()

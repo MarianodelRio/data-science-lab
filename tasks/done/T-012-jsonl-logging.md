@@ -3,7 +3,7 @@ id: T-012
 phase: 1
 agent: infra-agent
 depends_on: [T-002]
-status: pr-open
+status: done
 folders: ["src/observability/"]
 outputs: [JsonlCallbackHandler writing runs/{run_id}/execution.jsonl]
 size: S

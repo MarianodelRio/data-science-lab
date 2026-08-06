@@ -363,8 +363,50 @@ path argument.
 
 ## Observability
 
-> Skeleton — local JSONL logs, MLflow experiment tracking, and opt-in LangSmith tracing, populated
-> by the observability task.
+### Layer 1 — Local JSONL logs (`src/observability/`)
+
+`JsonlCallbackHandler(run_id, runs_dir=None)` (`src/observability/jsonl_callback.py`) is a
+`langchain_core.callbacks.BaseCallbackHandler` subclass that appends one JSON line per node
+entry/exit to `{runs_dir or REPO_ROOT/"runs"}/{run_id}/execution.jsonl`. `runs_dir` exists purely
+for test injection, mirroring `src/graph/checkpointer.py`'s `build_checkpointer` convention.
+
+- `run_id` is validated at construction (rejects empty, `.`/`..`, and any path separator) —
+  raises `ValueError` immediately, since a malformed `run_id` reaching this constructor is a
+  caller bug, not a runtime logging failure.
+- Each line matches design.md § Observability's schema: `{timestamp, run_id, iteration, phase,
+  node, event, duration_ms, tokens_in, tokens_out, model, output_summary}`. `event` is `"start"`
+  or `"end"`; `duration_ms` is `null` on `"start"`, populated on `"end"`.
+- `iteration`/`phase` are read from the node's **input** state at `on_chain_start` time (LangGraph
+  passes the node function's raw input — the full `LabState` dict — to this hook) and reused for
+  the paired `"end"` line; they are *not* re-derived from `on_chain_end`'s `outputs`, since that's
+  just the node's partial return delta and usually lacks these keys.
+- `tokens_in`/`tokens_out`/`model` are populated by correlating `on_chat_model_start`/`on_llm_end`
+  events (fired for the `self.llm.invoke(...)` call inside `LLMNode.__call__`, via LangChain's
+  ambient `RunnableConfig` callback propagation — no wiring needed in `src/nodes/llm/base.py`)
+  back to their owning node run via `parent_run_id`. For a node with no LLM call (any
+  `ComputeNode`), these three fields are `null`, not `0` — `null` means "no LLM call observed",
+  `0` would incorrectly imply a zero-token LLM call happened.
+- `output_summary` is a best-effort, node-agnostic string: the last LLM message's `content` when
+  the node's output includes a `messages` key, otherwise `"updated: {sorted output keys}"`;
+  truncated to 200 characters.
+- Logging never raises into the pipeline: any exception (bad path, write failure, unexpected
+  callback shape) is caught in each overridden hook and reported as a one-line warning on stderr.
+- **Not wired up yet** — no caller attaches this handler via `config={"callbacks": [handler]}` at
+  a `graph.invoke(...)` call today; this task delivers the handler standalone, tested directly
+  against LangChain's callback interface. Wiring it into `GraphBuilder`/an API entry point is a
+  future task.
+- **Known gap, not fixed here:** `src/graph/checkpointer.py`'s `build_checkpointer(run_id, ...)`
+  still builds `{runs_dir}/{run_id}/checkpoint.db` without the same `run_id` validation (flagged
+  in T-009's forward note) — out of this task's `src/observability/`-only scope.
+
+### Layer 2 — MLflow experiment tracking
+
+> Skeleton — embedded MLflow tracking under `workspace/{competition}/mlruns/`, populated by the
+> task that wires MLflow into training nodes.
+
+### Layer 3 — LangSmith (opt-in)
+
+> Skeleton — `LANGCHAIN_TRACING_V2=true` opt-in tracing, populated if/when a task wires it up.
 
 ## Invariants
 

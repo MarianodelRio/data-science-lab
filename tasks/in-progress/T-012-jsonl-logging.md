@@ -3,11 +3,11 @@ id: T-012
 phase: 1
 agent: infra-agent
 depends_on: [T-002]
-status: available
+status: in-progress
 folders: ["src/observability/"]
 outputs: [JsonlCallbackHandler writing runs/{run_id}/execution.jsonl]
 size: S
-branch: ~
+branch: feature/T-012-jsonl-logging
 pr: ~
 ---
 

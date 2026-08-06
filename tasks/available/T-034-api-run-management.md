@@ -3,7 +3,7 @@ id: T-034
 phase: 3
 agent: api-agent
 depends_on: [T-009]
-status: blocked
+status: available
 folders: ["src/api/"]
 outputs: [FastAPI app, POST/GET /api/runs, POST /api/runs/{id}/resume]
 size: M

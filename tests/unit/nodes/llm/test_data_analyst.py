@@ -215,3 +215,108 @@ def test_missing_code_fence_raises_value_error(
 
     with pytest.raises(ValueError, match="no fenced"):
         node(state)
+
+
+def test_multiple_code_fences_raises_value_error(
+    patched_llm_factory, patched_settings, mock_workspace_manager, patched_execute
+) -> None:
+    mock_llm = patched_llm_factory.get.return_value
+    mock_llm.invoke.return_value = AIMessage(
+        content=(
+            f"{NARRATIVE}\n\n```python\n{CODE}\n```\n\n"
+            "Here's an illustrative example of an alternative approach:\n\n"
+            "```python\nprint('this second block should not be silently kept')\n```\n"
+        )
+    )
+    node = DataAnalystNode()
+    state = _build_state()
+
+    with pytest.raises(ValueError, match="expected exactly one"):
+        node(state)
+
+
+def test_report_handles_backticks_in_stdout(
+    patched_llm_factory, patched_settings, mock_workspace_manager
+) -> None:
+    with patch("src.nodes.llm.data_analyst.execute") as mock_execute:
+        mock_execute.return_value = ExecResult(
+            returncode=0,
+            stdout="before\n```\nsome embedded fence in stdout\n```\nafter",
+            stderr="",
+            timed_out=False,
+        )
+        _, workspace_instance = mock_workspace_manager
+        node = DataAnalystNode()
+        state = _build_state()
+
+        node(state)
+
+    written_content = workspace_instance.write_text.call_args[0][1]
+    # The stdout's own ``` run must not prematurely close the outer fence:
+    # the embedded content must survive intact, and the outer fence must be
+    # a longer run of backticks (```` or more) than a bare triple-backtick.
+    assert "some embedded fence in stdout" in written_content
+    assert "````" in written_content
+    assert "## Execution output" in written_content
+
+
+def test_report_handles_backticks_in_stderr(
+    patched_llm_factory, patched_settings, mock_workspace_manager
+) -> None:
+    with patch("src.nodes.llm.data_analyst.execute") as mock_execute:
+        mock_execute.return_value = ExecResult(
+            returncode=1,
+            stdout="",
+            stderr="Traceback:\n```\nsome embedded fence in traceback\n```\n",
+            timed_out=False,
+        )
+        _, workspace_instance = mock_workspace_manager
+        node = DataAnalystNode()
+        state = _build_state()
+
+        node(state)
+
+    written_content = workspace_instance.write_text.call_args[0][1]
+    # "## Execution errors" must survive verbatim, exactly once, and not be
+    # swallowed into a preceding fenced block by the embedded ``` run.
+    assert written_content.count("## Execution errors") == 1
+    assert "some embedded fence in traceback" in written_content
+    assert "````" in written_content
+
+
+def test_notebook_includes_failure_cell_on_nonzero_returncode(
+    patched_llm_factory, patched_settings, mock_workspace_manager
+) -> None:
+    with patch("src.nodes.llm.data_analyst.execute") as mock_execute:
+        mock_execute.return_value = ExecResult(
+            returncode=1, stdout="", stderr="Traceback: boom", timed_out=False
+        )
+        _, workspace_instance = mock_workspace_manager
+        node = DataAnalystNode()
+        state = _build_state()
+
+        node(state)
+
+    _, kwargs = workspace_instance.write_notebook.call_args
+    cells = kwargs["cells"]
+    assert len(cells) == 3
+    assert cells[0] == {"cell_type": "markdown", "source": NARRATIVE}
+    assert cells[1] == {"cell_type": "code", "source": CODE}
+    assert cells[2]["cell_type"] == "markdown"
+    assert "Execution failed" in cells[2]["source"]
+    assert "returncode: 1" in cells[2]["source"]
+    assert "Traceback: boom" in cells[2]["source"]
+
+
+def test_notebook_has_exactly_two_cells_on_success(
+    patched_llm_factory, patched_settings, mock_workspace_manager, patched_execute
+) -> None:
+    _, workspace_instance = mock_workspace_manager
+    node = DataAnalystNode()
+    state = _build_state()
+
+    node(state)
+
+    _, kwargs = workspace_instance.write_notebook.call_args
+    cells = kwargs["cells"]
+    assert len(cells) == 2

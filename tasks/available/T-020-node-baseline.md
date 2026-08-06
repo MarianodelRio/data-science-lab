@@ -3,7 +3,7 @@ id: T-020
 phase: 2
 agent: pipeline-agent
 depends_on: [T-010, T-011, T-006]
-status: blocked
+status: available
 folders: ["src/nodes/llm/", "src/nodes/compute/", "config/agents/", "config/prompts/"]
 outputs: [baseline_designer node, baseline_runner node, experiments/baseline/, baseline_score]
 size: M

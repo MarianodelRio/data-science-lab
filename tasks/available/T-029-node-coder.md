@@ -3,7 +3,7 @@ id: T-029
 phase: 2
 agent: pipeline-agent
 depends_on: [T-010, T-006]
-status: blocked
+status: available
 folders: ["src/nodes/llm/", "config/agents/", "config/prompts/"]
 outputs: [coder node, workspace training scripts, results.json, OOF predictions, Optuna inner loop]
 size: M

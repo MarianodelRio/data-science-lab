@@ -3,7 +3,7 @@ id: T-028
 phase: 2
 agent: pipeline-agent
 depends_on: [T-010]
-status: blocked
+status: available
 folders: ["src/nodes/llm/", "config/agents/", "config/prompts/"]
 outputs: [ensemble_specialist node, stacking/blending design using OOF predictions]
 size: S

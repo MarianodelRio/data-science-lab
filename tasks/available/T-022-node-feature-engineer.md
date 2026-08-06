@@ -3,7 +3,7 @@ id: T-022
 phase: 2
 agent: pipeline-agent
 depends_on: [T-010]
-status: blocked
+status: available
 folders: ["src/nodes/llm/", "config/agents/", "config/prompts/"]
 outputs: [feature_engineer node, design/iteration_N/feature_spec.json]
 size: S

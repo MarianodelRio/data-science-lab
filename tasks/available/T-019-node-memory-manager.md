@@ -3,7 +3,7 @@ id: T-019
 phase: 2
 agent: pipeline-agent
 depends_on: [T-010, T-008]
-status: blocked
+status: available
 folders: ["src/nodes/llm/", "config/agents/", "config/prompts/"]
 outputs: [memory_manager node, RAG deduplication + consolidation]
 size: S

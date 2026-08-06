@@ -3,7 +3,7 @@ id: T-013
 phase: 2
 agent: pipeline-agent
 depends_on: [T-010, T-006]
-status: blocked
+status: available
 folders: ["src/nodes/llm/", "config/agents/", "config/prompts/"]
 outputs: [data_analyst node, eda_report.md, notebooks/01_eda.ipynb]
 size: M

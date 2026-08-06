@@ -231,9 +231,30 @@ does not change how finely completed work gets persisted for resume.
 > `Implementation`, `Evaluation`, `Delivery`), each documenting its nodes, sequence, critic, and
 > interrupt behavior. Populated incrementally by each phase's implementing task.
 
+### Understanding (Phase 1)
+
+`config/phases/phase1_understanding.yaml`'s `sequence`: `data_analyst` → `problem_framer` →
+`validation_strategist` → `leakage_auditor` → `analysis_critic`, interrupt after the phase
+completes. Only `data_analyst` has landed so far (T-013); the rest still resolve to `NoOpNode`.
+
+- **`data_analyst`** (`src/nodes/llm/data_analyst.py`, `LLMNode` subclass, `model_role:
+  reasoning`) — the phase's first node. Its `_write_output` override parses a single fenced
+  ```python code block out of the LLM's response, runs it through `code_executor.execute`
+  (never inline `exec`/`eval`), and writes two workspace artifacts: `reports/eda_report.md`
+  (narrative + the subprocess's captured stdout, plus an `## Execution errors` section if the
+  run failed or timed out) and `notebooks/01_eda.ipynb` (one markdown cell for the narrative,
+  one code cell for the executed script). `_build_output_state` sets
+  `state["eda_report_path"]` to the report's path — the notebook path is not tracked in
+  `LabState` (no field for it; the notebook is a workspace artifact only, not read by any
+  downstream node).
+
 ## Node classification
 
 > Skeleton — table of LLM nodes vs pure Python nodes vs tools, populated as each node lands.
+
+| Node | Type | Phase | Status |
+|---|---|---|---|
+| `data_analyst` | LLM (`LLMNode`) | 1 — Understanding | Landed (T-013) |
 
 ### ComputeNode base class
 

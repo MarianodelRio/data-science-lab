@@ -3,11 +3,11 @@ id: T-013
 phase: 2
 agent: pipeline-agent
 depends_on: [T-010, T-006]
-status: available
+status: in-progress
 folders: ["src/nodes/llm/", "config/agents/", "config/prompts/"]
 outputs: [data_analyst node, eda_report.md, notebooks/01_eda.ipynb]
 size: M
-branch: ~
+branch: feature/T-013-node-data-analyst
 pr: ~
 ---
 

@@ -125,3 +125,20 @@ reviewer+report_writer+kaggle_client node, or T-037 API kaggle+mlflow endpoints)
 relevant call with a clearer error message naming the competition and the actual failure, rather
 than letting the bare exception propagate.
 Status: open
+
+## OPEN — 2026-08-05 [infra-agent (T-008) → infra-agent (Docker/CI)]
+`src/tools/rag.py`/`src/memory/store.py` (T-008) use
+`sentence_transformers.SentenceTransformerEmbeddingFunction(model_name="all-MiniLM-L6-v2")` for
+local embeddings. This model downloads from the Hugging Face Hub on first use if not already
+present in the local cache (`~/.cache/huggingface` / `sentence-transformers` cache dir) — a
+one-time network dependency, not a per-call one, so the "no external API call" done-when
+criterion holds in steady state once cached. In a fresh Docker container (no persisted cache
+volume) or a network-restricted CI runner, the very first `RagStore(...)` construction anywhere
+in the process will attempt this download and fail/hang if there is no network access.
+Not addressed as part of T-008 (out of its `src/tools/`/`src/memory/` folder scope; no
+Docker/CI files touched). Whoever builds the `docker/` image or CI pipeline for the `chroma`
+service / any node importing `src/tools/rag.py` should consider pre-caching the model into the
+image (e.g. a `RUN python -c "from sentence_transformers import SentenceTransformer;
+SentenceTransformer('all-MiniLM-L6-v2')"` layer) or mounting a persistent cache volume, so
+CI/production runs never hit this cold-start network call.
+Status: open

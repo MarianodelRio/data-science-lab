@@ -369,3 +369,57 @@ Discarded: adding `critic_verdict`/`retry_count`/`selected_specialist` fields to
 support graph-level conditional edges for retry/dispatch — would be the more "idiomatic" LangGraph
 pattern, but requires modifying a protected contract (`src/state.py`) without approval; deferred
 to whichever future task actually needs cross-node visibility into that state.
+
+## 2026-08-05 — T-008 [infra-agent]
+Decided: `IndexDocument` (`src/memory/store.py`) is the frozen dataclass contract for
+everything indexed into the RAG store: id: str (default uuid4), text: str, source: str,
+problem_type: list[str], methods_used: list[str], dataset_characteristics: list[str],
+key_findings: str, relevance_score: float.
+`RagStore` (src/tools/rag.py) never extracts these fields itself — no LLM import anywhere in
+src/tools/rag.py or src/memory/store.py. Callers (T-017 literature_researcher and other
+research/memory nodes) construct IndexDocument objects via their own LLM extraction step and
+pass them to RagStore.index(); RagStore is pure storage/embedding/retrieval.
+Why: design.md classifies `rag` as a Tool (not one of the 21 LLM nodes) and CLAUDE.md
+invariant #8 forbids compute/tool modules from importing an LLM module.
+Affects: src/memory/store.py, src/tools/rag.py, and every future node constructing
+IndexDocument (T-017, T-018, T-019, T-021, T-032 per T-008's task file).
+Discarded: extracting metadata inside RagStore.index() (design.md's "Indexing pipeline" step
+2 reads as if extraction happens as part of indexing) — rejected since it would make
+src/tools/rag.py an LLM-calling module, violating invariant #8.
+
+## 2026-08-05 — T-008 [infra-agent]
+Decided: `RagStore.query(where=...)` accepts design.md's literal
+`{"problem_type": {"$in": [...]}}` shape (also for `methods_used`,
+`dataset_characteristics`) and translates it internally into Chroma's `$or`-of-`$contains`
+before calling the collection — Chroma (chromadb==1.5.9) does not match `$in` against
+list-valued metadata directly (verified empirically), only against scalar metadata fields.
+Why: problem_type/methods_used/dataset_characteristics are list[str] per the IndexDocument
+schema (a document can belong to multiple problem types), but design.md's own retrieval
+example and this task's done-when checklist both hard-code the `$in` call shape —
+translating at the RagStore boundary satisfies both without weakening the schema to
+single-valued scalars.
+Affects: src/memory/store.py (translate_where, LIST_VALUED_METADATA_FIELDS),
+src/tools/rag.py (RagStore.query).
+Discarded: storing problem_type etc. as a single scalar "primary" value — would silently
+drop information for multi-label documents and contradicts the list[str] schema.
+
+## 2026-08-05 — T-008 [infra-agent] (correction, review round 1)
+Decided: `sanitize_collection_name` (`src/memory/store.py`) is corrected from pure
+lossy-character-sanitization to `rag_{readable}_{digest}`, where `digest` is a 16-hex-char
+`sha256(competition_name)` prefix and is the sole source of uniqueness; `readable` is now
+purely a cosmetic debug aid with no uniqueness guarantee.
+Why: code review (independently reproduced against a live `chromadb.EphemeralClient()`) found
+the original char-replace-then-strip scheme collided on distinct inputs — `"foo bar"` vs.
+`"foo_bar"` (space vs. literal `_`) and `"comp!"` vs. `"comp"` (trailing-char stripping after
+replacement) both sanitized to the identical collection name. Two different competitions could
+therefore silently share one Chroma collection, making one competition's indexed RAG documents
+retrievable by another — a real cross-tenant data leak, not a cosmetic naming edge case. This
+supersedes the original "collision-free via character clamping" assumption implicit in the
+first-pass `sanitize_collection_name` (not separately logged as a decision at the time).
+Affects: src/memory/store.py (sanitize_collection_name); every existing/future
+`RagStore(competition_name=...)` caller — collection names change shape but the public
+`RagStore`/`IndexDocument` API is unaffected.
+Discarded: tightening the character-replacement/stripping rules further to try to make
+sanitization itself injective — rejected because any purely lossy text transform is
+fundamentally not guaranteed collision-free against arbitrary input; hashing the raw input is
+the only approach that actually guarantees it.

@@ -1,9 +1,11 @@
 """Unit tests for `GraphBuilder.build()`.
 
-Runs against the repo's current real state: no node implementation modules
-exist under `src/nodes/{llm,compute}/` yet (T-010/T-011 are still
-`available`), so every node resolves to a `NoOpNode` placeholder — this test
-asserts the whole 7-phase graph still compiles cleanly under that condition.
+Runs against the repo's current real state: `src/nodes/{compute,llm}/base.py`
+(T-011/T-010) provide base classes but no concrete node module resolvable by
+name — `base` never appears as a node name in any `config/phases/*.yaml`, so
+`resolve_node` still falls through to `NoOpNode` for every real node. This
+test asserts the whole 7-phase graph still compiles cleanly under that
+condition.
 """
 
 from pathlib import Path
@@ -21,8 +23,10 @@ from src.graph.phases import PHASE_ORDER
 
 def test_no_real_node_modules_exist_yet() -> None:
     """Guards the premise of the other tests in this module: if a future task
-    lands a real node under `src/nodes/`, this test starts failing and is the
-    signal to revisit `NoOpNode`-dependent assumptions here.
+    lands a concrete node under `src/nodes/`, this test starts failing and is
+    the signal to revisit `NoOpNode`-dependent assumptions here. `base.py`
+    (T-010/T-011's `LLMNode`/`ComputeNode` base classes) is excluded — it is
+    infrastructure, not itself a node `resolve_node` can ever match by name.
     """
     import src.nodes.compute as compute_pkg
     import src.nodes.llm as llm_pkg
@@ -30,7 +34,7 @@ def test_no_real_node_modules_exist_yet() -> None:
     compute_dir = Path(compute_pkg.__file__).parent
     llm_dir = Path(llm_pkg.__file__).parent
     all_py_files = (*compute_dir.glob("*.py"), *llm_dir.glob("*.py"))
-    real_modules = [p for p in all_py_files if p.stem != "__init__"]
+    real_modules = [p for p in all_py_files if p.stem not in ("__init__", "base")]
 
     assert real_modules == []
 

@@ -1,0 +1,7 @@
+name: competition_analyst
+model_role: research
+prompt_version: v1
+tools:
+  - kaggle_client
+output_file_pattern: "reports/competition_analysis_iter{iteration}.md"
+max_tokens: 4096

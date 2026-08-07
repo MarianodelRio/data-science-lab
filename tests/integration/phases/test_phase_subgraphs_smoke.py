@@ -61,6 +61,33 @@ _MOCK_LEAKAGE_AUDIT = json.dumps({"leaks": [], "severity": "none", "blocks_progr
 # so an empty array is always the correct, schema-valid extraction response.
 _MOCK_EMPTY_EXTRACTION = json.dumps([])
 
+# competition_analyst (T-018) is also a structured-JSON node, but its output
+# is a top-level JSON *array* of per-kernel extractions, not an object — see
+# config/prompts/competition_analyst/v1.md. One entry per fake kernel
+# returned by `_FAKE_KERNELS` below (see the `_mock_kernel_lister` fixture).
+_MOCK_COMPETITION_ANALYSIS = json.dumps(
+    [
+        {
+            "index": 1,
+            "problem_type": ["binary_classification"],
+            "methods_used": ["gradient boosting"],
+            "dataset_characteristics": [],
+            "key_findings": "Smoke-test kernel extraction.",
+            "relevance_score": 0.5,
+        }
+    ]
+)
+
+_FAKE_KERNELS = [
+    {
+        "ref": "smoke-user/smoke-kernel",
+        "title": "Smoke test kernel",
+        "author": "smoke-user",
+        "total_votes": 1,
+        "url": "https://www.kaggle.com/code/smoke-user/smoke-kernel",
+    }
+]
+
 
 def _llm_side_effect(messages: list[BaseMessage]) -> AIMessage:
     """Dispatch mocked LLM output by inspecting the outgoing SystemMessage's
@@ -79,6 +106,8 @@ def _llm_side_effect(messages: list[BaseMessage]) -> AIMessage:
         return AIMessage(content=_MOCK_EMPTY_EXTRACTION)
     if "System prompt — web_researcher" in system_content:
         return AIMessage(content=_MOCK_EMPTY_EXTRACTION)
+    if "System prompt — competition_analyst" in system_content:
+        return AIMessage(content=_MOCK_COMPETITION_ANALYSIS)
     return AIMessage(content=_MOCK_LLM_CONTENT)
 
 
@@ -105,6 +134,17 @@ def _mock_llm(monkeypatch: pytest.MonkeyPatch) -> None:
     stays network-free end to end. With the search clients returning no
     sources, `_MOCK_EMPTY_EXTRACTION` above is the schema-valid response for
     both nodes regardless of the (unused) query text.
+
+    Two more real-world-facing calls need the same treatment for
+    `competition_analyst` (T-018), whose defaults are real network/service
+    clients when not injected (`resolve_node` always constructs it with no
+    args): its default `kernel_lister` (the bare `list_top_kernels` function,
+    which would otherwise hit the real Kaggle API and 401 on the fake
+    credentials above) and its lazily-constructed `RagStore` (which would
+    otherwise try to reach the Docker `chroma` service at
+    `config/settings.yaml`'s `workspace.chroma_host`/`chroma_port`, unreachable
+    here). Both are patched at their `src.nodes.llm.competition_analyst` import
+    location, mirroring the `LLMFactory` patch above.
     """
     for var in (
         "ANTHROPIC_API_KEY",
@@ -124,12 +164,18 @@ def _mock_llm(monkeypatch: pytest.MonkeyPatch) -> None:
         patch("src.nodes.llm.web_researcher.WebSearchClient") as mock_web_client,
         patch("src.nodes.llm.literature_researcher.RagStore") as mock_lit_rag_store,
         patch("src.nodes.llm.web_researcher.RagStore") as mock_web_rag_store,
+        patch(
+            "src.nodes.llm.competition_analyst.list_top_kernels",
+            return_value=_FAKE_KERNELS,
+        ),
+        patch("src.nodes.llm.competition_analyst.RagStore") as mock_rag_store_cls,
     ):
         mock_factory.get.return_value = mock_llm
         mock_lit_client.return_value.search.return_value = []
         mock_web_client.return_value.search.return_value = []
         mock_lit_rag_store.return_value = MagicMock()
         mock_web_rag_store.return_value = MagicMock()
+        mock_rag_store_cls.return_value = MagicMock()
         yield
 
 

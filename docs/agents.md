@@ -16,6 +16,7 @@ Each agent-adding task appends one row to the table below. Do not remove or reor
 | `analysis_critic` | Phase 1 — Understanding & Phase 4 — Design | `fast` | `reports/critic_verdicts_iter{iteration}.json` |
 | `literature_researcher` | Phase 2 — Research | `research` | `reports/literature_research.md` |
 | `web_researcher` | Phase 2 — Research | `research` | `reports/web_research.md` |
+| `competition_analyst` | Phase 2 — Research | `research` | `reports/competition_analysis_iter{iteration}.md` |
 
 ## Adding an agent
 

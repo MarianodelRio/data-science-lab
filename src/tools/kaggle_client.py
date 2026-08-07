@@ -52,6 +52,10 @@ class KaggleApiProtocol(Protocol):
 
     def competition_submissions(self, competition: str) -> list[Any]: ...
 
+    def kernels_list(
+        self, competition: str | None = None, sort_by: str | None = None, page_size: int = 20
+    ) -> list[Any]: ...
+
 
 def _require_env(name: str) -> str:
     try:
@@ -123,3 +127,31 @@ def get_score(competition: str, api: KaggleApiProtocol | None = None) -> dict[st
         "public_score": float(latest.public_score),
         "submitted_at": latest.date.isoformat(),
     }
+
+
+def list_top_kernels(
+    competition: str, n: int = 10, api: KaggleApiProtocol | None = None
+) -> list[dict[str, Any]]:
+    """Return the `n` most-voted public kernels (notebooks) for `competition`.
+
+    NOTE for future callers: Kaggle's forum/discussion API has no callable RPC
+    client in the installed SDK — see context/discoveries.md's 2026-08-07 T-018
+    entry before attempting to extend this module with forum-post fetching.
+    """
+    _validate_competition(competition)
+    if n <= 0:
+        raise ValueError(f"n must be positive, got {n}")
+    resolved_api = api or _default_api()
+    kernels = resolved_api.kernels_list(
+        competition=competition, sort_by="voteCount", page_size=min(n, 100)
+    )
+    return [
+        {
+            "ref": kernel.ref,
+            "title": kernel.title,
+            "author": kernel.author,
+            "total_votes": kernel.total_votes,
+            "url": f"https://www.kaggle.com/code/{kernel.ref}",
+        }
+        for kernel in kernels[:n]
+    ]

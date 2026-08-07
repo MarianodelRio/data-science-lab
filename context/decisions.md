@@ -525,3 +525,23 @@ Affects: `tests/integration/phases/test_phase_subgraphs_smoke.py`,
 `tests/unit/graph/test_checkpointer.py`.
 Discarded: leaving those two tests broken and reporting them as a discovery for another agent —
 would ship T-017 with a failing test suite, violating "never skip verification."
+
+## 2026-08-07 — T-018 [pipeline-agent]
+Decided: dropped the original task file's "Kaggle forum posts" scope for `competition_analyst`
+entirely (no stub, no partial implementation) and instead added
+`kaggle_client.list_top_kernels(competition, n=10, api=None)` — a small, additive function
+mirroring `download()`/`submit()`'s existing validation/default-api pattern — as the only new
+`kaggle_client.py` surface. `competition_analyst` extracts winning patterns from these kernels'
+title/author/vote-count metadata only.
+Why: confirmed against the installed `kaggle`/`kagglesdk` packages that no discussions/forum RPC
+client is wired into `KaggleApi` — there is no way to list/fetch forum posts through the installed
+SDK without scraping kaggle.com HTML, which is out of `kaggle_client.py`'s "thin wrapper around the
+kaggle package" contract (see the matching 2026-08-07 T-018 entry in `context/discoveries.md`).
+Adding `list_top_kernels` as one small additive function, rather than filing a separate
+infra-agent task to design a new Kaggle-facing tool module, was human-approved: it's a low-risk,
+purely-additive change to a file `pipeline-agent` doesn't own, and routing it through a dedicated
+cross-agent task would have blocked T-018 on infra-agent scheduling for a few lines of code.
+Affects: `src/tools/kaggle_client.py` (additive only — `download`/`submit`/`get_score` signatures
+unchanged), `src/nodes/llm/competition_analyst.py`.
+Discarded: stubbing forum-post fetching now against a future SDK version — no reliable way to test
+or validate an unimplemented API surface, and it would have shipped a misleading placeholder.

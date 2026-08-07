@@ -103,28 +103,56 @@ def _build_targets_message(
     return "\n\n".join(sections)
 
 
-def _strip_outer_fence(content: str) -> str | None:
-    """Strip a single outer fence wrapping the entire response, if present.
+def _fence_candidates(content: str) -> list[str]:
+    """Return, in preference order, the un-fenced strings worth attempting
+    to `json.loads`.
 
-    Unlike sibling nodes' `_strip_outer_fence` (problem_framer.py,
-    leakage_auditor.py), this never raises: an unclosed/malformed fence
-    returns `None` so the caller can normalize to an `iterate` verdict
-    instead of propagating an exception (§2.5 of the T-016 plan — malformed
-    LLM output must never crash the critic).
+    A single anchor is not safe in general: always taking the LAST '```' as
+    the closing delimiter (mirroring the sibling nodes' `_strip_outer_fence`
+    fix for embedded ``` runs *inside* a JSON string value, e.g. a feedback
+    message that quotes a fenced code snippet) is correct there — the true
+    close is textually last — but wrong if the LLM response accidentally
+    contains more than one top-level fenced block (e.g. stray narrative
+    fenced separately from the intended JSON one, despite the prompt's "no
+    other prose" instruction): there, the LAST '```' belongs to the
+    *unwanted* trailing block, and anchoring on it swallows/truncates the
+    real JSON.
+
+    Rather than commit to one anchor, this returns multiple candidates —
+    the raw content unmodified, a last-'```'-anchored strip, and a
+    first-'```'-anchored strip — and `_extract_verdict_object` keeps
+    whichever one actually parses as a JSON object. At most three cheap
+    `json.loads` attempts; malformed JSON is always normalized to a safe
+    `iterate` verdict rather than raising, so trying more than one anchor
+    carries no risk.
     """
     text = content.strip()
-    if not text.startswith("```"):
-        return text
-    if not text.endswith("```") or len(text) < 6:
-        return None
-    first_newline = text.find("\n")
-    if first_newline == -1:
-        return None
-    inner = text[first_newline + 1 :]
-    closing_idx = inner.rfind("```")
-    if closing_idx == -1:
-        return None
-    return inner[:closing_idx].strip()
+    candidates = [text]
+    if text.startswith("```") and text.endswith("```") and len(text) >= 6:
+        first_newline = text.find("\n")
+        if first_newline != -1:
+            inner = text[first_newline + 1 :]
+            last_close = inner.rfind("```")
+            if last_close != -1:
+                candidates.append(inner[:last_close].strip())
+            first_close = inner.find("```")
+            if first_close != -1 and first_close != last_close:
+                candidates.append(inner[:first_close].strip())
+    return candidates
+
+
+def _extract_verdict_object(content: str) -> dict[str, Any] | None:
+    """Try each fence-stripping candidate from `_fence_candidates` in turn;
+    return the first one that parses as a JSON object, or `None` if none
+    do. Never raises."""
+    for candidate in _fence_candidates(content):
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
 
 
 def _parse_verdict(content: str, allowed_targets: tuple[str, ...]) -> tuple[str, str, str]:
@@ -142,15 +170,7 @@ def _parse_verdict(content: str, allowed_targets: tuple[str, ...]) -> tuple[str,
     """
     fallback_target = allowed_targets[0] if allowed_targets else ""
 
-    stripped = _strip_outer_fence(content)
-    data: dict[str, Any] | None = None
-    if stripped is not None:
-        try:
-            parsed = json.loads(stripped)
-        except json.JSONDecodeError:
-            parsed = None
-        if isinstance(parsed, dict):
-            data = parsed
+    data = _extract_verdict_object(content)
 
     if data is None:
         return (
@@ -177,14 +197,57 @@ def _parse_verdict(content: str, allowed_targets: tuple[str, ...]) -> tuple[str,
     return verdict, feedback, target_node
 
 
+def _detect_phase_stem(state: LabState) -> str:
+    """Detect whether this invocation is reviewing Phase 1 (Understanding)
+    or Phase 4 (Design), returning the matching `config/phases/*.yaml`
+    filename stem.
+
+    Deliberately does NOT read `state["phase"]`: that field is only stamped
+    by the graph *after* a phase subgraph finishes (see
+    context/decisions.md's 2026-08-06 `[Orchestrator, /explore]` entry on
+    checkpoint semantics — the phase-completion write is what feeds the
+    forward-only checkpoint), so while `analysis_critic` itself is running
+    — as the *last* node inside the very phase it is reviewing —
+    `state["phase"]` still reflects the *previous* completed phase, not the
+    current one. Reading it here would misdetect every single invocation.
+    `feature_spec_path` is only ever written by `feature_engineer` (a
+    Phase 4-only node), so its presence is a reliable proxy instead.
+    """
+    return "phase4_design" if bool(state.get("feature_spec_path")) else "phase1_understanding"
+
+
 class AnalysisCriticNode(LLMNode):
     name = "analysis_critic"
+
+    def _resolve_output_path(self, state: LabState) -> str:
+        """Override the base implementation to also interpolate `{phase}`.
+
+        `LLMNode._resolve_output_path` (src/nodes/llm/base.py) only
+        substitutes `{iteration}`. But `analysis_critic` runs twice per
+        competition run — once at the end of Phase 1, once at the end of
+        Phase 4 — and nothing increments `current_iteration` between them,
+        so both invocations see `current_iteration == 0`. An
+        `{iteration}`-only pattern would make Phase 4's write silently
+        clobber Phase 1's verdict record. `output_file_pattern`
+        (config/agents/analysis_critic.yaml) therefore also contains
+        `{phase}`, which the base class doesn't know how to fill — hence
+        this local reimplementation rather than calling `super()`.
+        """
+        phase_stem = _detect_phase_stem(state)
+        try:
+            return self.config.output_file_pattern.format(
+                iteration=state["current_iteration"], phase=phase_stem
+            )
+        except KeyError as e:
+            raise ValueError(
+                f"output_file_pattern {self.config.output_file_pattern!r} for agent "
+                f"'{self.name}' has an unresolved placeholder {e}"
+            ) from e
 
     def __call__(self, state: LabState) -> dict[str, Any]:
         workspace = WorkspaceManager(state["workspace_path"])
 
-        is_phase4 = bool(state.get("feature_spec_path"))
-        phase_stem = "phase4_design" if is_phase4 else "phase1_understanding"
+        phase_stem = _detect_phase_stem(state)
         phase_config = load_phase_config(phase_stem)
         critic_config = phase_config.critic
         if critic_config is None:
@@ -194,10 +257,22 @@ class AnalysisCriticNode(LLMNode):
         allowed_targets = critic_config.targets
         fallback_target = allowed_targets[0] if allowed_targets else ""
 
-        # Global safety cap: guards CLAUDE.md invariant #5 ("no infinite
-        # loops") against a pathological LLM that names a *different* target
-        # every cycle, which would never trip the per-target retry counter
-        # alone. Deliberate addition beyond the literal task text.
+        # Global safety cap: bounds the loop even under a pathological LLM
+        # response pattern, guarding CLAUDE.md invariant #5 ("no infinite
+        # loops"). Note on reachability: because `target_node` is always
+        # normalized to one of the finite `allowed_targets` (see
+        # `_parse_verdict`), a pigeonhole argument shows the per-target
+        # `count >= max_retries` guard alone already bounds *any*
+        # round-robin-style target pattern within this many cycles — with N
+        # targets, N * (max_retries + 1) cycles cannot be filled without
+        # some target reaching `max_retries + 1` visits (and thus tripping
+        # its own guard) first. So under the current formula and the
+        # target-normalization guarantee, the `for...else` branch below is
+        # unreachable via any input the LLM can currently produce; it is
+        # kept as defense-in-depth against a future change (e.g. a bug that
+        # lets `target_node` escape `allowed_targets`, or a different cap
+        # formula) rather than against a presently-realizable adversarial
+        # input.
         max_total_cycles = (max_retries + 1) * max(len(allowed_targets), 1)
 
         retry_counts: dict[str, int] = {}
@@ -252,6 +327,18 @@ class AnalysisCriticNode(LLMNode):
             try:
                 delta = resolve_node(target_node)(cast(LabState, working_state))
             except FoldsAlreadyFrozenError:
+                # Scoped to `validation_strategist` specifically: today it's
+                # the only node that ever raises this exception (its
+                # write-once guard on `validation/fold_config.json`, per
+                # CLAUDE.md invariant #1), but the exception class itself
+                # isn't inherently tied to any single target. Re-raise for
+                # any other target rather than silently mislabeling the
+                # attempt record with `"folds_frozen": True` — a claim
+                # specifically about CV fold freezing — for an unrelated
+                # write-once violation a future node might reuse this same
+                # exception class for.
+                if target_node != "validation_strategist":
+                    raise
                 attempts.append(
                     {
                         "verdict": "pass",
@@ -272,6 +359,17 @@ class AnalysisCriticNode(LLMNode):
 
             target_delta = dict(delta) if isinstance(delta, dict) else {}
             target_messages = target_delta.pop("messages", None)
+            # Only the local `working_state` picks up non-"messages" keys
+            # from the retried target's delta (never this node's own
+            # returned delta — see the messages-only contract at the bottom
+            # of __call__). This assumes a retried target's own output path
+            # is a pure function of (workspace, current_iteration) — true
+            # for every currently-implemented target (each writes to a
+            # fixed or iteration-keyed path and returns that same path
+            # again on a second call within one cycle) — so re-reading its
+            # content on the next review cycle via `_read_target_content`
+            # naturally picks up the retried output without needing to
+            # propagate the updated path field back out of this node.
             working_state.update(target_delta)
             if target_messages:
                 accumulated_messages.extend(target_messages)

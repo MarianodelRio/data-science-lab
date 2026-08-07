@@ -2,5 +2,5 @@ name: analysis_critic
 model_role: fast
 prompt_version: v1
 tools: []
-output_file_pattern: "reports/critic_verdicts_iter{iteration}.json"
+output_file_pattern: "reports/critic_verdicts_{phase}_iter{iteration}.json"
 max_tokens: 2048

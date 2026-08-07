@@ -1,0 +1,6 @@
+name: literature_researcher
+model_role: research
+prompt_version: v1
+tools: []
+output_file_pattern: "reports/literature_research.md"
+max_tokens: 4096

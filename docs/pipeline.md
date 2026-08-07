@@ -430,8 +430,34 @@ path argument.
 
 ## RAG
 
-> Skeleton — vector store, embeddings, indexing pipeline, and retrieval pattern, populated by the
-> RAG tool task.
+`literature_researcher` and `web_researcher` (`src/nodes/llm/literature_researcher.py`,
+`src/nodes/llm/web_researcher.py`, T-017) are the two nodes that populate the RAG store described
+in § Tools → rag above. Both run in Pipeline Phase 2 (Research), in parallel per
+`config/phases/phase2_research.yaml`'s `parallel_nodes` — the one sanctioned concurrent step in the
+pipeline (CLAUDE.md invariant #6).
+
+Each node:
+1. Builds a search query from `state['problem_definition_path']`'s `problem_type` (re-relativized
+   via `_research_common.relative_to_workspace`, falling back to a generic query when the path is
+   empty or unreadable) plus `state['competition_name']`.
+2. Calls an injectable `SearchClient` (`src/nodes/llm/_research_common.py`'s `Protocol`) defined
+   locally in its own node module — no new `src/tools/` module was added for this. The production
+   default is `LiteratureSearchClient` (arxiv + Semantic Scholar, stdlib `urllib.request` +
+   `xml.etree.ElementTree`) for `literature_researcher`, and `WebSearchClient` (Tavily, stdlib
+   `urllib.request`) for `web_researcher`.
+3. Injects the raw search results into the prompt as a numbered `## Sources` block; the LLM
+   extracts per-source `problem_type`/`methods_used`/`dataset_characteristics`/`key_findings`/
+   `relevance_score` as a JSON array (`_research_common.extract_json_array` +
+   `build_index_documents`), which is validated and zipped with the raw `SourceDocument`s into
+   `IndexDocument`s.
+4. Calls `RagStore(competition_name, ...).index(documents)` and writes a human-readable markdown
+   report via `WorkspaceManager` (`reports/literature_research.md` / `reports/web_research.md`).
+
+Neither node writes a `LabState` field — both run in the same Phase-2 super-step and `LabState`
+fields other than `messages` have no LangGraph reducer, so two nodes writing the same key in one
+super-step would raise `InvalidUpdateError` (see the OPEN discovery entry from T-002/T-009 in
+`context/discoveries.md`). Both nodes' state delta is `{"messages": [...]}` only, inherited
+unchanged from `LLMNode`'s base `_build_output_state`.
 
 ## Observability
 

@@ -1,0 +1,7 @@
+name: validation_strategist
+model_role: fast
+prompt_version: v1
+tools:
+  - code_executor
+output_file_pattern: "validation/fold_config.json"
+max_tokens: 4096

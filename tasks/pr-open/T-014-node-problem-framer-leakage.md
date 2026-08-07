@@ -3,12 +3,12 @@ id: T-014
 phase: 2
 agent: pipeline-agent
 depends_on: [T-010]
-status: ready-for-pr
+status: pr-open
 folders: ["src/nodes/llm/", "config/agents/", "config/prompts/"]
 outputs: [problem_framer node, leakage_auditor node, problem_definition.json, leakage_audit.json]
 size: S
 branch: feature/T-014-node-problem-framer-leakage
-pr: ~
+pr: https://github.com/MarianodelRio/data-science-lab/pull/16
 ---
 
 ## Nodes: problem_framer + leakage_auditor (Pipeline Phase 1)

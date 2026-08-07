@@ -77,6 +77,56 @@ def _read_upstream_context(state: LabState) -> str:
     return "\n\n".join(blocks)
 
 
+def _validate_fold_config_shape(payload: dict[str, Any]) -> None:
+    """Validate the *values* of the required keys, not just their presence.
+
+    `validation/fold_config.json` is write-once (`FoldsAlreadyFrozenError`
+    guarantees it can never be recomputed), so a structurally-valid-but-garbage
+    payload — e.g. an empty `fold_indices`, a fold missing `train`/`val`, or an
+    `n_folds` that doesn't match the number of folds actually produced — would
+    otherwise get permanently frozen with no recovery path. Raises `ValueError`
+    for every shape violation, mirroring the other validation failures in
+    `_write_output`. `bool` is deliberately excluded from the int checks even
+    though `isinstance(True, int)` is `True` in Python — a JSON `true`/`false`
+    is never a valid `n_folds`/`seed`.
+    """
+    n_folds = payload["n_folds"]
+    if not isinstance(n_folds, int) or isinstance(n_folds, bool) or n_folds <= 0:
+        raise ValueError(
+            f"validation_strategist stdout JSON 'n_folds' must be a positive int, got {n_folds!r}"
+        )
+
+    seed = payload["seed"]
+    if not isinstance(seed, int) or isinstance(seed, bool):
+        raise ValueError(f"validation_strategist stdout JSON 'seed' must be an int, got {seed!r}")
+
+    fold_indices = payload["fold_indices"]
+    if not isinstance(fold_indices, list) or len(fold_indices) == 0:
+        raise ValueError(
+            f"validation_strategist stdout JSON 'fold_indices' must be a non-empty list, "
+            f"got {fold_indices!r}"
+        )
+
+    for i, fold in enumerate(fold_indices):
+        if (
+            not isinstance(fold, dict)
+            or "train" not in fold
+            or "val" not in fold
+            or not isinstance(fold["train"], list)
+            or not isinstance(fold["val"], list)
+        ):
+            raise ValueError(
+                f"validation_strategist stdout JSON 'fold_indices[{i}]' must be a dict with "
+                f"'train' and 'val' list keys, got {fold!r}"
+            )
+
+    if len(fold_indices) != n_folds:
+        raise ValueError(
+            f"validation_strategist stdout JSON 'n_folds' ({n_folds}) does not match "
+            f"len(fold_indices) ({len(fold_indices)})"
+        )
+
+
 class ValidationStrategistNode(LLMNode):
     name = "validation_strategist"
 
@@ -123,6 +173,8 @@ class ValidationStrategistNode(LLMNode):
         missing = [key for key in _REQUIRED_KEYS if key not in payload]
         if missing:
             raise ValueError(f"validation_strategist stdout JSON missing required keys: {missing}")
+
+        _validate_fold_config_shape(payload)
 
         fold_config = {key: payload[key] for key in _REQUIRED_KEYS}
         return workspace.write_json(relative_path, fold_config)

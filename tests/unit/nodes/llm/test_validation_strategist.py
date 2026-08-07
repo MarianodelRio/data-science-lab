@@ -286,6 +286,41 @@ def test_missing_required_key_raises_value_error(
     workspace_instance.write_json.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        pytest.param({"fold_indices": []}, id="empty-fold-indices"),
+        pytest.param({"n_folds": 5}, id="n_folds-mismatch-with-fold-indices-length"),
+        pytest.param(
+            {"fold_indices": [{"train": [0, 1]}]},
+            id="fold-entry-missing-val-key",
+        ),
+        pytest.param(
+            {"fold_indices": [{"train": [0, 1], "val": "not-a-list"}]},
+            id="fold-entry-val-not-a-list",
+        ),
+        pytest.param({"n_folds": "3"}, id="n_folds-not-an-int"),
+        pytest.param({"seed": "42"}, id="seed-not-an-int"),
+    ],
+)
+def test_malformed_fold_indices_raises_value_error(
+    patched_llm_factory, patched_settings, mock_workspace_manager, overrides: dict
+) -> None:
+    payload = {**FOLD_PAYLOAD, **overrides}
+    with patch("src.nodes.llm.validation_strategist.execute") as mock_execute:
+        mock_execute.return_value = ExecResult(
+            returncode=0, stdout=json.dumps(payload), stderr="", timed_out=False
+        )
+        _, workspace_instance = mock_workspace_manager
+        node = ValidationStrategistNode()
+        state = _build_state()
+
+        with pytest.raises(ValueError):
+            node(state)
+
+    workspace_instance.write_json.assert_not_called()
+
+
 # -- upstream context injection --
 
 

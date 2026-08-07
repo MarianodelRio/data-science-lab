@@ -179,9 +179,13 @@ def test_json_in_plain_fence_is_parsed(
     assert args[1] == VALID_DEFINITION
 
 
-def test_multiple_fences_raises_value_error(
+def test_malformed_multi_block_content_raises_value_error(
     patched_llm_factory, patched_settings, mock_workspace_manager
 ) -> None:
+    """Not a "multiple fences are rejected" rule (fence stripping now
+    anchors on the outermost ``` markers only, see `_strip_outer_fence`) —
+    this response has stray fenced content trapped inside the outer fence's
+    body, which makes the stripped text invalid JSON."""
     mock_llm = patched_llm_factory.get.return_value
     mock_llm.invoke.return_value = AIMessage(
         content=f"```json\n{RESPONSE_CONTENT}\n```\n\n```json\n{{}}\n```"
@@ -191,6 +195,31 @@ def test_multiple_fences_raises_value_error(
 
     with pytest.raises(ValueError, match="problem_framer"):
         node(state)
+
+
+def test_json_string_value_containing_literal_backtick_fence_is_parsed(
+    patched_llm_factory, patched_settings, mock_workspace_manager
+) -> None:
+    """Regression guard for the adversarial-review finding: a single ```json
+    fence wrapping the whole response must parse correctly even when a
+    string value inside the JSON itself contains a literal ``` sequence
+    (e.g. quoting a code snippet) — the old `findall`-based non-greedy
+    regex stopped at that first embedded ``` and truncated the JSON."""
+    data = {
+        "problem_type": "binary_classification",
+        "success_metric": "roc_auc",
+        "constraints": ["avoid columns wrapped in ```python fences``` in feature docs"],
+    }
+    mock_llm = patched_llm_factory.get.return_value
+    mock_llm.invoke.return_value = AIMessage(content=f"```json\n{json.dumps(data)}\n```")
+    _, workspace_instance = mock_workspace_manager
+    node = ProblemFramerNode()
+    state = _build_state()
+
+    node(state)
+
+    args, _ = workspace_instance.write_json.call_args
+    assert args[1] == data
 
 
 def test_invalid_json_raises_value_error(
@@ -263,3 +292,52 @@ def test_constraints_wrong_element_type_raises_value_error(
 
     with pytest.raises(ValueError, match="constraints"):
         node(state)
+
+
+@pytest.mark.parametrize("field", ["problem_type", "success_metric"])
+def test_whitespace_only_required_field_raises_value_error(
+    patched_llm_factory, patched_settings, mock_workspace_manager, field: str
+) -> None:
+    """A whitespace-only string must not silently pass the required-string
+    check — `not "   "` is `False` in Python, so the validation must strip
+    before testing truthiness (code-quality review finding)."""
+    data = {**VALID_DEFINITION, field: "   "}
+    mock_llm = patched_llm_factory.get.return_value
+    mock_llm.invoke.return_value = AIMessage(content=json.dumps(data))
+    node = ProblemFramerNode()
+    state = _build_state()
+
+    with pytest.raises(ValueError, match=field):
+        node(state)
+
+
+def test_non_dict_top_level_json_raises_value_error(
+    patched_llm_factory, patched_settings, mock_workspace_manager
+) -> None:
+    """`_extract_json` must reject valid-JSON-but-non-object top-level
+    values (e.g. the LLM responds with a JSON array instead of an object) —
+    previously untested branch (code-quality review finding)."""
+    mock_llm = patched_llm_factory.get.return_value
+    mock_llm.invoke.return_value = AIMessage(content=json.dumps([VALID_DEFINITION]))
+    node = ProblemFramerNode()
+    state = _build_state()
+
+    with pytest.raises(ValueError, match="problem_framer"):
+        node(state)
+
+
+def test_relative_to_workspace_converts_absolute_path(
+    patched_llm_factory, patched_settings, mock_workspace_manager
+) -> None:
+    """`_relative_to_workspace`'s absolute-path branch — exercised whenever
+    `state['eda_report_path']` holds the absolute path a prior node's
+    `write_text` returned — previously untested (code-quality review
+    finding)."""
+    _, workspace_instance = mock_workspace_manager
+    node = ProblemFramerNode()
+    state = _build_state()
+    state["eda_report_path"] = "/workspace/reports/eda_report.md"
+
+    node(state)
+
+    workspace_instance.read_text.assert_called_once_with("reports/eda_report.md")

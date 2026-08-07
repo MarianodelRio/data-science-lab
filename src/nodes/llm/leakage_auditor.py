@@ -11,7 +11,6 @@ delta stays the base-class default of `{"messages": [...]}` only.
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 from typing import Any
 
@@ -20,8 +19,6 @@ from langchain_core.messages import BaseMessage, HumanMessage
 from src.nodes.llm.base import LLMNode
 from src.state import LabState
 from src.workspace.workspace_manager import WorkspaceManager
-
-_JSON_FENCE_RE = re.compile(r"```(?:json)?\s*\n(.*?)```", re.DOTALL)
 
 
 def _relative_to_workspace(path: str, workspace: WorkspaceManager) -> str:
@@ -43,20 +40,44 @@ def _relative_to_workspace(path: str, workspace: WorkspaceManager) -> str:
     return str(p.relative_to(workspace.workspace_path))
 
 
+def _strip_outer_fence(content: str) -> str:
+    """Strip a single outer fence wrapping the entire response, if present.
+
+    The v1 prompt requires the response to be EITHER raw JSON OR the entire
+    response wrapped in exactly one fence (no prose before/after) — so this
+    anchors on the first and last ``` markers rather than counting fence
+    occurrences via regex. A `findall`-based non-greedy regex
+    (``` ```(?:json)?\\s*\\n(.*?)``` ```) would stop at the FIRST embedded ```
+    it finds, which truncates the JSON mid-string whenever a string value
+    inside the JSON itself contains a literal ``` sequence (e.g. a
+    leakage-finding description quoting a code snippet) — a real defect the
+    adversarial reviewer reproduced live. Anchoring on the outermost markers
+    instead means embedded ``` runs inside the JSON body are just content,
+    never mistaken for the closing fence.
+    """
+    text = content.strip()
+    if not text.startswith("```"):
+        return text
+    if not text.endswith("```") or len(text) < 6:
+        raise ValueError("leakage_auditor response starts with a fence but never closes it")
+    first_newline = text.find("\n")
+    if first_newline == -1:
+        raise ValueError("leakage_auditor response fence has no content")
+    inner = text[first_newline + 1 :]
+    closing_idx = inner.rfind("```")
+    if closing_idx == -1:
+        raise ValueError("leakage_auditor response fence has no closing delimiter")
+    return inner[:closing_idx].strip()
+
+
 def _extract_json(content: str) -> dict[str, Any]:
     """Extract a JSON object from the LLM response.
 
-    Accepts: raw JSON with no fence, a single ```json fenced block, or a
-    single unlabeled ``` fenced block. Rejects multiple fenced blocks and
-    invalid JSON with a clear ValueError naming 'leakage_auditor'.
+    Accepts: raw JSON with no fence, or the entire response wrapped in a
+    single ```json or unlabeled ``` fence. Invalid JSON raises a clear
+    ValueError naming 'leakage_auditor'.
     """
-    matches = _JSON_FENCE_RE.findall(content)
-    if len(matches) > 1:
-        raise ValueError(
-            f"leakage_auditor response contains {len(matches)} fenced code blocks, "
-            "expected at most one"
-        )
-    text = matches[0].strip() if matches else content.strip()
+    text = _strip_outer_fence(content)
     try:
         data = json.loads(text)
     except json.JSONDecodeError as e:
@@ -76,7 +97,7 @@ def _validate_leakage_audit(data: dict[str, Any]) -> dict[str, Any]:
         )
 
     severity = data.get("severity")
-    if not isinstance(severity, str) or not severity:
+    if not isinstance(severity, str) or not severity.strip():
         raise ValueError(
             "leakage_auditor response missing required non-empty string field 'severity'"
         )

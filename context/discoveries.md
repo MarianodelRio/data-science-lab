@@ -165,3 +165,23 @@ duplicating the workaround again: either make `write_text`/`write_json` return a
 path, or make `read_text`/`read_json` accept an absolute path that resolves inside
 `workspace_path`. Requires human approval as a protected-contract change.
 Status: open
+
+## OPEN — 2026-08-07 [pipeline-agent (T-015) → pipeline-agent (T-016 analysis_critic)]
+`config/phases/phase1_understanding.yaml`'s `critic.targets` already lists `validation_strategist`
+as a valid critic-retry target (`max_retries: 3`), even though `analysis_critic` (T-016) hasn't
+landed yet. `validation_strategist` (T-015, `src/nodes/llm/validation_strategist.py`) enforces
+CLAUDE.md invariant #1 (`validation/fold_config.json` is write-once/frozen after Phase 1) via an
+unconditional `FoldsAlreadyFrozenError` raised the moment the file already exists — nothing in
+`src/graph/` catches exceptions around node execution today (confirmed: no relevant `try`/`except`
+around node invocation in `src/graph/*.py`), so once `analysis_critic` routes an `iterate` verdict
+back to `validation_strategist`, the node's *second* invocation hits the write-once guard
+immediately and raises uncaught, crashing the whole graph run on the very first retry attempt —
+before `max_critic_retries` is ever consulted. This silently defeats invariant #5 ("critics enforce
+max_critic_retries then force pass — no infinite loops") specifically for this node.
+When T-016 lands, either (a) exclude `validation_strategist` from `phase1_understanding.yaml`'s
+`critic.targets` (folds are meant to be chosen right the first time, not iterated on — arguably the
+correct fix, but is a `config/phases/*.yaml` change requiring the same protected-contract approval
+as any other), or (b) have the critic-retry wiring special-case `FoldsAlreadyFrozenError` as an
+implicit "pass" rather than letting it propagate. Found during T-015's adversarial review; no code
+changed for this task since the critic doesn't exist yet.
+Status: open

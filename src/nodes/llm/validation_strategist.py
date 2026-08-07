@@ -77,18 +77,43 @@ def _read_upstream_context(state: LabState) -> str:
     return "\n\n".join(blocks)
 
 
+def _validate_index_list(entries: object, *, label: str) -> None:
+    """Validate one `train`/`val` list: non-empty, every element a non-negative
+    `int` (`bool` excluded — see module-level note on `n_folds`/`seed`)."""
+    if not isinstance(entries, list) or len(entries) == 0:
+        raise ValueError(
+            f"validation_strategist stdout JSON {label} must be a non-empty list, got {entries!r}"
+        )
+    for element in entries:
+        if not isinstance(element, int) or isinstance(element, bool) or element < 0:
+            raise ValueError(
+                f"validation_strategist stdout JSON {label} must contain only non-negative "
+                f"ints, found {element!r}"
+            )
+
+
 def _validate_fold_config_shape(payload: dict[str, Any]) -> None:
     """Validate the *values* of the required keys, not just their presence.
 
     `validation/fold_config.json` is write-once (`FoldsAlreadyFrozenError`
     guarantees it can never be recomputed), so a structurally-valid-but-garbage
-    payload — e.g. an empty `fold_indices`, a fold missing `train`/`val`, or an
-    `n_folds` that doesn't match the number of folds actually produced — would
-    otherwise get permanently frozen with no recovery path. Raises `ValueError`
-    for every shape violation, mirroring the other validation failures in
+    payload — e.g. an empty `fold_indices`, a fold missing `train`/`val`, a
+    non-int/negative row index, an empty `train`/`val` within a fold, `train`
+    and `val` overlapping within the same fold, or an `n_folds` that doesn't
+    match the number of folds actually produced — would otherwise get
+    permanently frozen with no recovery path. Raises `ValueError` for every
+    shape violation, mirroring the other validation failures in
     `_write_output`. `bool` is deliberately excluded from the int checks even
     though `isinstance(True, int)` is `True` in Python — a JSON `true`/`false`
-    is never a valid `n_folds`/`seed`.
+    is never a valid `n_folds`/`seed`/row index.
+
+    Deliberately NOT checked here (out of scope, testing-only concern — see
+    `test_fold_indices_partition_coverage`): cross-fold coverage/partitioning
+    (union of all `val` sets covering every dataset row, folds pairwise
+    disjoint from each other). This node has no independent way to know the
+    real row count, and GroupKFold/TimeSeriesSplit don't guarantee equal-size
+    or literal full coverage the way plain K-fold does — only intra-fold
+    type/bounds/disjointness is enforced here.
     """
     n_folds = payload["n_folds"]
     if not isinstance(n_folds, int) or isinstance(n_folds, bool) or n_folds <= 0:
@@ -118,6 +143,16 @@ def _validate_fold_config_shape(payload: dict[str, Any]) -> None:
             raise ValueError(
                 f"validation_strategist stdout JSON 'fold_indices[{i}]' must be a dict with "
                 f"'train' and 'val' list keys, got {fold!r}"
+            )
+
+        _validate_index_list(fold["train"], label=f"'fold_indices[{i}].train'")
+        _validate_index_list(fold["val"], label=f"'fold_indices[{i}].val'")
+
+        overlap = set(fold["train"]) & set(fold["val"])
+        if overlap:
+            raise ValueError(
+                f"validation_strategist stdout JSON 'fold_indices[{i}]' has overlapping "
+                f"train/val indices: {sorted(overlap)!r}"
             )
 
     if len(fold_indices) != n_folds:

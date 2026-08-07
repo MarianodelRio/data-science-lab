@@ -301,6 +301,56 @@ def test_missing_required_key_raises_value_error(
         ),
         pytest.param({"n_folds": "3"}, id="n_folds-not-an-int"),
         pytest.param({"seed": "42"}, id="seed-not-an-int"),
+        pytest.param(
+            {
+                "fold_indices": [
+                    {"train": [-1, 1, 2, 3], "val": [4, 5]},
+                    {"train": [0, 1, 4, 5], "val": [2, 3]},
+                    {"train": [2, 3, 4, 5], "val": [0, 1]},
+                ]
+            },
+            id="negative-index-in-train",
+        ),
+        pytest.param(
+            {
+                "fold_indices": [
+                    {"train": [0, "oops", 2, 3], "val": [4, 5]},
+                    {"train": [0, 1, 4, 5], "val": [2, 3]},
+                    {"train": [2, 3, 4, 5], "val": [0, 1]},
+                ]
+            },
+            id="non-int-element-in-train",
+        ),
+        pytest.param(
+            {
+                "fold_indices": [
+                    {"train": [], "val": [4, 5]},
+                    {"train": [0, 1, 4, 5], "val": [2, 3]},
+                    {"train": [2, 3, 4, 5], "val": [0, 1]},
+                ]
+            },
+            id="empty-train-in-fold",
+        ),
+        pytest.param(
+            {
+                "fold_indices": [
+                    {"train": [0, 1, 2, 3], "val": []},
+                    {"train": [0, 1, 4, 5], "val": [2, 3]},
+                    {"train": [2, 3, 4, 5], "val": [0, 1]},
+                ]
+            },
+            id="empty-val-in-fold",
+        ),
+        pytest.param(
+            {
+                "fold_indices": [
+                    {"train": [0, 1, 2, 3], "val": [0, 5]},
+                    {"train": [0, 1, 4, 5], "val": [2, 3]},
+                    {"train": [2, 3, 4, 5], "val": [0, 1]},
+                ]
+            },
+            id="train-val-overlap-within-fold",
+        ),
     ],
 )
 def test_malformed_fold_indices_raises_value_error(

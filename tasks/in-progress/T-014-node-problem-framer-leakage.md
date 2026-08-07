@@ -3,11 +3,11 @@ id: T-014
 phase: 2
 agent: pipeline-agent
 depends_on: [T-010]
-status: available
+status: in-progress
 folders: ["src/nodes/llm/", "config/agents/", "config/prompts/"]
 outputs: [problem_framer node, leakage_auditor node, problem_definition.json, leakage_audit.json]
 size: S
-branch: ~
+branch: feature/T-014-node-problem-framer-leakage
 pr: ~
 ---
 

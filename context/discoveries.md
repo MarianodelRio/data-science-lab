@@ -185,3 +185,29 @@ as any other), or (b) have the critic-retry wiring special-case `FoldsAlreadyFro
 implicit "pass" rather than letting it propagate. Found during T-015's adversarial review; no code
 changed for this task since the critic doesn't exist yet.
 Status: open
+
+## OPEN — 2026-08-07 [pipeline-agent (T-017) → whoever next touches RagStore/IndexDocument id generation or Phase-2 checkpointing]
+Adversarial review of T-017 (`literature_researcher`/`web_researcher`) flagged that the RAG store
+has no content-based deduplication. `IndexDocument.id` (`src/memory/store.py`, T-008) defaults to a
+random `uuid4()` with no dependency on `text`/`source`/`url`, and `RagStore.index()` only rejects
+duplicate `.id` values *within a single call* — it has no notion of "this content was already
+indexed in a previous call." Two concrete ways this produces duplicate entries in the same
+competition's Chroma collection:
+1. `LiteratureSearchClient.search()` merges arxiv + Semantic Scholar results with no cross-source
+   overlap check — the same paper indexed by both APIs (common: many arxiv preprints are also in
+   Semantic Scholar) becomes two separate `IndexDocument`s with different random ids but
+   near-identical `text`.
+2. Phase 2 has no per-node checkpointing today (unlike Phase 1's `interrupt_after`) — if a run
+   crashes/restarts after `literature_researcher`/`web_researcher` already called `.index()` but
+   before the graph's checkpoint advances past Phase 2, a resume re-runs both nodes and indexes
+   the same sources again under fresh random ids.
+Neither is fixable within T-017's own `folders:` (`src/nodes/llm/`, `config/agents/`,
+`config/prompts/`): (1) would need a deterministic id scheme (e.g. hash of `source`/`url`) in
+`IndexDocument`/`RagStore`, which is T-008's frozen/protected schema; (2) is a `src/graph/`
+checkpointing concern, outside pipeline-agent node-task scope and requiring its own design work.
+Not addressed as part of T-017 — low severity today (duplicate RAG entries degrade retrieval
+quality/cost, they don't corrupt state or violate an invariant), but worth fixing before Phase 2
+sees real repeated runs. Suggested direction for whoever picks this up: derive `IndexDocument.id`
+deterministically from `source` (or `source` + a content hash) so `RagStore.index()`'s upsert
+semantics naturally de-duplicate re-indexed content, rather than adding a separate dedup pass.
+Status: open

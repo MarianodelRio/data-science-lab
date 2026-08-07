@@ -485,3 +485,43 @@ checkpoints also revisits this heuristic.
 Affects: `src/nodes/llm/analysis_critic.py` (`_detect_phase_stem`). Related to the 2026-08-06
 `[Orchestrator, /explore]` entry's checkpoint forward-only decision above.
 Discarded: nothing — no functional change, documentation only.
+
+## 2026-08-07 — T-017 [pipeline-agent]
+Decided: `build_index_documents` sorts its returned `IndexDocument` list by the extraction
+entry's validated 1-based `index` before returning, rather than preserving the LLM's raw
+JSON-array order. The plan didn't specify an output order; sorting makes the result
+deterministic and guarantees positional alignment with the original `sources` list (`documents[i]`
+corresponds to `sources[i]`), which `render_report_markdown` relies on via `zip(sources,
+documents, strict=True)`.
+
+Decided: `literature_researcher.py` and `web_researcher.py` duplicate a larger surface than just
+query-building — `__init__`, `_ensure_client`, `_ensure_rag_store`, `_build_query`,
+`_read_problem_type`, `_build_messages`, and `_write_output` are all identical or near-identical
+(the only real differences are which production `SearchClient` class each defaults to, and the
+report title/`output_file_pattern` string). None of this was hoisted into `_research_common.py`.
+The approved plan explicitly enumerated `_research_common.py`'s contents and did not include any
+of these node-level methods there, and each individual method is small — not worth a shared base
+class or mixin the plan didn't ask for (YAGNI/simplicity bias). Code-quality review (round 1)
+flagged this duplication as a maintainability concern; leaving it as two flat, independently
+readable node files rather than introducing a shared intermediate base class between them and
+`LLMNode` is the simplest correct read of the plan, but a future task is free to extract one if
+a third research-style node ever lands with the same shape.
+
+Decided (scope note): fixing T-017's own `folders:` (`src/nodes/llm/`, `config/agents/`,
+`config/prompts/`) turned `literature_researcher`/`web_researcher` from `NoOpNode` placeholders
+into real `LLMNode`s that build a `SearchClient` and a `RagStore` on first use. Two pre-existing
+tests outside those folders — `tests/integration/phases/test_phase_subgraphs_smoke.py` and
+`tests/unit/graph/test_checkpointer.py` — only mocked `LLMFactory` and therefore started
+attempting real network calls (arxiv/Tavily) and a real Chroma client construction
+(`workspace.chroma_host`/`chroma_port` from `config/settings.yaml`, unreachable outside Docker)
+once these nodes stopped being no-ops. Extended both tests' existing `_mock_llm`
+autouse fixtures to also patch `LiteratureSearchClient`/`WebSearchClient` (return no sources)
+and `RagStore` (both node modules' import locations), plus added the two nodes' schema-valid
+`"[]"` extraction response to each file's `_llm_side_effect` dispatch. Judged this a minimal,
+in-kind extension of test-only code needed to keep "all tests pass" (CLAUDE.md quality gate)
+true after this task's change, not a design decision requiring a blocker — no production code
+outside T-017's folders was touched.
+Affects: `tests/integration/phases/test_phase_subgraphs_smoke.py`,
+`tests/unit/graph/test_checkpointer.py`.
+Discarded: leaving those two tests broken and reporting them as a discovery for another agent —
+would ship T-017 with a failing test suite, violating "never skip verification."

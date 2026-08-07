@@ -55,6 +55,11 @@ _MOCK_PROBLEM_DEFINITION = json.dumps(
     }
 )
 _MOCK_LEAKAGE_AUDIT = json.dumps({"leaks": [], "severity": "none", "blocks_progression": False})
+# literature_researcher/web_researcher (T-017) are also structured-JSON nodes
+# (a JSON array, one entry per searched source) — paired below with the
+# search-client mocks in `_mock_llm`, which make both nodes see zero sources,
+# so an empty array is always the correct, schema-valid extraction response.
+_MOCK_EMPTY_EXTRACTION = json.dumps([])
 
 
 def _llm_side_effect(messages: list[BaseMessage]) -> AIMessage:
@@ -70,6 +75,10 @@ def _llm_side_effect(messages: list[BaseMessage]) -> AIMessage:
         return AIMessage(content=_MOCK_PROBLEM_DEFINITION)
     if "System prompt — leakage_auditor" in system_content:
         return AIMessage(content=_MOCK_LEAKAGE_AUDIT)
+    if "System prompt — literature_researcher" in system_content:
+        return AIMessage(content=_MOCK_EMPTY_EXTRACTION)
+    if "System prompt — web_researcher" in system_content:
+        return AIMessage(content=_MOCK_EMPTY_EXTRACTION)
     return AIMessage(content=_MOCK_LLM_CONTENT)
 
 
@@ -87,6 +96,15 @@ def _mock_llm(monkeypatch: pytest.MonkeyPatch) -> None:
     matching the fake-key convention in `tests/tools/test_code_executor.py`
     and `tests/unit/llm/test_factory.py`) even though the LLM call they'd
     normally authenticate is mocked away.
+
+    `literature_researcher`/`web_researcher` (T-017) additionally build their
+    own `SearchClient` (arxiv/Semantic Scholar/Tavily, real network) and
+    `RagStore` (real Chroma client pointed at `config/settings.yaml`'s
+    `workspace.chroma_host`/`chroma_port`, unreachable in this test
+    environment) on first use — both are mocked here too so this smoke test
+    stays network-free end to end. With the search clients returning no
+    sources, `_MOCK_EMPTY_EXTRACTION` above is the schema-valid response for
+    both nodes regardless of the (unused) query text.
     """
     for var in (
         "ANTHROPIC_API_KEY",
@@ -100,8 +118,18 @@ def _mock_llm(monkeypatch: pytest.MonkeyPatch) -> None:
     mock_llm = MagicMock()
     mock_llm.invoke.side_effect = _llm_side_effect
 
-    with patch("src.nodes.llm.base.LLMFactory") as mock_factory:
+    with (
+        patch("src.nodes.llm.base.LLMFactory") as mock_factory,
+        patch("src.nodes.llm.literature_researcher.LiteratureSearchClient") as mock_lit_client,
+        patch("src.nodes.llm.web_researcher.WebSearchClient") as mock_web_client,
+        patch("src.nodes.llm.literature_researcher.RagStore") as mock_lit_rag_store,
+        patch("src.nodes.llm.web_researcher.RagStore") as mock_web_rag_store,
+    ):
         mock_factory.get.return_value = mock_llm
+        mock_lit_client.return_value.search.return_value = []
+        mock_web_client.return_value.search.return_value = []
+        mock_lit_rag_store.return_value = MagicMock()
+        mock_web_rag_store.return_value = MagicMock()
         yield
 
 

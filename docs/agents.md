@@ -14,6 +14,8 @@ Each agent-adding task appends one row to the table below. Do not remove or reor
 | `validation_strategist` | Phase 1 — Understanding | `fast` | `validation/fold_config.json` |
 | `leakage_auditor` | Phase 1 — Understanding | `reasoning` | `reports/leakage_audit.json` |
 | `analysis_critic` | Phase 1 — Understanding & Phase 4 — Design | `fast` | `reports/critic_verdicts_iter{iteration}.json` |
+| `literature_researcher` | Phase 2 — Research | `research` | `reports/literature_research.md` |
+| `web_researcher` | Phase 2 — Research | `research` | `reports/web_research.md` |
 
 ## Adding an agent
 

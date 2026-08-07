@@ -41,7 +41,7 @@ from src.state import LabState
 from src.tools.rag import RagStore
 from src.workspace.workspace_manager import WorkspaceManager
 
-_ARXIV_API_URL = "http://export.arxiv.org/api/query"
+_ARXIV_API_URL = "https://export.arxiv.org/api/query"
 _SEMANTIC_SCHOLAR_API_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
 _ARXIV_ATOM_NS = "{http://www.w3.org/2005/Atom}"
 

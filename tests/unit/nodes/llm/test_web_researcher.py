@@ -189,6 +189,45 @@ def test_call_state_delta_is_messages_only(
     assert set(delta.keys()) == {"messages"}
 
 
+def test_query_built_from_problem_type_when_readable(
+    patched_llm_factory, patched_settings, mock_workspace_manager
+) -> None:
+    fake_client = FakeSearchClient([FAKE_SOURCE])
+    node = WebResearcherNode(client=fake_client, rag_store=MagicMock())
+    state = _build_state()
+
+    node(state)
+
+    assert fake_client.queries == ["regression machine learning techniques for comp"]
+
+
+def test_query_falls_back_when_problem_definition_path_empty(
+    patched_llm_factory, patched_settings, mock_workspace_manager
+) -> None:
+    fake_client = FakeSearchClient([FAKE_SOURCE])
+    node = WebResearcherNode(client=fake_client, rag_store=MagicMock())
+    state = _build_state()
+    state["problem_definition_path"] = ""
+
+    node(state)
+
+    assert fake_client.queries == ["machine learning techniques for comp"]
+
+
+def test_query_falls_back_when_problem_definition_unreadable(
+    patched_llm_factory, patched_settings, mock_workspace_manager
+) -> None:
+    _, workspace_instance = mock_workspace_manager
+    workspace_instance.read_json.side_effect = OSError("not found")
+    fake_client = FakeSearchClient([FAKE_SOURCE])
+    node = WebResearcherNode(client=fake_client, rag_store=MagicMock())
+    state = _build_state()
+
+    node(state)
+
+    assert fake_client.queries == ["machine learning techniques for comp"]
+
+
 def test_no_sources_found_indexes_empty_list_without_raising(
     patched_llm_factory, patched_settings, mock_workspace_manager, mock_llm: MagicMock
 ) -> None:

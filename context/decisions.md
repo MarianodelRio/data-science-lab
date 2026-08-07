@@ -494,11 +494,18 @@ deterministic and guarantees positional alignment with the original `sources` li
 corresponds to `sources[i]`), which `render_report_markdown` relies on via `zip(sources,
 documents, strict=True)`.
 
-Decided: `_build_query`/`_read_problem_type` are duplicated verbatim between
-`literature_researcher.py` and `web_researcher.py` rather than hoisted into
-`_research_common.py`. The approved plan explicitly listed `_research_common.py`'s contents and
-did not include query-building helpers there, and the two nodes' query logic is small (2 short
-methods) — not worth a shared abstraction the plan didn't ask for (YAGNI/simplicity bias).
+Decided: `literature_researcher.py` and `web_researcher.py` duplicate a larger surface than just
+query-building — `__init__`, `_ensure_client`, `_ensure_rag_store`, `_build_query`,
+`_read_problem_type`, `_build_messages`, and `_write_output` are all identical or near-identical
+(the only real differences are which production `SearchClient` class each defaults to, and the
+report title/`output_file_pattern` string). None of this was hoisted into `_research_common.py`.
+The approved plan explicitly enumerated `_research_common.py`'s contents and did not include any
+of these node-level methods there, and each individual method is small — not worth a shared base
+class or mixin the plan didn't ask for (YAGNI/simplicity bias). Code-quality review (round 1)
+flagged this duplication as a maintainability concern; leaving it as two flat, independently
+readable node files rather than introducing a shared intermediate base class between them and
+`LLMNode` is the simplest correct read of the plan, but a future task is free to extract one if
+a third research-style node ever lands with the same shape.
 
 Decided (scope note): fixing T-017's own `folders:` (`src/nodes/llm/`, `config/agents/`,
 `config/prompts/`) turned `literature_researcher`/`web_researcher` from `NoOpNode` placeholders

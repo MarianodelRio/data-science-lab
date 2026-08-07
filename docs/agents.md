@@ -13,6 +13,7 @@ Each agent-adding task appends one row to the table below. Do not remove or reor
 | `problem_framer` | Phase 1 — Understanding | `fast` | `reports/problem_definition.json` |
 | `validation_strategist` | Phase 1 — Understanding | `fast` | `validation/fold_config.json` |
 | `leakage_auditor` | Phase 1 — Understanding | `reasoning` | `reports/leakage_audit.json` |
+| `analysis_critic` | Phase 1 — Understanding & Phase 4 — Design | `fast` | `reports/critic_verdicts_iter{iteration}.json` |
 
 ## Adding an agent
 

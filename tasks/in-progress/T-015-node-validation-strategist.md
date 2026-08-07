@@ -3,11 +3,11 @@ id: T-015
 phase: 2
 agent: pipeline-agent
 depends_on: [T-010]
-status: available
+status: in-progress
 folders: ["src/nodes/llm/", "config/agents/", "config/prompts/"]
 outputs: [validation_strategist node, validation/fold_config.json (immutable)]
 size: M
-branch: ~
+branch: feature/T-015-node-validation-strategist
 pr: ~
 ---
 

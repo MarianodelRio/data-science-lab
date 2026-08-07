@@ -235,7 +235,8 @@ does not change how finely completed work gets persisted for resume.
 
 `config/phases/phase1_understanding.yaml`'s `sequence`: `data_analyst` → `problem_framer` →
 `validation_strategist` → `leakage_auditor` → `analysis_critic`, interrupt after the phase
-completes. Only `data_analyst` has landed so far (T-013); the rest still resolve to `NoOpNode`.
+completes. `data_analyst` (T-013), `problem_framer`, and `leakage_auditor` (both T-014) have
+landed; `validation_strategist` and `analysis_critic` still resolve to `NoOpNode`.
 
 - **`data_analyst`** (`src/nodes/llm/data_analyst.py`, `LLMNode` subclass, `model_role:
   reasoning`) — the phase's first node. Its `_write_output` override parses a single fenced
@@ -247,6 +248,35 @@ completes. Only `data_analyst` has landed so far (T-013); the rest still resolve
   `state["eda_report_path"]` to the report's path — the notebook path is not tracked in
   `LabState` (no field for it; the notebook is a workspace artifact only, not read by any
   downstream node).
+- **`problem_framer`** (`src/nodes/llm/problem_framer.py`, `LLMNode` subclass, `model_role:
+  fast`) — runs second. `_build_messages` injects `reports/eda_report.md` (read via its own
+  `WorkspaceManager`, from `state["eda_report_path"]`) as an extra `HumanMessage`. `_write_output`
+  extracts a JSON object from the response (raw JSON, a single ```json fence, or a single
+  unlabeled ``` fence — multiple fenced blocks or invalid JSON raise a `ValueError` naming
+  `problem_framer`), validates `problem_type`/`success_metric` as required non-empty strings and
+  `constraints` as an optional `list[str]` defaulting to `[]`, then writes
+  `reports/problem_definition.json` via `workspace.write_json`. `_build_output_state` sets
+  `state["problem_definition_path"]`.
+- **`leakage_auditor`** (`src/nodes/llm/leakage_auditor.py`, `LLMNode` subclass, `model_role:
+  reasoning`) — runs fourth, after `validation_strategist`. `_build_messages` injects both
+  `reports/eda_report.md` and `reports/problem_definition.json` (read via its own
+  `WorkspaceManager`, from `state["eda_report_path"]`/`state["problem_definition_path"]`) as an
+  extra `HumanMessage`. `_write_output` uses the same JSON-extraction convention as
+  `problem_framer` (duplicated locally, per each `LLMNode` subclass staying self-contained),
+  validates `leaks` as a required `list`, `severity` as a required non-empty string, and
+  `blocks_progression` as a **strict** JSON boolean (a `"true"`/`"false"` string is rejected),
+  then writes `reports/leakage_audit.json` via `workspace.write_json`. It does **not** override
+  `_build_output_state` — there is no `LabState` field for the leakage audit, so its delta is the
+  base class's default `{"messages": [...]}` only.
+- **Path-field gotcha both `problem_framer` and `leakage_auditor` work around:**
+  `WorkspaceManager.write_text`/`write_json` return an *absolute* path (design.md's
+  WorkspaceManager API table), and `_build_output_state` implementations store that value
+  verbatim into `LabState` (`eda_report_path`, `problem_definition_path`) — but
+  `read_text`/`read_json` require a *relative* path and reject absolute ones. Since these two
+  nodes are the first to actually read a path field written by an earlier node, each module
+  defines a local `_relative_to_workspace` helper that re-relativizes an absolute stored path
+  against the current `WorkspaceManager.workspace_path` before reading (already-relative paths,
+  e.g. in unit tests, pass through unchanged).
 
 ## Node classification
 
@@ -255,6 +285,8 @@ completes. Only `data_analyst` has landed so far (T-013); the rest still resolve
 | Node | Type | Phase | Status |
 |---|---|---|---|
 | `data_analyst` | LLM (`LLMNode`) | 1 — Understanding | Landed (T-013) |
+| `problem_framer` | LLM (`LLMNode`) | 1 — Understanding | Landed (T-014) |
+| `leakage_auditor` | LLM (`LLMNode`) | 1 — Understanding | Landed (T-014) |
 
 ### ComputeNode base class
 

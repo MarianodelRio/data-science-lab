@@ -1,0 +1,6 @@
+name: problem_framer
+model_role: fast
+prompt_version: v1
+tools: []
+output_file_pattern: "reports/problem_definition.json"
+max_tokens: 2048

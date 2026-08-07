@@ -1,0 +1,6 @@
+name: leakage_auditor
+model_role: reasoning
+prompt_version: v1
+tools: []
+output_file_pattern: "reports/leakage_audit.json"
+max_tokens: 4096

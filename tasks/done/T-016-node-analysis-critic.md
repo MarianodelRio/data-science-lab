@@ -3,7 +3,7 @@ id: T-016
 phase: 2
 agent: pipeline-agent
 depends_on: [T-010]
-status: pr-open
+status: done
 folders: ["src/nodes/llm/", "config/agents/", "config/prompts/"]
 outputs: [analysis_critic node, pass/iterate verdict with feedback, retry guard]
 size: S

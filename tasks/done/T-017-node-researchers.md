@@ -3,7 +3,7 @@ id: T-017
 phase: 2
 agent: pipeline-agent
 depends_on: [T-010, T-008]
-status: pr-open
+status: done
 folders: ["src/nodes/llm/", "config/agents/", "config/prompts/"]
 outputs: [literature_researcher node, web_researcher node, RAG indexing with structured metadata]
 size: M

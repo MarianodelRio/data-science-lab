@@ -24,11 +24,18 @@ from src.llm.factory import LLMFactory
 from src.state import new_state
 
 # Satisfies data_analyst's requirement of exactly one fenced ```python block
-# (config/prompts/data_analyst/v1.md); harmless for any other real LLMNode's
-# default `_write_output`, which just writes the raw text as-is.
+# (config/prompts/data_analyst/v1.md; harmless for any other real LLMNode's
+# default `_write_output`, which just writes the raw text as-is) AND
+# validation_strategist's stricter requirement that block's stdout be a
+# single JSON object with strategy/n_folds/fold_indices/seed keys per
+# config/prompts/validation_strategist/v1.md.
 _MOCK_LLM_CONTENT = (
     "## Smoke test narrative\n\nMocked LLM response for the checkpointer test.\n\n"
-    '```python\nprint("checkpointer test")\n```\n'
+    "```python\n"
+    "import json\n"
+    'print(json.dumps({"strategy": "stratified", "n_folds": 1, "seed": 0, '
+    '"fold_indices": [{"train": [0], "val": [1]}]}))\n'
+    "```\n"
 )
 
 # problem_framer and leakage_auditor (T-014) are structured-JSON nodes, not

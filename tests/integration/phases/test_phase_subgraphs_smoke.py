@@ -26,12 +26,20 @@ from src.graph.phases import PHASE_ORDER
 from src.state import new_state
 
 # Generic enough to satisfy any real `LLMNode` subclass's `_write_output`:
-# the default implementation just writes the raw text, while `data_analyst`
+# the default implementation just writes the raw text, `data_analyst`
 # additionally requires exactly one fenced ```python block per
-# config/prompts/data_analyst/v1.md.
+# config/prompts/data_analyst/v1.md (any stdout is fine, it's embedded as-is),
+# and `validation_strategist` additionally requires that block's *stdout* to
+# be a single JSON object with `strategy`/`n_folds`/`fold_indices`/`seed`
+# keys per config/prompts/validation_strategist/v1.md — printing that JSON is
+# harmless for every other node, which never parses stdout.
 _MOCK_LLM_CONTENT = (
     "## Smoke test narrative\n\nMocked LLM response for the phase-subgraph smoke test.\n\n"
-    '```python\nprint("smoke test")\n```\n'
+    "```python\n"
+    "import json\n"
+    'print(json.dumps({"strategy": "stratified", "n_folds": 1, "seed": 0, '
+    '"fold_indices": [{"train": [0], "val": [1]}]}))\n'
+    "```\n"
 )
 
 # problem_framer and leakage_auditor (T-014) are structured-JSON nodes, not

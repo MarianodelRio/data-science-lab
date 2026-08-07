@@ -39,7 +39,10 @@ always counts as an improvement), all other scores `0.0`, all path-pointer/check
 
 **State-mutation rules:**
 
-- `validation_config_path` is immutable after Pipeline Phase 1.
+- `validation_config_path` is immutable after Pipeline Phase 1: `ValidationStrategistNode`
+  (`src/nodes/llm/validation_strategist.py`) enforces this by checking for an existing
+  `validation/fold_config.json` before writing and raising `FoldsAlreadyFrozenError`
+  (`src/nodes/llm/errors.py`) rather than overwriting it.
 - `baseline_results_path` and `baseline_score` are set once (Pipeline Phase 3) and never
   overwritten.
 - `best_experiment_path` and `best_score` update only when a new experiment's score improves
@@ -235,8 +238,8 @@ does not change how finely completed work gets persisted for resume.
 
 `config/phases/phase1_understanding.yaml`'s `sequence`: `data_analyst` → `problem_framer` →
 `validation_strategist` → `leakage_auditor` → `analysis_critic`, interrupt after the phase
-completes. `data_analyst` (T-013), `problem_framer`, and `leakage_auditor` (both T-014) have
-landed; `validation_strategist` and `analysis_critic` still resolve to `NoOpNode`.
+completes. `data_analyst` (T-013), `problem_framer` (T-014), `validation_strategist` (T-015), and
+`leakage_auditor` (T-014) have landed; only `analysis_critic` still resolves to `NoOpNode`.
 
 - **`data_analyst`** (`src/nodes/llm/data_analyst.py`, `LLMNode` subclass, `model_role:
   reasoning`) — the phase's first node. Its `_write_output` override parses a single fenced
@@ -257,6 +260,21 @@ landed; `validation_strategist` and `analysis_critic` still resolve to `NoOpNode
   `constraints` as an optional `list[str]` defaulting to `[]`, then writes
   `reports/problem_definition.json` via `workspace.write_json`. `_build_output_state` sets
   `state["problem_definition_path"]`.
+- **`validation_strategist`** (`src/nodes/llm/validation_strategist.py`, `LLMNode` subclass,
+  `model_role: fast`) — runs third, selects a CV strategy
+  (stratified/group/time_series/adversarial) and freezes concrete fold indices. Its
+  `_build_messages` override injects the problem definition + EDA report
+  (`state["problem_definition_path"]`/`state["eda_report_path"]`) as an extra `HumanMessage`.
+  Its `_write_output` override enforces the write-once guard first — if
+  `validation/fold_config.json` already exists it raises `FoldsAlreadyFrozenError`
+  (`src/nodes/llm/errors.py`) before doing anything else, including before invoking
+  `code_executor.execute` again — then parses a single fenced ```python code block out of the
+  LLM's response, runs it through `code_executor.execute` (never inline `exec`/`eval`), parses
+  the script's single-line JSON stdout, validates both the presence and the shape/content of
+  `strategy`/`n_folds`/`fold_indices`/`seed` (rejecting a structurally-valid-but-garbage payload
+  with a `ValueError`, since the file is permanently frozen once written), and writes
+  `validation/fold_config.json` containing exactly those four keys. `_build_output_state` sets
+  `state["validation_config_path"]` to the written path.
 - **`leakage_auditor`** (`src/nodes/llm/leakage_auditor.py`, `LLMNode` subclass, `model_role:
   reasoning`) — runs fourth, after `validation_strategist`. `_build_messages` injects both
   `reports/eda_report.md` and `reports/problem_definition.json` (read via its own
@@ -286,6 +304,7 @@ landed; `validation_strategist` and `analysis_critic` still resolve to `NoOpNode
 |---|---|---|---|
 | `data_analyst` | LLM (`LLMNode`) | 1 — Understanding | Landed (T-013) |
 | `problem_framer` | LLM (`LLMNode`) | 1 — Understanding | Landed (T-014) |
+| `validation_strategist` | LLM (`LLMNode`) | 1 — Understanding | Landed (T-015) |
 | `leakage_auditor` | LLM (`LLMNode`) | 1 — Understanding | Landed (T-014) |
 
 ### ComputeNode base class

@@ -142,3 +142,26 @@ image (e.g. a `RUN python -c "from sentence_transformers import SentenceTransfor
 SentenceTransformer('all-MiniLM-L6-v2')"` layer) or mounting a persistent cache volume, so
 CI/production runs never hit this cold-start network call.
 Status: open
+
+## OPEN — 2026-08-07 [pipeline-agent (T-014) → infra-agent (WorkspaceManager) / any future LLM node reading an upstream node's path field]
+`WorkspaceManager.write_text`/`write_json` return an *absolute* path (`workspace_path` is
+`.resolve()`d in `__init__`), and every `LLMNode._build_output_state` override stores that
+return value verbatim into a `LabState` path field (e.g. `eda_report_path`,
+`problem_definition_path`). But `WorkspaceManager.read_text`/`read_json`'s `_resolve` explicitly
+rejects absolute `relative_path` input. `problem_framer` and `leakage_auditor` (T-014) are the
+first nodes to ever read a path field written by an earlier node (previously only `data_analyst`
+existed, which writes but doesn't read another node's output), so this is the first point the
+inconsistency becomes reachable — it wasn't caught by T-002's or T-005's own test suites since
+neither exercises the write-then-read-elsewhere round trip.
+Worked around locally in both node files with a `_relative_to_workspace` helper that
+re-relativizes an absolute stored path against the current `WorkspaceManager.workspace_path`
+before reading (safe: the input to this helper is always a WorkspaceManager-produced path that
+already passed `_resolve`'s sandboxing on write, never raw LLM output — confirmed by the T-014
+security review). Not fixed at the source since `WorkspaceManager`'s public API is a protected
+contract outside `pipeline-agent`'s `folders:`.
+If a future task adds another node that reads a path field from `LabState` (increasingly likely
+as more Phase 1+ nodes chain off each other), consider fixing this at the source instead of
+duplicating the workaround again: either make `write_text`/`write_json` return a workspace-relative
+path, or make `read_text`/`read_json` accept an absolute path that resolves inside
+`workspace_path`. Requires human approval as a protected-contract change.
+Status: open

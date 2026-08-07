@@ -10,6 +10,8 @@ Each agent-adding task appends one row to the table below. Do not remove or reor
 | Agent | Pipeline phase | model_role | Output file |
 |---|---|---|---|
 | `data_analyst` | Phase 1 — Understanding | `reasoning` | `reports/eda_report.md` |
+| `problem_framer` | Phase 1 — Understanding | `fast` | `reports/problem_definition.json` |
+| `leakage_auditor` | Phase 1 — Understanding | `reasoning` | `reports/leakage_audit.json` |
 
 ## Adding an agent
 

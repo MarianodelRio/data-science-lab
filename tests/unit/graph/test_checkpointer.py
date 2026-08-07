@@ -11,11 +11,12 @@ resolved node in a call counter — this makes "did this node actually
 re-execute" observable without needing a real node.
 """
 
+import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, BaseMessage
 
 from src.graph import node_resolver
 from src.graph.builder import GraphBuilder
@@ -29,6 +30,36 @@ _MOCK_LLM_CONTENT = (
     "## Smoke test narrative\n\nMocked LLM response for the checkpointer test.\n\n"
     '```python\nprint("checkpointer test")\n```\n'
 )
+
+# problem_framer and leakage_auditor (T-014) are structured-JSON nodes, not
+# fenced-python nodes — `_MOCK_LLM_CONTENT` above would fail their JSON
+# parsing, so the mock LLM dispatches on which node is calling (identified by
+# the `# System prompt — {name}` header text every node's system prompt
+# starts with, see the `_llm_side_effect` docstring below).
+_MOCK_PROBLEM_DEFINITION = json.dumps(
+    {
+        "problem_type": "binary_classification",
+        "success_metric": "roc_auc",
+        "constraints": [],
+    }
+)
+_MOCK_LEAKAGE_AUDIT = json.dumps({"leaks": [], "severity": "none", "blocks_progression": False})
+
+
+def _llm_side_effect(messages: list[BaseMessage]) -> AIMessage:
+    """Dispatch mocked LLM output by inspecting the outgoing SystemMessage's
+    content for the calling node's own `# System prompt — {name}` header
+    line (see `config/prompts/{name}/v1.md`) — matching the *header*
+    specifically, not a bare substring, because leakage_auditor's own
+    prompt prose mentions "problem_framer" (its upstream node), which would
+    otherwise mis-route it. Falls back to the data_analyst-shaped
+    `_MOCK_LLM_CONTENT` for every other node."""
+    system_content = str(messages[0].content) if messages else ""
+    if "System prompt — problem_framer" in system_content:
+        return AIMessage(content=_MOCK_PROBLEM_DEFINITION)
+    if "System prompt — leakage_auditor" in system_content:
+        return AIMessage(content=_MOCK_LEAKAGE_AUDIT)
+    return AIMessage(content=_MOCK_LLM_CONTENT)
 
 
 @pytest.fixture(autouse=True)
@@ -44,7 +75,7 @@ def _mock_llm(monkeypatch: pytest.MonkeyPatch) -> None:
     LLMFactory._settings = None
 
     mock_llm = MagicMock()
-    mock_llm.invoke.return_value = AIMessage(content=_MOCK_LLM_CONTENT)
+    mock_llm.invoke.side_effect = _llm_side_effect
 
     with patch("src.nodes.llm.base.LLMFactory") as mock_factory:
         mock_factory.get.return_value = mock_llm

@@ -525,3 +525,52 @@ Affects: `tests/integration/phases/test_phase_subgraphs_smoke.py`,
 `tests/unit/graph/test_checkpointer.py`.
 Discarded: leaving those two tests broken and reporting them as a discovery for another agent —
 would ship T-017 with a failing test suite, violating "never skip verification."
+
+## 2026-08-07 — T-018 [pipeline-agent]
+Decided: dropped the original task file's "Kaggle forum posts" scope for `competition_analyst`
+entirely (no stub, no partial implementation) and instead added
+`kaggle_client.list_top_kernels(competition, n=10, api=None)` — a small, additive function
+mirroring `download()`/`submit()`'s existing validation/default-api pattern — as the only new
+`kaggle_client.py` surface. `competition_analyst` extracts winning patterns from these kernels'
+title/author/vote-count metadata only.
+Why: confirmed against the installed `kaggle`/`kagglesdk` packages that no discussions/forum RPC
+client is wired into `KaggleApi` — there is no way to list/fetch forum posts through the installed
+SDK without scraping kaggle.com HTML, which is out of `kaggle_client.py`'s "thin wrapper around the
+kaggle package" contract (see the matching 2026-08-07 T-018 entry in `context/discoveries.md`).
+Adding `list_top_kernels` as one small additive function, rather than filing a separate
+infra-agent task to design a new Kaggle-facing tool module, was human-approved: it's a low-risk,
+purely-additive change to a file `pipeline-agent` doesn't own, and routing it through a dedicated
+cross-agent task would have blocked T-018 on infra-agent scheduling for a few lines of code.
+Affects: `src/tools/kaggle_client.py` (additive only — `download`/`submit`/`get_score` signatures
+unchanged), `src/nodes/llm/competition_analyst.py`.
+Discarded: stubbing forum-post fetching now against a future SDK version — no reliable way to test
+or validate an unimplemented API surface, and it would have shipped a misleading placeholder.
+
+## 2026-08-07 — T-018 [pipeline-agent] (correction, review round 1)
+Decided: refactored `competition_analyst.py` to import and reuse
+`src.nodes.llm._research_common`'s `extract_json_array`/`build_index_documents`/
+`render_report_markdown` (the same shared helpers `literature_researcher.py`/`web_researcher.py`
+already use), deleting the local `_strip_outer_fence`/`_extract_json_array`/
+`_build_index_documents`/`_coerce_str_list`/`_coerce_relevance_score`/`_render_report_markdown`
+this task's initial implementation had written instead. `KernelSummary` is now adapted into
+`_research_common.SourceDocument(title, text, url)` before being handed to the shared helpers.
+Why: the initial implementation's premise — that `_research_common.py` "did not exist yet on this
+branch" — was factually wrong. T-017 merged `_research_common.py` (commit c4cc8c2) *before* T-018
+was even claimed (commit 9b776ac, 3 minutes later); it was present in `src/nodes/llm/` and already
+imported by both research nodes the whole time this task was being implemented. Three independent
+reviewers (code-quality, security, adversarial) converged on the same root cause. The local
+duplicate was strictly weaker in ways that mattered: its `_coerce_relevance_score` did a bare
+`float(value)` with no `[0.0, 1.0]` range check (unlike `_research_common._validate_relevance_score`),
+verified end-to-end to let an out-of-range or `inf`/`nan` `relevance_score` — attacker-influenceable
+via a gamed kernel title, per this node's own untrusted-input threat model — reach the RAG store
+unchanged or get silently dropped by Chroma with no audit trail (HIGH severity); its index handling
+didn't require extraction indices to exactly cover `1..len(kernels)`, so a duplicate index could
+silently double-index one kernel while an omitted one was silently dropped; and its
+`_coerce_str_list` coerced non-string list items via `str()` instead of raising. Reusing the shared
+helpers closes all three gaps for free and shrank `competition_analyst.py` from 114 to 56
+statements.
+Affects: `src/nodes/llm/competition_analyst.py`, `tests/unit/nodes/llm/test_competition_analyst.py`
+(added tests proving duplicate-index/out-of-range-relevance-score/non-string-list-item now raise,
+matching `_research_common.py`'s own strictness).
+Discarded: nothing — this is a straightforward "use the code that already existed" fix, not a
+design tradeoff.

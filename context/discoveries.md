@@ -211,3 +211,24 @@ sees real repeated runs. Suggested direction for whoever picks this up: derive `
 deterministically from `source` (or `source` + a content hash) so `RagStore.index()`'s upsert
 semantics naturally de-duplicate re-indexed content, rather than adding a separate dedup pass.
 Status: open
+
+## OPEN — 2026-08-07 [pipeline-agent (T-018) → pipeline-agent (T-017 literature_researcher/web_researcher), infra-agent (future kaggle_client callers)]
+Investigated whether `competition_analyst` (T-018) could pull Kaggle competition forum/discussion
+posts, per the original task file's "forum posts" wording. Confirmed against the installed
+kaggle/kagglesdk packages: there is no discussions/forum RPC client wired into KaggleClient, and
+KaggleApi itself declares no discussion*/forum*/topic*/comment*-named public method — only typed
+message definitions exist for discussions, no backing service. So there is no way to list/fetch
+forum posts through the installed SDK short of scraping kaggle.com HTML, which is out of scope for
+kaggle_client.py's "thin wrapper around the kaggle package" contract.
+Per human-approved scope adjustment, T-018 dropped "forum posts" entirely (no stub, no partial
+implementation) and instead added kaggle_client.list_top_kernels(competition, n=10, api=None) — a
+small, additive wrapper over KaggleApi.kernels_list(competition=..., sort_by="voteCount") — as the
+only new kaggle_client.py surface; download/submit/get_score were left untouched.
+A direct consequence: competition_analyst's LLM extraction is grounded only in kernel
+titles/authors/vote counts, never notebook code/output — flagged in
+config/prompts/competition_analyst/v1.md itself as a real evidentiary limitation.
+If a future task needs actual Kaggle forum content, re-verify against whatever kaggle/kagglesdk
+version is installed at that time before assuming this still holds. Adding it, like
+list_top_kernels here, should stay a small additive kaggle_client.py function rather than
+triggering a dedicated infra-agent task.
+Status: open

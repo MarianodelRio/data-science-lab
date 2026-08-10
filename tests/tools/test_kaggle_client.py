@@ -15,7 +15,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.tools.kaggle_client import _default_api, download, get_score, submit
+from src.tools.kaggle_client import _default_api, download, get_score, list_top_kernels, submit
 
 
 def _fake_submission(public_score: str, date: datetime) -> MagicMock:
@@ -23,6 +23,15 @@ def _fake_submission(public_score: str, date: datetime) -> MagicMock:
     submission.public_score = public_score
     submission.date = date
     return submission
+
+
+def _fake_kernel(ref: str, title: str, author: str, total_votes: int) -> MagicMock:
+    kernel = MagicMock()
+    kernel.ref = ref
+    kernel.title = title
+    kernel.author = author
+    kernel.total_votes = total_votes
+    return kernel
 
 
 def _write_zip_side_effect(members: dict[str, str]):
@@ -145,6 +154,84 @@ def test_get_score_raises_runtime_error_when_no_submissions() -> None:
         get_score("titanic", api=api)
 
 
+def test_list_top_kernels_calls_api_with_sort_by_and_page_size() -> None:
+    api = MagicMock()
+    api.kernels_list.return_value = [
+        _fake_kernel(f"user/k{i}", f"Kernel {i}", "user", i) for i in range(5)
+    ]
+
+    list_top_kernels("titanic", n=5, api=api)
+
+    api.kernels_list.assert_called_once_with(
+        competition="titanic", sort_by="voteCount", page_size=5
+    )
+
+
+def test_list_top_kernels_returns_expected_dict_shape() -> None:
+    api = MagicMock()
+    api.kernels_list.return_value = [
+        _fake_kernel("user/great-notebook", "Great Notebook", "user", 42)
+    ]
+
+    result = list_top_kernels("titanic", n=1, api=api)
+
+    assert result == [
+        {
+            "ref": "user/great-notebook",
+            "title": "Great Notebook",
+            "author": "user",
+            "total_votes": 42,
+            "url": "https://www.kaggle.com/code/user/great-notebook",
+        }
+    ]
+
+
+def test_list_top_kernels_truncates_to_n_when_api_returns_more() -> None:
+    api = MagicMock()
+    api.kernels_list.return_value = [
+        _fake_kernel(f"user/k{i}", f"Kernel {i}", "user", i) for i in range(20)
+    ]
+
+    result = list_top_kernels("titanic", n=3, api=api)
+
+    assert len(result) == 3
+
+
+def test_list_top_kernels_clamps_page_size_at_100_when_n_greater_than_100() -> None:
+    api = MagicMock()
+    api.kernels_list.return_value = [
+        _fake_kernel(f"user/k{i}", f"Kernel {i}", "user", i) for i in range(100)
+    ]
+
+    list_top_kernels("titanic", n=500, api=api)
+
+    api.kernels_list.assert_called_once_with(
+        competition="titanic", sort_by="voteCount", page_size=100
+    )
+
+
+def test_list_top_kernels_rejects_non_positive_n_without_calling_api() -> None:
+    api = MagicMock()
+
+    with pytest.raises(ValueError, match="n must be positive"):
+        list_top_kernels("titanic", n=0, api=api)
+
+    with pytest.raises(ValueError, match="n must be positive"):
+        list_top_kernels("titanic", n=-1, api=api)
+
+    api.kernels_list.assert_not_called()
+
+
+@pytest.mark.parametrize("bad_competition", ["/etc/passwd", "../evil", "../../etc/passwd"])
+def test_list_top_kernels_rejects_traversal_or_absolute_competition(bad_competition: str) -> None:
+    api = MagicMock()
+
+    with pytest.raises(ValueError, match="Invalid competition slug"):
+        list_top_kernels(bad_competition, api=api)
+
+    api.kernels_list.assert_not_called()
+
+
 def test_missing_kaggle_username_raises_before_any_api_call(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -159,6 +246,9 @@ def test_missing_kaggle_username_raises_before_any_api_call(
 
     with pytest.raises(RuntimeError, match="KAGGLE_USERNAME"):
         get_score("titanic")
+
+    with pytest.raises(RuntimeError, match="KAGGLE_USERNAME"):
+        list_top_kernels("titanic")
 
 
 def test_missing_kaggle_key_only_raises_naming_kaggle_key(
@@ -190,3 +280,4 @@ def test_default_api_lazy_import_and_authenticate_succeeds_with_fake_creds(
     assert hasattr(api, "competition_download_files")
     assert hasattr(api, "competition_submit")
     assert hasattr(api, "competition_submissions")
+    assert hasattr(api, "kernels_list")

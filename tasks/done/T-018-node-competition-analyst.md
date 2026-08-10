@@ -3,7 +3,7 @@ id: T-018
 phase: 2
 agent: pipeline-agent
 depends_on: [T-010, T-007, T-008]
-status: pr-open
+status: done
 folders: ["src/nodes/llm/", "config/agents/", "config/prompts/", "src/tools/kaggle_client.py"]
 outputs: [competition_analyst node, Kaggle top-voted-notebook findings indexed to RAG]
 size: S

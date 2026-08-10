@@ -248,7 +248,72 @@ def test_out_of_range_extraction_index_raises_value_error(
     node = CompetitionAnalystNode(kernel_lister=lister, rag_store=mock_rag_store)
     state = _build_state()
 
-    with pytest.raises(ValueError, match="index"):
+    # `_research_common.build_index_documents` requires extraction indices to
+    # exactly cover 1..len(kernels) (no gaps/duplicates) — an out-of-range
+    # index like 99 fails that coverage check.
+    with pytest.raises(ValueError, match="must exactly cover"):
+        node(state)
+
+    mock_rag_store.index.assert_not_called()
+
+
+def test_duplicate_extraction_index_raises_value_error(
+    patched_llm_factory, patched_settings, mock_workspace_manager
+) -> None:
+    mock_llm = patched_llm_factory.get.return_value
+    duplicate_extractions = [{**EXTRACTIONS[0], "index": 1}, {**EXTRACTIONS[1], "index": 1}]
+    mock_llm.invoke.return_value = AIMessage(content=json.dumps(duplicate_extractions))
+    mock_rag_store = MagicMock()
+    lister = _fake_kernel_lister("titanic", 10, KERNELS)
+    node = CompetitionAnalystNode(kernel_lister=lister, rag_store=mock_rag_store)
+    state = _build_state()
+
+    with pytest.raises(ValueError, match="must exactly cover"):
+        node(state)
+
+    mock_rag_store.index.assert_not_called()
+
+
+def test_relevance_score_out_of_range_raises_value_error(
+    patched_llm_factory, patched_settings, mock_workspace_manager
+) -> None:
+    mock_llm = patched_llm_factory.get.return_value
+    bad_extractions = [
+        {**EXTRACTIONS[0], "relevance_score": 999999.0},
+        EXTRACTIONS[1],
+    ]
+    mock_llm.invoke.return_value = AIMessage(content=json.dumps(bad_extractions))
+    mock_rag_store = MagicMock()
+    lister = _fake_kernel_lister("titanic", 10, KERNELS)
+    node = CompetitionAnalystNode(kernel_lister=lister, rag_store=mock_rag_store)
+    state = _build_state()
+
+    # `_research_common.build_index_documents`'s `_validate_relevance_score`
+    # enforces [0.0, 1.0] — a gamed/out-of-range score from untrusted kernel
+    # metadata must never reach the RAG store unchanged.
+    with pytest.raises(ValueError, match="relevance_score"):
+        node(state)
+
+    mock_rag_store.index.assert_not_called()
+
+
+def test_non_string_list_item_raises_value_error(
+    patched_llm_factory, patched_settings, mock_workspace_manager
+) -> None:
+    mock_llm = patched_llm_factory.get.return_value
+    bad_extractions = [
+        {**EXTRACTIONS[0], "methods_used": ["LightGBM", 123]},
+        EXTRACTIONS[1],
+    ]
+    mock_llm.invoke.return_value = AIMessage(content=json.dumps(bad_extractions))
+    mock_rag_store = MagicMock()
+    lister = _fake_kernel_lister("titanic", 10, KERNELS)
+    node = CompetitionAnalystNode(kernel_lister=lister, rag_store=mock_rag_store)
+    state = _build_state()
+
+    # `_research_common`'s `_validate_str_list` raises on a non-string list
+    # element instead of silently coercing it via `str(item)`.
+    with pytest.raises(ValueError, match="methods_used"):
         node(state)
 
     mock_rag_store.index.assert_not_called()

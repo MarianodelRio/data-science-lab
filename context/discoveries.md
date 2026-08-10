@@ -232,3 +232,8 @@ version is installed at that time before assuming this still holds. Adding it, l
 list_top_kernels here, should stay a small additive kaggle_client.py function rather than
 triggering a dedicated infra-agent task.
 Status: open
+
+## OPEN — 2026-08-10 [Orchestrator (/orchestrate T-019) → pipeline-agent/infra-agent (whoever owns src/graph/ checkpointing)]
+While verifying T-019 (`memory_manager`), `tests/unit/graph/test_checkpointer.py::test_resume_after_restart_does_not_rerun_completed_phase` failed on a clean checkout of `origin/main` (verified via a separate clone, independent of any T-019 change): `assert call_counts.get("data_analyst", 0) == 1` fails with `data_analyst` actually called 4 times. This means resuming a run from a checkpoint after a restart currently re-runs `data_analyst` (and likely the rest of phase1) multiple times instead of skipping the already-completed phase — a real bug in the checkpointer/resume path, not a flaky test.
+Not fixed here: `src/graph/` is outside T-019's `folders:` (`src/nodes/llm/`, `config/agents/`, `config/prompts/`), and the fix likely requires understanding `src/graph/checkpointer.py`'s interrupt/resume wiring, not a one-line change.
+Status: open

@@ -3,12 +3,12 @@ id: T-019
 phase: 2
 agent: pipeline-agent
 depends_on: [T-010, T-008]
-status: in-progress
+status: pr-open
 folders: ["src/nodes/llm/", "config/agents/", "config/prompts/"]
 outputs: [memory_manager node, RAG deduplication + consolidation]
 size: S
 branch: feature/T-019-node-memory-manager
-pr: ~
+pr: "https://github.com/MarianodelRio/data-science-lab/pull/21"
 ---
 
 ## Node: memory_manager (Pipeline Phase 2)
@@ -72,4 +72,27 @@ issues); `pytest tests/unit/nodes/llm/test_memory_manager.py` 12/12 passed; `pyt
 317 passed, 1 pre-existing failure (`tests/unit/graph/test_checkpointer.py::
 test_resume_after_restart_does_not_rerun_completed_phase`) confirmed present on `origin/main`
 before this task's changes (both in isolation and as part of the full suite) — unrelated to
-`memory_manager` and outside this task's `folders:`.
+`memory_manager` and outside this task's `folders:`. Logged as a new `context/discoveries.md`
+OPEN entry for whoever owns `src/graph/` checkpointing.
+
+## Review round follow-up
+
+Four parallel reviewers (code-quality, security, smoke-tester, adversarial) ran against the PR
+diff — no BLOCKER from any of them. Two non-blocking findings were fixed before merge rather than
+shipped as warnings:
+
+- **Missing negative-path test coverage** for the local validators (`_validate_relevance_score_field`,
+  `_validate_str_list_field`, `_validate_cluster_indices`) — flagged by both security and adversarial
+  as the same risk class as a real bug T-018 shipped once (an unbounded `relevance_score` reaching
+  the RAG store, caught only by review). Logic was already correct; added tests for out-of-range
+  score, `bool`-as-score, non-numeric score, non-string list items, and unsorted cluster `indices`
+  (proving canonical-id selection picks the lowest original index).
+- **`_build_query`/`_read_problem_type` duplication hit its own documented threshold**: byte-for-byte
+  identical across `literature_researcher`, `web_researcher`, and now `memory_manager` (the third
+  occurrence the 2026-08-07 T-017 decision explicitly named as the point to extract). Hoisted both
+  into `_research_common.py` as `build_ml_techniques_query`/`read_problem_type`; all three node
+  files now import and call the shared functions.
+
+Final state: `tests/unit/nodes/llm/test_memory_manager.py` grew to 21 tests; `pytest tests/unit -q`
+345 passed (only the pre-existing checkpointer failure remains); `memory_manager.py` coverage 96%.
+See `context/decisions.md`'s `## 2026-08-10 — T-019 [pipeline-agent] (post-review follow-up)` entry.

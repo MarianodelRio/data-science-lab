@@ -66,9 +66,9 @@ if not train_candidates:
     raise FileNotFoundError("No CSV files found under data/raw/ to train the baseline on")
 df = pd.read_csv(train_candidates[0])
 
-feature_columns = (
-    [c for c in df.columns if c != target_column] if features == "all" else list(features)
-)
+feature_columns = [
+    c for c in (df.columns if features == "all" else features) if c != target_column
+]
 X = pd.get_dummies(df[feature_columns])
 y = df[target_column]
 
@@ -76,43 +76,60 @@ model_key = model_name.lower()
 is_classification = y.dtype == object or str(y.dtype) in ("bool", "category") or y.nunique() <= 20
 
 
-def build_model():
+def resolve_model_class():
+    # Unrecognized model names raise instead of silently falling back to a
+    # different estimator: a silent substitution could either crash with a
+    # confusing TypeError (hyperparameters meant for the real model don't match
+    # the fallback's constructor) or, worse, train and log a "permanent
+    # benchmark" score under the wrong model identity with no record anywhere
+    # that a substitution happened.
     if "lightgbm" in model_key or "lgbm" in model_key:
         import lightgbm as lgb
 
-        cls = lgb.LGBMClassifier if is_classification else lgb.LGBMRegressor
-    elif "xgboost" in model_key or "xgb" in model_key:
+        return lgb.LGBMClassifier if is_classification else lgb.LGBMRegressor
+    if "xgboost" in model_key or "xgb" in model_key:
         import xgboost as xgb
 
-        cls = xgb.XGBClassifier if is_classification else xgb.XGBRegressor
-    elif "random_forest" in model_key or "randomforest" in model_key:
+        return xgb.XGBClassifier if is_classification else xgb.XGBRegressor
+    if "random_forest" in model_key or "randomforest" in model_key:
         from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 
-        cls = RandomForestClassifier if is_classification else RandomForestRegressor
-    elif "logistic" in model_key:
+        return RandomForestClassifier if is_classification else RandomForestRegressor
+    if "logistic" in model_key:
         from sklearn.linear_model import LogisticRegression
 
-        cls = LogisticRegression
-    elif "linear" in model_key:
+        return LogisticRegression
+    if "linear" in model_key:
         from sklearn.linear_model import LinearRegression
 
-        cls = LinearRegression
-    else:
-        from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegressor
+        return LinearRegression
+    raise ValueError(
+        f"Unrecognized baseline model {model_name!r}; expected one of: "
+        "lightgbm, xgboost, random_forest, logistic (classification), "
+        "linear (regression)"
+    )
 
-        cls = GradientBoostingClassifier if is_classification else GradientBoostingRegressor
-    return cls(**hyperparameters)
 
+model_cls = resolve_model_class()
 
 fold_scores = []
 for fold in folds["fold_indices"]:
     train_idx, val_idx = fold["train"], fold["val"]
-    model = build_model()
+    model = model_cls(**hyperparameters)
     model.fit(X.iloc[train_idx], y.iloc[train_idx])
     fold_scores.append(float(model.score(X.iloc[val_idx], y.iloc[val_idx])))
 
 cv_score = float(np.mean(fold_scores))
-print(json.dumps({"cv_score": cv_score, "fold_scores": fold_scores, "model": model_name}))
+print(
+    json.dumps(
+        {
+            "cv_score": cv_score,
+            "fold_scores": fold_scores,
+            "model": model_name,
+            "model_class": model_cls.__name__,
+        }
+    )
+)
 """
 
 
@@ -168,16 +185,23 @@ class BaselineRunnerNode(ComputeNode):
             ) from exc
 
         fold_scores = payload.get("fold_scores", [])
+        # Echoes back the class actually instantiated inside the subprocess, not
+        # just `design["model"]`'s stated name — makes the permanent benchmark
+        # self-verifying even when the requested model name did resolve.
+        model_class = payload.get("model_class")
 
         settings = Settings.load()
         mlflow.set_tracking_uri(settings.workspace.mlflow_tracking_uri)
         with mlflow.start_run(run_name="baseline"):
             mlflow.log_params(design["hyperparameters"])
+            if model_class:
+                mlflow.log_param("model_class", model_class)
             mlflow.log_metric("cv_score", cv_score)
 
         results = {
             "cv_score": cv_score,
             "fold_scores": fold_scores,
+            "model_class": model_class,
             "design": design,
         }
         results_path = workspace.write_json(_RESULTS_PATH, results)

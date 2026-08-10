@@ -103,6 +103,17 @@ def _validate_design(data: dict[str, Any]) -> dict[str, Any]:
             "baseline_designer response missing required non-empty string field 'target_column'"
         )
 
+    if isinstance(features, list) and target_column in features:
+        # Defense-in-depth against target leakage: baseline_runner's generated
+        # training script already excludes target_column from an explicit
+        # features list unconditionally, but reject it here too so a leaking
+        # design is never written to disk as the LLM's stated intent in the
+        # first place.
+        raise ValueError(
+            f"baseline_designer response 'features' list must not include the target column "
+            f"{target_column!r} — got {features!r}"
+        )
+
     return {
         "model": model,
         "hyperparameters": hyperparameters,

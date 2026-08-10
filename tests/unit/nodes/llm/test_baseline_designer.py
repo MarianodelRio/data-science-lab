@@ -303,6 +303,23 @@ def test_features_list_of_strings_is_accepted(
     assert args[1]["features"] == ["a", "b", "c"]
 
 
+def test_features_list_containing_target_column_raises_value_error(
+    patched_llm_factory, patched_settings, mock_workspace_manager
+) -> None:
+    # Defense-in-depth against target leakage: even though baseline_runner's
+    # generated training script also excludes target_column from an explicit
+    # features list unconditionally, a design that leaks the target should
+    # never be written to disk as the LLM's stated intent in the first place.
+    data = {**VALID_DESIGN, "features": ["a", "b", VALID_DESIGN["target_column"]]}
+    mock_llm = patched_llm_factory.get.return_value
+    mock_llm.invoke.return_value = AIMessage(content=json.dumps(data))
+    node = BaselineDesignerNode()
+    state = _build_state()
+
+    with pytest.raises(ValueError, match="must not include the target column"):
+        node(state)
+
+
 @pytest.mark.parametrize(
     "bad_features",
     ["not-all-or-list", 123, ["a", 1, "c"], None],

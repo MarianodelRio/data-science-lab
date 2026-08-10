@@ -259,3 +259,126 @@ def test_call_delegates_to_run(patched_execute, patched_mlflow, patched_settings
     delta = node(state)
 
     assert delta["baseline_score"] == pytest.approx(0.87)
+
+
+# -- real subprocess execution: exercises the actual `_TRAINING_SCRIPT` logic,
+# not just the wrapper around a pre-baked stdout string every other test in
+# this file mocks via `patched_execute`. Adversarial review of T-020 flagged
+# that no test previously ran the script for real, which is exactly why the
+# target-leakage and silent-model-fallback bugs shipped undetected. No
+# network involved — `execute()` spawns a local subprocess only.
+
+
+@pytest.fixture
+def _real_execute_env(monkeypatch: pytest.MonkeyPatch):
+    """`execute()` itself calls `Settings.load()` (for the subprocess timeout),
+    independently of this module's own `patched_settings` fixture — real env
+    vars are required for that to resolve, same as
+    `tests/integration/phases/test_phase_subgraphs_smoke.py`'s `_mock_llm`
+    fixture works around for its own real-`execute()` case."""
+    for var in (
+        "ANTHROPIC_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "GROQ_API_KEY",
+        "KAGGLE_USERNAME",
+        "KAGGLE_KEY",
+    ):
+        monkeypatch.setenv(var, "test-fake-value")
+
+
+def _seed_real_training_data(workspace: WorkspaceManager, design: dict[str, Any]) -> None:
+    workspace.write_json("experiments/baseline/design.json", design)
+    workspace.write_json(
+        "validation/fold_config.json",
+        {
+            "strategy": "stratified",
+            "n_folds": 1,
+            "seed": 0,
+            # Train rows: `noise` and `target` move together (0<->0, 1<->1).
+            # Validation rows: deliberately flipped (`noise` disagrees with
+            # `target`). A model trained only on `noise` therefore CANNOT
+            # score 1.0 on validation — but a model that also gets `target`
+            # itself as a feature scores exactly 1.0 regardless of `noise`,
+            # since the target column trivially predicts itself. This makes
+            # "cv_score == 1.0" a deterministic, non-flaky signal that the
+            # target column leaked into the feature set.
+            "fold_indices": [{"train": [0, 1, 2, 3, 4, 5, 6, 7], "val": [8, 9]}],
+        },
+    )
+    workspace.write_text(
+        "data/raw/train.csv",
+        "noise,target\n0,0\n1,1\n0,0\n1,1\n0,0\n1,1\n0,0\n1,1\n0,1\n1,0\n",
+    )
+
+
+def test_explicit_features_list_excludes_target_column_even_when_llm_includes_it(
+    patched_mlflow, patched_settings, _real_execute_env, tmp_path
+) -> None:
+    workspace = WorkspaceManager(str(tmp_path))
+    _seed_real_training_data(
+        workspace,
+        {
+            "model": "logistic_regression",
+            "hyperparameters": {},
+            # Simulates an LLM slip: the target column is present in its own
+            # explicit feature list.
+            "features": ["noise", "target"],
+            "target_column": "target",
+            "cv_strategy_ref": "validation/fold_config.json",
+        },
+    )
+    node = BaselineRunnerNode()
+    state = _build_state(tmp_path)
+
+    delta = node.run(state)
+
+    # A leaking model (target column included as a feature) would score
+    # exactly 1.0 on validation by construction (see fold layout above).
+    assert delta["baseline_score"] != pytest.approx(1.0)
+
+
+def test_unrecognized_model_name_raises_clear_value_error(
+    patched_mlflow, patched_settings, _real_execute_env, tmp_path
+) -> None:
+    workspace = WorkspaceManager(str(tmp_path))
+    _seed_real_training_data(
+        workspace,
+        {
+            "model": "support_vector_machine",
+            "hyperparameters": {},
+            "features": "all",
+            "target_column": "target",
+            "cv_strategy_ref": "validation/fold_config.json",
+        },
+    )
+    node = BaselineRunnerNode()
+    state = _build_state(tmp_path)
+
+    with pytest.raises(ValueError, match="Unrecognized baseline model 'support_vector_machine'"):
+        node.run(state)
+
+    assert not (tmp_path / "experiments" / "baseline" / "results.json").exists()
+
+
+def test_recognized_model_records_actual_model_class(
+    patched_mlflow, patched_settings, _real_execute_env, tmp_path
+) -> None:
+    workspace = WorkspaceManager(str(tmp_path))
+    _seed_real_training_data(
+        workspace,
+        {
+            "model": "logistic_regression",
+            "hyperparameters": {},
+            "features": "all",
+            "target_column": "target",
+            "cv_strategy_ref": "validation/fold_config.json",
+        },
+    )
+    node = BaselineRunnerNode()
+    state = _build_state(tmp_path)
+
+    node.run(state)
+
+    results = workspace.read_json("experiments/baseline/results.json")
+    assert results["model_class"] == "LogisticRegression"
+    patched_mlflow.log_param.assert_called_once_with("model_class", "LogisticRegression")

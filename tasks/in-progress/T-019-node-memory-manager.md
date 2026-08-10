@@ -3,11 +3,11 @@ id: T-019
 phase: 2
 agent: pipeline-agent
 depends_on: [T-010, T-008]
-status: available
+status: in-progress
 folders: ["src/nodes/llm/", "config/agents/", "config/prompts/"]
 outputs: [memory_manager node, RAG deduplication + consolidation]
 size: S
-branch: ~
+branch: feature/T-019-node-memory-manager
 pr: ~
 ---
 

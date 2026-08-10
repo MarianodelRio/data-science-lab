@@ -643,3 +643,88 @@ original, more conservative plan handed down for this follow-up) — turned out 
 `diff` showed `_build_query`'s output string is *also* identical across all three nodes, not just
 `_read_problem_type`; extracting both is strictly simpler than extracting one and leaving the other
 as a one-line pass-through to the shared `read_problem_type`.
+
+## 2026-08-10 — T-020 [pipeline-agent]
+Decided: hoisted `_relative_to_workspace` (previously duplicated identically in `problem_framer.py`,
+`leakage_auditor.py`, `analysis_critic.py`) into a public `relative_to_workspace()` function in
+`src/nodes/llm/base.py`, alongside the existing standalone `trim_context`. All three call sites
+migrated to import it; `baseline_designer.py` uses it directly, no local copy.
+Why: `baseline_designer` needed the exact same absolute-path-written-by-upstream-node /
+relative-path-required-by-`WorkspaceManager.read_*` handling (see the 2026-08-07 T-014 discovery),
+and a fourth private copy would cross the duplication threshold already flagged as worth hoisting
+once a third landed (2026-08-07 T-017 entry, 2026-08-10 T-019 entry).
+Affects: src/nodes/llm/base.py, src/nodes/llm/problem_framer.py, src/nodes/llm/leakage_auditor.py,
+src/nodes/llm/analysis_critic.py, src/nodes/llm/baseline_designer.py.
+Discarded: `src/nodes/llm/_research_common.py`'s own separate `relative_to_workspace` copy
+(Phase 2 research nodes) was intentionally left untouched — merging it into `base.py`'s copy is
+out of scope for T-020 and not worth the diff risk for an already-landed, already-tested module.
+
+## 2026-08-10 — T-020 [pipeline-agent]
+Decided: `baseline_designer` degrades missing/unreadable `problem_definition_path`/`eda_report_path`
+to a placeholder string (`"(problem definition not yet available)"` etc.) instead of raising,
+mirroring `validation_strategist._read_upstream_context`/`analysis_critic._read_target_content`.
+Why: Pipeline Phase 3 can legitimately be exercised standalone (e.g. `tests/integration/phases/
+test_phase_subgraphs_smoke.py`'s per-phase parametrization, or a future partial-resume path) without
+Phase 1 having populated those `LabState` fields yet; raising would make the node uninvokable in
+isolation, unlike every other node it's patterned after.
+Affects: src/nodes/llm/baseline_designer.py.
+
+## 2026-08-10 — T-020 [pipeline-agent]
+Decided: `baseline_runner`'s generated training script is a fixed Python string constant, not built
+per-`design` via string interpolation — it re-reads `experiments/baseline/design.json` and
+`validation/fold_config.json` itself from the subprocess's own cwd, so LLM-authored `design` values
+(model name, hyperparameters) only ever enter the subprocess as parsed JSON data, never as
+interpolated source text.
+Why: avoids any code-injection/escaping concern from embedding LLM-authored content directly into
+executed Python source. Confirmed clean by T-020's security review.
+Affects: src/nodes/compute/baseline_runner.py.
+
+## 2026-08-10 — T-020 [pipeline-agent, fix after adversarial review]
+Decided: (1) `_TRAINING_SCRIPT`'s feature selection excludes `target_column` from `feature_columns`
+unconditionally, in both the `features == "all"` and explicit-list branches — previously only the
+`"all"` branch excluded it, so an LLM-authored explicit `features` list that accidentally included
+the target column trained (and silently permanently benchmarked) a model using `y` as a feature.
+(2) `build_model()`'s dispatch raises a clear `ValueError` naming the unrecognized model string
+instead of silently falling back to `GradientBoosting` — a silent fallback either crashes
+confusingly (hyperparameters meant for the real model don't match the fallback's constructor) or,
+worse, trains and permanently logs a benchmark under the wrong, unrecorded model identity. The
+actually-instantiated model class name is now also recorded in `results.json` and MLflow params
+(`model_class`), not just `design["model"]`'s stated name, making the record self-verifying even
+when the name did resolve correctly.
+Why: found by T-020's adversarial review as two BLOCKER-severity findings — both silent, both
+capable of corrupting the pipeline's single permanent baseline benchmark with no error surfaced
+anywhere. Added defense-in-depth validation in `baseline_designer._validate_design` rejecting a
+design whose explicit `features` list already contains `target_column`, so a leaking design is
+never written to disk as the LLM's stated intent in the first place. Added real-`execute()`
+(non-mocked subprocess) regression tests for both — every prior `baseline_runner` test mocked
+`execute()` entirely, which is exactly why neither bug had test coverage before this review.
+Affects: src/nodes/compute/baseline_runner.py, src/nodes/llm/baseline_designer.py,
+tests/unit/nodes/compute/test_baseline_runner.py, tests/unit/nodes/llm/test_baseline_designer.py.
+
+## 2026-08-10 — T-020 [pipeline-agent]
+Decided: `baseline_runner`'s CV score is each fitted estimator's own `.score()` (accuracy for
+classifiers, R² for regressors, chosen via a `y.nunique() <= 20` heuristic), not a metric derived
+from `problem_definition.json`'s `success_metric` field (e.g. `roc_auc`, `rmse`, `logloss`).
+Why: `baseline_runner`'s only inputs are `design.json` and `fold_config.json`, neither of which
+carries the competition's actual success metric; threading it through would mean either
+`baseline_designer` copying it into `design.json` (scope creep beyond T-020's "Delivers") or
+`baseline_runner` reading `problem_definition.json` directly (a third node reading that file with
+its own relativization handling). Deferred as a known v1 simplification, flagged by both the
+code-quality and adversarial reviews — worth a follow-up task if later iterations' scores (compared
+against this baseline per design.md's Phase 3 description) turn out not to be apples-to-apples.
+Affects: src/nodes/compute/baseline_runner.py.
+
+## 2026-08-10 — T-020 [pipeline-agent, non-blocking follow-up noted]
+Not fixed in T-020, flagged by adversarial review as follow-up-worthy: `baseline_runner` runs the
+actual training (`execute()`, potentially expensive) before its MLflow calls
+(`set_tracking_uri`/`start_run`/`log_params`/`log_metric`), and `ComputeNode.__call__` has no
+exception handling — an MLflow failure (e.g. unreachable tracking server) after a successful
+training run raises uncaught, so `results.json` is never written and a genuinely-computed baseline
+score is lost, with no state persisted to avoid recomputing it on retry. Neither `baseline_designer`
+nor `baseline_runner` checks whether `design.json`/`results.json` already exist before writing —
+the "runs only at `current_iteration == 0`, never re-run, never overwritten" invariant (CLAUDE.md
+#4) is enforced entirely by supervisor phase-gating outside this diff, no defense-in-depth at the
+node level. Consider for a future task: write `results.json` before/independent of the MLflow
+block (or wrap MLflow calls in try/except-and-warn), and/or an existence check before writing either
+JSON file.
+Status: open, not blocking.

@@ -55,6 +55,17 @@ _MOCK_PROBLEM_DEFINITION = json.dumps(
     }
 )
 _MOCK_LEAKAGE_AUDIT = json.dumps({"leaks": [], "severity": "none", "blocks_progression": False})
+# baseline_designer (T-020) is also a structured-JSON node — its own
+# `_extract_json`/`_validate_design` would reject `_MOCK_LLM_CONTENT`'s fenced
+# ```python narrative shape, so it needs its own dispatch entry too.
+_MOCK_BASELINE_DESIGN = json.dumps(
+    {
+        "model": "logistic_regression",
+        "hyperparameters": {},
+        "features": "all",
+        "target_column": "target",
+    }
+)
 # literature_researcher/web_researcher (T-017) are also structured-JSON nodes
 # (a JSON array, one entry per searched source) — paired below with the
 # search-client mocks in `_mock_llm`, which make both nodes see zero sources,
@@ -108,6 +119,8 @@ def _llm_side_effect(messages: list[BaseMessage]) -> AIMessage:
         return AIMessage(content=_MOCK_PROBLEM_DEFINITION)
     if "System prompt — leakage_auditor" in system_content:
         return AIMessage(content=_MOCK_LEAKAGE_AUDIT)
+    if "System prompt — baseline_designer" in system_content:
+        return AIMessage(content=_MOCK_BASELINE_DESIGN)
     if "System prompt — literature_researcher" in system_content:
         return AIMessage(content=_MOCK_EMPTY_EXTRACTION)
     if "System prompt — web_researcher" in system_content:
@@ -186,6 +199,7 @@ def _mock_llm(monkeypatch: pytest.MonkeyPatch) -> None:
         ),
         patch("src.nodes.llm.competition_analyst.RagStore") as mock_rag_store_cls,
         patch("src.nodes.llm.memory_manager.RagStore") as mock_memory_rag_store,
+        patch("src.nodes.compute.baseline_runner.mlflow") as mock_mlflow,
     ):
         mock_factory.get.return_value = mock_llm
         mock_lit_client.return_value.search.return_value = []
@@ -195,13 +209,49 @@ def _mock_llm(monkeypatch: pytest.MonkeyPatch) -> None:
         mock_rag_store_cls.return_value = MagicMock()
         mock_memory_rag_store.return_value = MagicMock()
         mock_memory_rag_store.return_value.query.return_value = []
+        mock_mlflow.start_run.return_value.__enter__.return_value = MagicMock()
         yield
+
+
+def _seed_phase3_baseline_fixtures(tmp_path) -> None:
+    """`phase3_baseline` is the first phase in this suite whose real node
+    (`baseline_runner`, T-020) both executes a real subprocess (via
+    `code_executor.execute`, unmocked here per this module's own convention)
+    AND depends on artifacts a real Phase 1 run would already have produced
+    (`validation/fold_config.json`, frozen by `validation_strategist`) —
+    unlike every earlier real node in this suite, whose LLM-authored script
+    content is itself supplied by the mocked LLM response and therefore
+    needs no real upstream data. Exercised standalone (no Phase 1 run ahead
+    of it, matching every other phase in this parametrized test), Phase 3
+    has neither the frozen folds nor a real dataset to train on, so both are
+    seeded directly here."""
+    raw_dir = tmp_path / "data" / "raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    (raw_dir / "train.csv").write_text(
+        "feature1,target\n1,0\n2,1\n3,0\n4,1\n5,0\n", encoding="utf-8"
+    )
+    validation_dir = tmp_path / "validation"
+    validation_dir.mkdir(parents=True, exist_ok=True)
+    (validation_dir / "fold_config.json").write_text(
+        json.dumps(
+            {
+                "strategy": "stratified",
+                "n_folds": 1,
+                "seed": 0,
+                "fold_indices": [{"train": [0, 1, 2], "val": [3, 4]}],
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 @pytest.mark.parametrize("stem", PHASE_ORDER)
 def test_phase_subgraph_compiles_and_runs(stem: str, tmp_path) -> None:
     module = importlib.import_module(f"src.graph.phases.{stem}")
     compiled = module.build(resolve_node)
+
+    if stem == "phase3_baseline":
+        _seed_phase3_baseline_fixtures(tmp_path)
 
     state = new_state("comp", str(tmp_path))
     result = compiled.invoke(state)

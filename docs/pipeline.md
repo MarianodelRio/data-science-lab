@@ -296,6 +296,58 @@ completes. `data_analyst` (T-013), `problem_framer` (T-014), `validation_strateg
   against the current `WorkspaceManager.workspace_path` before reading (already-relative paths,
   e.g. in unit tests, pass through unchanged).
 
+### Baseline (Phase 3)
+
+`config/phases/phase3_baseline.yaml`'s `sequence`: `baseline_designer` → `baseline_runner`, no
+critic, no interrupt. The supervisor (see "Supervisor" above) only routes into this phase when
+`current_iteration == 0` (CLAUDE.md invariant #4) — the resulting `baseline_score`/
+`baseline_results_path` are the pipeline's single permanent benchmark: written once here, never
+re-run, never overwritten for the lifetime of the run (design.md § Phase 3).
+
+- **`baseline_designer`** (`src/nodes/llm/baseline_designer.py`, `LLMNode` subclass, `model_role:
+  implementation`) — runs first. `_build_messages` injects both `reports/problem_definition.json`
+  and `reports/eda_report.md` (read via its own `WorkspaceManager`, from
+  `state["problem_definition_path"]`/`state["eda_report_path"]`, re-relativized via the shared
+  `relative_to_workspace` helper — see below) as an extra `HumanMessage`. `_write_output` extracts
+  a JSON object from the response (same fence-stripping convention as `problem_framer`/
+  `leakage_auditor`), validates `model` (non-empty str), `hyperparameters` (dict), `features`
+  (`"all"` or `list[str]`), and `target_column` (non-empty str) — any missing/invalid field raises
+  a `ValueError` naming `baseline_designer` — then always injects `cv_strategy_ref:
+  "validation/fold_config.json"` itself (never trusted from the LLM, even if the LLM's response
+  includes its own value for that key) before writing `experiments/baseline/design.json` via
+  `workspace.write_json`. It does **not** override `_build_output_state` — `baseline_runner` reads
+  `design.json` back from its fixed, well-known workspace path in the same phase, the same
+  convention `fold_config.json` uses, so there is no new `LabState` field for this output.
+- **`baseline_runner`** (`src/nodes/compute/baseline_runner.py`, `ComputeNode` subclass — the
+  first `ComputeNode` implementation to land beyond the abstract base, T-010) — runs second.
+  `run` reads `experiments/baseline/design.json` and `validation/fold_config.json` via
+  `self.workspace(state)` (the latter is **read-only**: this node must never write to
+  `validation/fold_config.json`, which stays frozen per CLAUDE.md invariant #1 — it only proves
+  the frozen folds exist/are readable before generating the training script), generates a fixed
+  Python training script (sklearn/LightGBM/XGBoost dispatch keyed off `design["model"]`, using
+  `folds["fold_indices"]`'s `{"train": [...], "val": [...]}` shape for cross-validation — the
+  script itself re-reads both files from disk at its subprocess `cwd`, avoiding any
+  string-interpolation/injection concern from embedding LLM-authored values into source code), and
+  executes it via `src.tools.code_executor.execute` (never inline `exec`/`eval`). A nonzero
+  `returncode` or `timed_out=True` raises `ValueError` naming the failure (mirroring
+  `validation_strategist`'s subprocess-failure handling); the script's stdout contract is exactly
+  one JSON line as its last line — `{"cv_score": <float>, "fold_scores": [...], "model": ...}` —
+  parsed from the last non-blank stdout line, with malformed/missing-`cv_score` JSON raising a
+  `ValueError`. On success it logs to MLflow (`mlflow.set_tracking_uri(Settings.load().workspace
+  .mlflow_tracking_uri)`, then inside `with mlflow.start_run(run_name="baseline")`:
+  `mlflow.log_params(design["hyperparameters"])` + `mlflow.log_metric("cv_score", cv_score)` —
+  `mlflow` is imported only in this module, never in `src/nodes/compute/base.py`), writes
+  `experiments/baseline/results.json` (`cv_score`, `fold_scores`, `design`) via
+  `workspace.write_json`, and returns `{"baseline_score": float(cv_score),
+  "baseline_results_path": results_path}` — both existing `LabState` fields, no new ones added.
+- **`relative_to_workspace` (hoisted, T-020):** `src/nodes/llm/base.py` now exports a standalone
+  `relative_to_workspace(path, workspace)` function alongside `LLMNode`/`trim_context` — the exact
+  logic previously duplicated as a private `_relative_to_workspace` in `problem_framer.py`,
+  `leakage_auditor.py`, and `analysis_critic.py` (each deleted its local copy in favor of this
+  shared one). `baseline_designer.py` uses it too; `src/nodes/llm/_research_common.py` keeps its
+  own separate copy (Phase 2 research nodes, an intentionally distinct module boundary — see its
+  own docstring).
+
 ## Node classification
 
 > Skeleton — table of LLM nodes vs pure Python nodes vs tools, populated as each node lands.
@@ -306,6 +358,8 @@ completes. `data_analyst` (T-013), `problem_framer` (T-014), `validation_strateg
 | `problem_framer` | LLM (`LLMNode`) | 1 — Understanding | Landed (T-014) |
 | `validation_strategist` | LLM (`LLMNode`) | 1 — Understanding | Landed (T-015) |
 | `leakage_auditor` | LLM (`LLMNode`) | 1 — Understanding | Landed (T-014) |
+| `baseline_designer` | LLM (`LLMNode`) | 3 — Baseline | Landed (T-020) |
+| `baseline_runner` | Compute (`ComputeNode`) | 3 — Baseline | Landed (T-020) |
 
 ### ComputeNode base class
 

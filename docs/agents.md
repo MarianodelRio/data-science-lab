@@ -18,6 +18,7 @@ Each agent-adding task appends one row to the table below. Do not remove or reor
 | `web_researcher` | Phase 2 — Research | `research` | `reports/web_research.md` |
 | `competition_analyst` | Phase 2 — Research | `research` | `reports/competition_analysis_iter{iteration}.md` |
 | `memory_manager` | Phase 2 — Research | `fast` | `reports/memory_consolidation.md` |
+| `baseline_designer` | Phase 3 — Baseline | `implementation` | `experiments/baseline/design.json` |
 
 ## Adding an agent
 

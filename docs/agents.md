@@ -17,6 +17,7 @@ Each agent-adding task appends one row to the table below. Do not remove or reor
 | `literature_researcher` | Phase 2 — Research | `research` | `reports/literature_research.md` |
 | `web_researcher` | Phase 2 — Research | `research` | `reports/web_research.md` |
 | `competition_analyst` | Phase 2 — Research | `research` | `reports/competition_analysis_iter{iteration}.md` |
+| `memory_manager` | Phase 2 — Research | `fast` | `reports/memory_consolidation.md` |
 
 ## Adding an agent
 

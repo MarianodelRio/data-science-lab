@@ -1,10 +1,10 @@
-"""Shared, non-node helpers for the two Pipeline Phase 2 research nodes
-(`literature_researcher`, `web_researcher`).
+"""Shared, non-node helpers for the Pipeline Phase 2 research-style nodes
+(`literature_researcher`, `web_researcher`, `memory_manager`).
 
 This module declares no class matching its own filename stem
 (`_research_common`), so `src/graph/node_resolver.py`'s `_find_node_class`
 never mistakes it for a node module — see docs/pipeline.md § Node-module
-convention. It is imported by the two node modules but never referenced in
+convention. It is imported by the node modules above but never referenced in
 `config/phases/*.yaml`.
 """
 
@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from src.memory.store import IndexDocument
+from src.state import LabState
 from src.workspace.workspace_manager import WorkspaceManager
 
 _MIN_RELEVANCE_SCORE = 0.0
@@ -55,6 +56,43 @@ def relative_to_workspace(path: str, workspace: WorkspaceManager) -> str:
     if not p.is_absolute():
         return path
     return str(p.relative_to(workspace.workspace_path))
+
+
+def read_problem_type(state: LabState) -> str:
+    """Read the `problem_type` field out of the problem definition at
+    `state["problem_definition_path"]`, tolerating an empty/unset path or an
+    unreadable/malformed file (`OSError` from `WorkspaceManager.read_json`)
+    by returning `""` in either case.
+
+    Extracted from three byte-for-byte-identical copies in
+    `literature_researcher`, `web_researcher`, and `memory_manager` per the
+    2026-08-07 T-017 decision-log entry's stated threshold: worth hoisting
+    "if a third research-style node ever lands with the same shape" —
+    `memory_manager` (T-019) is that third node.
+    """
+    path = state["problem_definition_path"]
+    if not path:
+        return ""
+    workspace = WorkspaceManager(state["workspace_path"])
+    try:
+        problem_definition = workspace.read_json(relative_to_workspace(path, workspace))
+    except OSError:
+        return ""
+    problem_type = problem_definition.get("problem_type")
+    return problem_type if isinstance(problem_type, str) else ""
+
+
+def build_ml_techniques_query(state: LabState) -> str:
+    """Build the `"<problem_type> machine learning techniques for
+    <competition_name>"` query string shared verbatim by
+    `literature_researcher`, `web_researcher`, and `memory_manager` (falls
+    back to a problem-type-less phrasing when `read_problem_type` can't
+    determine one). Same extraction rationale as `read_problem_type` above.
+    """
+    problem_type = read_problem_type(state)
+    if problem_type:
+        return f"{problem_type} machine learning techniques for {state['competition_name']}"
+    return f"machine learning techniques for {state['competition_name']}"
 
 
 def build_source_context(sources: list[SourceDocument]) -> str:

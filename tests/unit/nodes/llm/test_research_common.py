@@ -1,7 +1,9 @@
 """Unit tests for src/nodes/llm/_research_common.py.
 
-No LLM/network calls at all — every function here is pure data
-transformation/validation.
+No LLM/network calls at all. Most functions here are pure data
+transformation/validation; `read_problem_type`/`build_ml_techniques_query`
+do real filesystem I/O against a `tmp_path`-backed `WorkspaceManager`
+(no mocking needed — plain local file reads/writes).
 """
 
 from __future__ import annotations
@@ -15,11 +17,15 @@ from src.memory.store import IndexDocument
 from src.nodes.llm._research_common import (
     SourceDocument,
     build_index_documents,
+    build_ml_techniques_query,
     build_source_context,
     extract_json_array,
+    read_problem_type,
     relative_to_workspace,
     render_report_markdown,
 )
+from src.state import new_state
+from src.workspace.workspace_manager import WorkspaceManager
 
 # -- extract_json_array --
 
@@ -241,3 +247,60 @@ def test_build_source_context_empty_sources_has_no_sources_marker() -> None:
     context = build_source_context([])
 
     assert "No sources were found" in context
+
+
+# -- read_problem_type / build_ml_techniques_query --
+# Extracted (T-019) from three byte-for-byte-identical per-node copies in
+# literature_researcher, web_researcher, and memory_manager — see
+# context/decisions.md's T-019 entry. Exercised here directly against a real
+# WorkspaceManager/tmp_path (pure filesystem I/O, no mocking needed); each
+# node's own test suite additionally covers these indirectly through its own
+# `_build_messages`/search-query behavior.
+
+
+def _state_with_problem_definition(tmp_path: Path, problem_definition: dict | None) -> dict:
+    state = new_state("comp", str(tmp_path))
+    if problem_definition is not None:
+        workspace = WorkspaceManager(str(tmp_path))
+        workspace.write_json("reports/problem_definition.json", problem_definition)
+        state["problem_definition_path"] = "reports/problem_definition.json"
+    return state
+
+
+def test_read_problem_type_reads_string_field(tmp_path: Path) -> None:
+    state = _state_with_problem_definition(
+        tmp_path, {"problem_type": "binary_classification", "success_metric": "roc_auc"}
+    )
+
+    assert read_problem_type(state) == "binary_classification"
+
+
+def test_read_problem_type_empty_when_path_unset(tmp_path: Path) -> None:
+    state = _state_with_problem_definition(tmp_path, None)
+
+    assert read_problem_type(state) == ""
+
+
+def test_read_problem_type_empty_when_file_missing(tmp_path: Path) -> None:
+    state = new_state("comp", str(tmp_path))
+    state["problem_definition_path"] = "reports/does_not_exist.json"
+
+    assert read_problem_type(state) == ""
+
+
+def test_read_problem_type_empty_when_field_not_a_string(tmp_path: Path) -> None:
+    state = _state_with_problem_definition(tmp_path, {"problem_type": 123})
+
+    assert read_problem_type(state) == ""
+
+
+def test_build_ml_techniques_query_includes_problem_type_when_known(tmp_path: Path) -> None:
+    state = _state_with_problem_definition(tmp_path, {"problem_type": "regression"})
+
+    assert build_ml_techniques_query(state) == "regression machine learning techniques for comp"
+
+
+def test_build_ml_techniques_query_falls_back_without_problem_type(tmp_path: Path) -> None:
+    state = _state_with_problem_definition(tmp_path, None)
+
+    assert build_ml_techniques_query(state) == "machine learning techniques for comp"

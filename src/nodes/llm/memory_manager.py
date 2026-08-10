@@ -55,7 +55,7 @@ from langchain_core.messages import BaseMessage, HumanMessage
 
 from src.config.settings import Settings
 from src.memory.store import IndexDocument
-from src.nodes.llm._research_common import extract_json_array, relative_to_workspace
+from src.nodes.llm._research_common import build_ml_techniques_query, extract_json_array
 from src.nodes.llm.base import LLMNode
 from src.state import LabState
 from src.tools.rag import RagStore
@@ -275,30 +275,12 @@ class MemoryManagerNode(LLMNode):
             )
         return self._rag_store
 
-    def _build_query(self, state: LabState) -> str:
-        problem_type = self._read_problem_type(state)
-        if problem_type:
-            return f"{problem_type} machine learning techniques for {state['competition_name']}"
-        return f"machine learning techniques for {state['competition_name']}"
-
-    def _read_problem_type(self, state: LabState) -> str:
-        path = state["problem_definition_path"]
-        if not path:
-            return ""
-        workspace = WorkspaceManager(state["workspace_path"])
-        try:
-            problem_definition = workspace.read_json(relative_to_workspace(path, workspace))
-        except OSError:
-            return ""
-        problem_type = problem_definition.get("problem_type")
-        return problem_type if isinstance(problem_type, str) else ""
-
     def _build_messages(
         self, trimmed_messages: list[BaseMessage], state: LabState
     ) -> list[BaseMessage]:
         messages = super()._build_messages(trimmed_messages, state)
         self._competition_name = state["competition_name"]
-        query = self._build_query(state)
+        query = build_ml_techniques_query(state)
         self._candidates = self._ensure_rag_store(self._competition_name).query(
             query, n_results=_QUERY_N_RESULTS
         )

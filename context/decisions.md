@@ -612,3 +612,34 @@ Discarded: corpus-wide scan/delete consolidation (the task file's literal wordin
 achievable without changing `RagStore`/`IndexDocument`, both protected contracts out of this
 task's `folders:` (`src/nodes/llm/`, `config/agents/`, `config/prompts/`) and requiring separate
 human approval.
+
+## 2026-08-10 — T-019 [pipeline-agent] (post-review follow-up)
+Decided: extracted `read_problem_type` and `build_ml_techniques_query` out of
+`literature_researcher.py`, `web_researcher.py`, and `memory_manager.py` into
+`src/nodes/llm/_research_common.py` as plain functions taking `state: LabState`. All three
+node-local copies of both functions were byte-for-byte identical (confirmed via `diff` across all
+three files before extracting — including `_build_query`'s query-string phrasing, which this task's
+own approved plan had copied verbatim from `literature_researcher` for `memory_manager`, so there
+was no per-node phrasing to preserve). This crosses the extraction threshold the 2026-08-07 T-017
+decisions.md entry explicitly set: hoisting was called "not worth it" for *two* copies but
+reasonable "if a third research-style node ever lands with the same shape" — `memory_manager`
+(T-019) is that third node. (`competition_analyst`, T-018, never had this pair of methods, so it
+was unaffected either way.) Each node's `_build_messages` now calls
+`build_ml_techniques_query(state)` directly instead of `self._build_query(state)`/
+`self._read_problem_type(state)`; the two now-redundant instance methods were deleted from all
+three node files rather than kept as thin pass-throughs.
+Why: removes ~34 lines of triplicated logic (validated correct three separate times instead of
+once) with no behavior change — same fallback semantics, same query string, same
+`OSError`-tolerant file read. Flagged as non-blocking by code-quality and adversarial review.
+Affects: `src/nodes/llm/_research_common.py` (new `read_problem_type`/`build_ml_techniques_query`),
+`src/nodes/llm/literature_researcher.py`, `src/nodes/llm/web_researcher.py`,
+`src/nodes/llm/memory_manager.py`, and their three test files plus `test_research_common.py` (the
+`WorkspaceManager` patch target used by these two functions' file I/O moved from each node's own
+module to `src.nodes.llm._research_common`, since that's where the call now lives; direct unit
+tests for both functions were also added to `test_research_common.py` against a real
+`tmp_path`-backed `WorkspaceManager`, no mocking needed).
+Discarded: extracting only `_read_problem_type` and leaving `_build_query` local per-node (the
+original, more conservative plan handed down for this follow-up) — turned out unnecessary once
+`diff` showed `_build_query`'s output string is *also* identical across all three nodes, not just
+`_read_problem_type`; extracting both is strictly simpler than extracting one and leaving the other
+as a one-line pass-through to the shared `read_problem_type`.

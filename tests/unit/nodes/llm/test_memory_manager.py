@@ -1,9 +1,11 @@
 """Unit tests for src/nodes/llm/memory_manager.py.
 
 All external calls are mocked: `LLMFactory`/the LLM itself, `WorkspaceManager`
-(patched at both import locations, matching test_literature_researcher.py's
-convention), and `RagStore` (via the in-memory `FakeRagStore` double defined
-below). No network calls anywhere in this file.
+(patched at both its `base.py` import location and its `_research_common.py`
+import location, the latter used by the shared `read_problem_type` helper —
+see T-019's decisions.md entry on the `_research_common` extraction), and
+`RagStore` (via the in-memory `FakeRagStore` double defined below). No
+network calls anywhere in this file.
 """
 
 from __future__ import annotations
@@ -145,7 +147,7 @@ def mock_workspace_manager():
     instance.write_text.return_value = "/workspace/reports/memory_consolidation.md"
     with (
         patch("src.nodes.llm.base.WorkspaceManager") as mock_wm_cls,
-        patch("src.nodes.llm.memory_manager.WorkspaceManager") as mock_wm_cls_node,
+        patch("src.nodes.llm._research_common.WorkspaceManager") as mock_wm_cls_node,
     ):
         mock_wm_cls.return_value = instance
         mock_wm_cls_node.return_value = instance
@@ -292,6 +294,152 @@ def test_malformed_json_raises_value_error(
 
     with pytest.raises(ValueError, match="memory_manager"):
         node(state)
+
+
+# -- validator negative paths (mirrors test_competition_analyst.py's
+# post-T-018 coverage for the equivalent `_research_common` validators —
+# context/decisions.md's T-018 entry documents an unbounded relevance_score
+# shipping untested once before, caught only by review) --
+
+
+def test_relevance_score_above_one_raises_value_error(
+    patched_llm_factory, patched_settings, mock_workspace_manager, mock_llm: MagicMock
+) -> None:
+    bad_clusters = [{**MERGED_CLUSTER_RESPONSE[0], "relevance_score": 1.5}]
+    mock_llm.invoke.return_value = AIMessage(content=json.dumps(bad_clusters))
+    rag_store = FakeRagStore([DOC_A, DOC_B])
+    node = MemoryManagerNode(rag_store=rag_store)
+    state = _build_state()
+
+    with pytest.raises(ValueError, match="relevance_score"):
+        node(state)
+
+    assert rag_store.index_calls == []
+
+
+def test_relevance_score_negative_raises_value_error(
+    patched_llm_factory, patched_settings, mock_workspace_manager, mock_llm: MagicMock
+) -> None:
+    bad_clusters = [{**MERGED_CLUSTER_RESPONSE[0], "relevance_score": -0.1}]
+    mock_llm.invoke.return_value = AIMessage(content=json.dumps(bad_clusters))
+    rag_store = FakeRagStore([DOC_A, DOC_B])
+    node = MemoryManagerNode(rag_store=rag_store)
+    state = _build_state()
+
+    with pytest.raises(ValueError, match="relevance_score"):
+        node(state)
+
+    assert rag_store.index_calls == []
+
+
+def test_relevance_score_bool_raises_value_error(
+    patched_llm_factory, patched_settings, mock_workspace_manager, mock_llm: MagicMock
+) -> None:
+    # `isinstance(True, int)` is `True` in Python — the validator must reject
+    # bools explicitly rather than silently accepting `True`/`False` as 1.0/0.0.
+    bad_clusters = [{**MERGED_CLUSTER_RESPONSE[0], "relevance_score": True}]
+    mock_llm.invoke.return_value = AIMessage(content=json.dumps(bad_clusters))
+    rag_store = FakeRagStore([DOC_A, DOC_B])
+    node = MemoryManagerNode(rag_store=rag_store)
+    state = _build_state()
+
+    with pytest.raises(ValueError, match="relevance_score"):
+        node(state)
+
+    assert rag_store.index_calls == []
+
+
+def test_relevance_score_non_numeric_raises_value_error(
+    patched_llm_factory, patched_settings, mock_workspace_manager, mock_llm: MagicMock
+) -> None:
+    bad_clusters = [{**MERGED_CLUSTER_RESPONSE[0], "relevance_score": "high"}]
+    mock_llm.invoke.return_value = AIMessage(content=json.dumps(bad_clusters))
+    rag_store = FakeRagStore([DOC_A, DOC_B])
+    node = MemoryManagerNode(rag_store=rag_store)
+    state = _build_state()
+
+    with pytest.raises(ValueError, match="relevance_score"):
+        node(state)
+
+    assert rag_store.index_calls == []
+
+
+def test_non_string_list_item_raises_value_error(
+    patched_llm_factory, patched_settings, mock_workspace_manager, mock_llm: MagicMock
+) -> None:
+    bad_clusters = [{**MERGED_CLUSTER_RESPONSE[0], "methods_used": ["xgboost", 123]}]
+    mock_llm.invoke.return_value = AIMessage(content=json.dumps(bad_clusters))
+    rag_store = FakeRagStore([DOC_A, DOC_B])
+    node = MemoryManagerNode(rag_store=rag_store)
+    state = _build_state()
+
+    with pytest.raises(ValueError, match="methods_used"):
+        node(state)
+
+    assert rag_store.index_calls == []
+
+
+def test_cluster_entry_not_a_dict_raises_value_error(
+    patched_llm_factory, patched_settings, mock_workspace_manager, mock_llm: MagicMock
+) -> None:
+    mock_llm.invoke.return_value = AIMessage(content=json.dumps([1, 2]))
+    rag_store = FakeRagStore([DOC_A, DOC_B])
+    node = MemoryManagerNode(rag_store=rag_store)
+    state = _build_state()
+
+    with pytest.raises(ValueError, match="memory_manager"):
+        node(state)
+
+    assert rag_store.index_calls == []
+
+
+def test_cluster_indices_empty_raises_value_error(
+    patched_llm_factory, patched_settings, mock_workspace_manager, mock_llm: MagicMock
+) -> None:
+    bad_clusters = [{**MERGED_CLUSTER_RESPONSE[0], "indices": []}]
+    mock_llm.invoke.return_value = AIMessage(content=json.dumps(bad_clusters))
+    rag_store = FakeRagStore([DOC_A, DOC_B])
+    node = MemoryManagerNode(rag_store=rag_store)
+    state = _build_state()
+
+    with pytest.raises(ValueError, match="indices"):
+        node(state)
+
+    assert rag_store.index_calls == []
+
+
+def test_cluster_indices_with_duplicate_within_cluster_raises_value_error(
+    patched_llm_factory, patched_settings, mock_workspace_manager, mock_llm: MagicMock
+) -> None:
+    bad_clusters = [{**MERGED_CLUSTER_RESPONSE[0], "indices": [1, 1]}]
+    mock_llm.invoke.return_value = AIMessage(content=json.dumps(bad_clusters))
+    rag_store = FakeRagStore([DOC_A, DOC_B])
+    node = MemoryManagerNode(rag_store=rag_store)
+    state = _build_state()
+
+    with pytest.raises(ValueError, match="duplicates"):
+        node(state)
+
+    assert rag_store.index_calls == []
+
+
+def test_canonical_id_is_lowest_original_index_regardless_of_llm_order(
+    patched_llm_factory, patched_settings, mock_workspace_manager, mock_llm: MagicMock
+) -> None:
+    """`indices: [2, 1]` (unsorted, as the LLM might return them) must still
+    pick candidate 1's id (`doc-a`) as canonical, not whichever index the LLM
+    happened to list first — `_build_consolidated_documents` sorts `indices`
+    before selecting `members[0]`."""
+    unsorted_cluster = [{**MERGED_CLUSTER_RESPONSE[0], "indices": [2, 1]}]
+    mock_llm.invoke.return_value = AIMessage(content=json.dumps(unsorted_cluster))
+    rag_store = FakeRagStore([DOC_A, DOC_B])
+    node = MemoryManagerNode(rag_store=rag_store)
+    state = _build_state()
+
+    node(state)
+
+    (consolidated,) = rag_store.index_calls
+    assert consolidated[0].id == "doc-a"
 
 
 def test_call_state_delta_is_messages_only(

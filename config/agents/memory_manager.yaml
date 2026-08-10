@@ -1,0 +1,6 @@
+name: memory_manager
+model_role: fast
+prompt_version: v1
+tools: []
+output_file_pattern: "reports/memory_consolidation.md"
+max_tokens: 4096

@@ -574,3 +574,72 @@ Affects: `src/nodes/llm/competition_analyst.py`, `tests/unit/nodes/llm/test_comp
 matching `_research_common.py`'s own strictness).
 Discarded: nothing — this is a straightforward "use the code that already existed" fix, not a
 design tradeoff.
+
+## 2026-08-10 — T-019 [pipeline-agent]
+Decided: `memory_manager` (`src/nodes/llm/memory_manager.py`) implements "consolidate the RAG
+store" as **query-window consolidation**, not a corpus-wide scan/delete. `RagStore`
+(`src/tools/rag.py`, T-008's protected contract) exposes only `index()` (upsert-by-id) and
+`query()` (similarity search) — there is no list-all-documents or `delete()` API to scan and prune
+an entire Chroma collection. So the node queries a representative window of candidates
+(`_QUERY_N_RESULTS = 20`, wider than `RagStore.query`'s own default of 10), has the LLM partition
+that window into clusters of near-duplicates, and merges each cluster into one consolidated
+`IndexDocument` re-indexed under a reused `.id` (the canonical member's original id, chosen as the
+lowest original 1-based index in the cluster) — `RagStore.index()`'s upsert-by-id semantics
+collapse that row in place. This was a human-approved scope adjustment (Architect + user sign-off)
+against the task file's more ambitious "deduplicates near-identical entries... reduces them to
+one" wording.
+
+Caveat, stated explicitly rather than hidden: non-canonical sibling ids are **not** physically
+deleted, since `RagStore` has no `delete()`. When a cluster of N candidates merges into 1
+consolidated document, only the canonical id's row gets the merged content on upsert; the other
+N-1 candidates' original rows remain in Chroma, stale, and will keep surfacing in future `.query()`
+calls until a future `RagStore`/`IndexDocument` enhancement adds deterministic ids and/or delete
+support. This is the same underlying gap as the `context/discoveries.md` T-017 OPEN entry
+(`IndexDocument.id` defaulting to a random `uuid4()` with no content-based dedup) — not duplicated
+here, just cross-referenced: whoever picks up that discovery (deterministic ids and/or a
+delete-capable `RagStore`) should revisit `memory_manager`'s canonical-id-reuse-on-upsert merge
+mechanism too, since a delete-capable store would let it fully retire non-canonical rows instead of
+leaving them stale.
+
+Also: a near-duplicate that the query window never surfaces (i.e. it isn't similar enough to the
+query text to rank among the top `_QUERY_N_RESULTS` results) is left untouched by a given pass —
+this is a narrower guarantee than "the whole store is deduplicated," and is documented as such in
+the module's docstring.
+Affects: `src/nodes/llm/memory_manager.py`, `config/agents/memory_manager.yaml`,
+`config/prompts/memory_manager/v1.md`. Related to `context/discoveries.md`'s T-017 OPEN entry on
+`IndexDocument.id` generation.
+Discarded: corpus-wide scan/delete consolidation (the task file's literal wording) — not
+achievable without changing `RagStore`/`IndexDocument`, both protected contracts out of this
+task's `folders:` (`src/nodes/llm/`, `config/agents/`, `config/prompts/`) and requiring separate
+human approval.
+
+## 2026-08-10 — T-019 [pipeline-agent] (post-review follow-up)
+Decided: extracted `read_problem_type` and `build_ml_techniques_query` out of
+`literature_researcher.py`, `web_researcher.py`, and `memory_manager.py` into
+`src/nodes/llm/_research_common.py` as plain functions taking `state: LabState`. All three
+node-local copies of both functions were byte-for-byte identical (confirmed via `diff` across all
+three files before extracting — including `_build_query`'s query-string phrasing, which this task's
+own approved plan had copied verbatim from `literature_researcher` for `memory_manager`, so there
+was no per-node phrasing to preserve). This crosses the extraction threshold the 2026-08-07 T-017
+decisions.md entry explicitly set: hoisting was called "not worth it" for *two* copies but
+reasonable "if a third research-style node ever lands with the same shape" — `memory_manager`
+(T-019) is that third node. (`competition_analyst`, T-018, never had this pair of methods, so it
+was unaffected either way.) Each node's `_build_messages` now calls
+`build_ml_techniques_query(state)` directly instead of `self._build_query(state)`/
+`self._read_problem_type(state)`; the two now-redundant instance methods were deleted from all
+three node files rather than kept as thin pass-throughs.
+Why: removes ~34 lines of triplicated logic (validated correct three separate times instead of
+once) with no behavior change — same fallback semantics, same query string, same
+`OSError`-tolerant file read. Flagged as non-blocking by code-quality and adversarial review.
+Affects: `src/nodes/llm/_research_common.py` (new `read_problem_type`/`build_ml_techniques_query`),
+`src/nodes/llm/literature_researcher.py`, `src/nodes/llm/web_researcher.py`,
+`src/nodes/llm/memory_manager.py`, and their three test files plus `test_research_common.py` (the
+`WorkspaceManager` patch target used by these two functions' file I/O moved from each node's own
+module to `src.nodes.llm._research_common`, since that's where the call now lives; direct unit
+tests for both functions were also added to `test_research_common.py` against a real
+`tmp_path`-backed `WorkspaceManager`, no mocking needed).
+Discarded: extracting only `_read_problem_type` and leaving `_build_query` local per-node (the
+original, more conservative plan handed down for this follow-up) — turned out unnecessary once
+`diff` showed `_build_query`'s output string is *also* identical across all three nodes, not just
+`_read_problem_type`; extracting both is strictly simpler than extracting one and leaving the other
+as a one-line pass-through to the shared `read_problem_type`.

@@ -1,9 +1,11 @@
 """Unit tests for src/nodes/llm/literature_researcher.py.
 
 All external calls are mocked: `LLMFactory`/the LLM itself, `WorkspaceManager`
-(patched at both import locations, matching test_leakage_auditor.py's
-convention), the injected search client, and `RagStore`. `urllib.request.urlopen`
-is monkeypatched (never a real socket) for the default `LiteratureSearchClient`
+(patched at both its `base.py` import location and its `_research_common.py`
+import location, the latter used by the shared `read_problem_type` helper —
+see T-019's decisions.md entry on the `_research_common` extraction), the
+injected search client, and `RagStore`. `urllib.request.urlopen` is
+monkeypatched (never a real socket) for the default `LiteratureSearchClient`
 tests. No network calls anywhere in this file.
 """
 
@@ -96,7 +98,7 @@ def mock_workspace_manager():
     instance.write_text.return_value = "/workspace/reports/literature_research.md"
     with (
         patch("src.nodes.llm.base.WorkspaceManager") as mock_wm_cls,
-        patch("src.nodes.llm.literature_researcher.WorkspaceManager") as mock_wm_cls_node,
+        patch("src.nodes.llm._research_common.WorkspaceManager") as mock_wm_cls_node,
     ):
         mock_wm_cls.return_value = instance
         mock_wm_cls_node.return_value = instance

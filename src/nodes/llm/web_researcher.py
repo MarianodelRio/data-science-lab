@@ -29,9 +29,9 @@ from src.nodes.llm._research_common import (
     SearchClient,
     SourceDocument,
     build_index_documents,
+    build_ml_techniques_query,
     build_source_context,
     extract_json_array,
-    relative_to_workspace,
     render_report_markdown,
 )
 from src.nodes.llm.base import LLMNode
@@ -113,30 +113,12 @@ class WebResearcherNode(LLMNode):
             )
         return self._rag_store
 
-    def _build_query(self, state: LabState) -> str:
-        problem_type = self._read_problem_type(state)
-        if problem_type:
-            return f"{problem_type} machine learning techniques for {state['competition_name']}"
-        return f"machine learning techniques for {state['competition_name']}"
-
-    def _read_problem_type(self, state: LabState) -> str:
-        path = state["problem_definition_path"]
-        if not path:
-            return ""
-        workspace = WorkspaceManager(state["workspace_path"])
-        try:
-            problem_definition = workspace.read_json(relative_to_workspace(path, workspace))
-        except OSError:
-            return ""
-        problem_type = problem_definition.get("problem_type")
-        return problem_type if isinstance(problem_type, str) else ""
-
     def _build_messages(
         self, trimmed_messages: list[BaseMessage], state: LabState
     ) -> list[BaseMessage]:
         messages = super()._build_messages(trimmed_messages, state)
         self._competition_name = state["competition_name"]
-        query = self._build_query(state)
+        query = build_ml_techniques_query(state)
         self._sources = self._ensure_client().search(query)
         messages.append(
             HumanMessage(content=f"## Query\n\n{query}\n\n{build_source_context(self._sources)}")

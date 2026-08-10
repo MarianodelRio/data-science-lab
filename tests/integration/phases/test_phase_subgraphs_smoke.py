@@ -59,6 +59,12 @@ _MOCK_LEAKAGE_AUDIT = json.dumps({"leaks": [], "severity": "none", "blocks_progr
 # (a JSON array, one entry per searched source) — paired below with the
 # search-client mocks in `_mock_llm`, which make both nodes see zero sources,
 # so an empty array is always the correct, schema-valid extraction response.
+# memory_manager (T-019) reuses this same constant: its own output is also a
+# top-level JSON array (one entry per consolidated cluster, see
+# config/prompts/memory_manager/v1.md), and its mocked `RagStore.query()`
+# below is set to return zero candidates, so an empty array is the correct,
+# schema-valid response for it too (`_build_consolidated_documents`'s
+# documented empty-candidates short circuit).
 _MOCK_EMPTY_EXTRACTION = json.dumps([])
 
 # competition_analyst (T-018) is also a structured-JSON node, but its output
@@ -108,6 +114,8 @@ def _llm_side_effect(messages: list[BaseMessage]) -> AIMessage:
         return AIMessage(content=_MOCK_EMPTY_EXTRACTION)
     if "System prompt — competition_analyst" in system_content:
         return AIMessage(content=_MOCK_COMPETITION_ANALYSIS)
+    if "System prompt — memory_manager" in system_content:
+        return AIMessage(content=_MOCK_EMPTY_EXTRACTION)
     return AIMessage(content=_MOCK_LLM_CONTENT)
 
 
@@ -145,6 +153,14 @@ def _mock_llm(monkeypatch: pytest.MonkeyPatch) -> None:
     `config/settings.yaml`'s `workspace.chroma_host`/`chroma_port`, unreachable
     here). Both are patched at their `src.nodes.llm.competition_analyst` import
     location, mirroring the `LLMFactory` patch above.
+
+    `memory_manager` (T-019) runs last in phase2_research and, like
+    `competition_analyst`, is always constructed with no args by
+    `resolve_node`, so its lazily-built `RagStore` (`src.nodes.llm.
+    memory_manager.RagStore`) is patched here too. Its `.query()` is set to
+    return an empty list so the node takes its own documented
+    empty-candidates short circuit — see `_MOCK_EMPTY_EXTRACTION`'s comment
+    above for why that makes `"[]"` the correct mocked LLM response for it.
     """
     for var in (
         "ANTHROPIC_API_KEY",
@@ -169,6 +185,7 @@ def _mock_llm(monkeypatch: pytest.MonkeyPatch) -> None:
             return_value=_FAKE_KERNELS,
         ),
         patch("src.nodes.llm.competition_analyst.RagStore") as mock_rag_store_cls,
+        patch("src.nodes.llm.memory_manager.RagStore") as mock_memory_rag_store,
     ):
         mock_factory.get.return_value = mock_llm
         mock_lit_client.return_value.search.return_value = []
@@ -176,6 +193,8 @@ def _mock_llm(monkeypatch: pytest.MonkeyPatch) -> None:
         mock_lit_rag_store.return_value = MagicMock()
         mock_web_rag_store.return_value = MagicMock()
         mock_rag_store_cls.return_value = MagicMock()
+        mock_memory_rag_store.return_value = MagicMock()
+        mock_memory_rag_store.return_value.query.return_value = []
         yield
 
 

@@ -3,11 +3,11 @@ id: T-021
 phase: 2
 agent: pipeline-agent
 depends_on: [T-010, T-008]
-status: available
+status: in-progress
 folders: ["src/nodes/llm/", "config/agents/", "config/prompts/"]
 outputs: [solution_architect node, design/iteration_N/solution_plan.json]
 size: S
-branch: ~
+branch: feature/T-021-node-solution-architect
 pr: ~
 ---
 

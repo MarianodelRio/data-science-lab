@@ -437,13 +437,19 @@ def test_realistic_ceiling_missing_subfield_raises_value_error(
         node(state)
 
 
-@pytest.mark.parametrize("bad_target_score", ["not-a-number", True, None])
+@pytest.mark.parametrize(
+    "bad_target_score",
+    ["not-a-number", True, None, float("nan"), float("inf"), float("-inf")],
+)
 def test_realistic_ceiling_target_score_wrong_type_raises_value_error(
     patched_llm_factory, patched_settings, mock_workspace_manager, bad_target_score: Any
 ) -> None:
     data = json.loads(json.dumps(VALID_SOLUTION_PLAN))
     data["realistic_ceiling"]["target_score"] = bad_target_score
     mock_llm = patched_llm_factory.get.return_value
+    # json.dumps default allow_nan=True renders NaN/Infinity/-Infinity as those literal,
+    # non-RFC-8259 tokens, which json.loads (used by _extract_json) parses back into the
+    # same non-finite floats — exercising exactly the real end-to-end path.
     mock_llm.invoke.return_value = AIMessage(content=json.dumps(data))
     rag_store = MagicMock()
     rag_store.query.return_value = [FAKE_INDEX_DOCUMENT]
@@ -452,6 +458,96 @@ def test_realistic_ceiling_target_score_wrong_type_raises_value_error(
 
     with pytest.raises(ValueError, match="target_score"):
         node(state)
+
+
+def test_model_families_too_few_raises_value_error(
+    patched_llm_factory, patched_settings, mock_workspace_manager
+) -> None:
+    data = json.loads(json.dumps(VALID_SOLUTION_PLAN))
+    data["model_families"] = ["lightgbm"]
+    mock_llm = patched_llm_factory.get.return_value
+    mock_llm.invoke.return_value = AIMessage(content=json.dumps(data))
+    rag_store = MagicMock()
+    rag_store.query.return_value = [FAKE_INDEX_DOCUMENT]
+    node = SolutionArchitectNode(rag_store=rag_store)
+    state = _build_state()
+
+    with pytest.raises(ValueError, match="2 to 4"):
+        node(state)
+
+
+def test_model_families_too_many_raises_value_error(
+    patched_llm_factory, patched_settings, mock_workspace_manager
+) -> None:
+    data = json.loads(json.dumps(VALID_SOLUTION_PLAN))
+    data["model_families"] = ["lightgbm", "xgboost", "catboost", "random_forest", "svm"]
+    mock_llm = patched_llm_factory.get.return_value
+    mock_llm.invoke.return_value = AIMessage(content=json.dumps(data))
+    rag_store = MagicMock()
+    rag_store.query.return_value = [FAKE_INDEX_DOCUMENT]
+    node = SolutionArchitectNode(rag_store=rag_store)
+    state = _build_state()
+
+    with pytest.raises(ValueError, match="2 to 4"):
+        node(state)
+
+
+def test_model_families_case_variant_duplicate_raises_value_error(
+    patched_llm_factory, patched_settings, mock_workspace_manager
+) -> None:
+    data = json.loads(json.dumps(VALID_SOLUTION_PLAN))
+    data["model_families"] = ["lightgbm", "LightGBM"]
+    data["order"] = ["lightgbm", "LightGBM"]
+    mock_llm = patched_llm_factory.get.return_value
+    mock_llm.invoke.return_value = AIMessage(content=json.dumps(data))
+    rag_store = MagicMock()
+    rag_store.query.return_value = [FAKE_INDEX_DOCUMENT]
+    node = SolutionArchitectNode(rag_store=rag_store)
+    state = _build_state()
+
+    with pytest.raises(ValueError, match="duplicate"):
+        node(state)
+
+
+def test_order_whitespace_variant_duplicate_raises_value_error(
+    patched_llm_factory, patched_settings, mock_workspace_manager
+) -> None:
+    data = json.loads(json.dumps(VALID_SOLUTION_PLAN))
+    data["model_families"] = ["lightgbm", "xgboost"]
+    data["order"] = ["lightgbm", " lightgbm "]
+    mock_llm = patched_llm_factory.get.return_value
+    mock_llm.invoke.return_value = AIMessage(content=json.dumps(data))
+    rag_store = MagicMock()
+    rag_store.query.return_value = [FAKE_INDEX_DOCUMENT]
+    node = SolutionArchitectNode(rag_store=rag_store)
+    state = _build_state()
+
+    with pytest.raises(ValueError, match="duplicate"):
+        node(state)
+
+
+def test_order_case_variant_of_model_families_is_accepted_as_permutation(
+    patched_llm_factory, patched_settings, mock_workspace_manager
+) -> None:
+    """A same-set-different-casing `order` (no internal duplicates in either
+    list) must not be incorrectly rejected as 'not a permutation' now that the
+    permutation check compares normalized forms."""
+    _, workspace_instance = mock_workspace_manager
+    data = json.loads(json.dumps(VALID_SOLUTION_PLAN))
+    data["model_families"] = ["lightgbm", "XGBoost"]
+    data["order"] = ["xgboost", "LightGBM"]
+    mock_llm = patched_llm_factory.get.return_value
+    mock_llm.invoke.return_value = AIMessage(content=json.dumps(data))
+    rag_store = MagicMock()
+    rag_store.query.return_value = [FAKE_INDEX_DOCUMENT]
+    node = SolutionArchitectNode(rag_store=rag_store)
+    state = _build_state()
+
+    node(state)
+
+    args, _ = workspace_instance.write_json.call_args
+    assert args[1]["model_families"] == ["lightgbm", "XGBoost"]
+    assert args[1]["order"] == ["xgboost", "LightGBM"]
 
 
 def test_call_does_not_read_problem_definition_path(

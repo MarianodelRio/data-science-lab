@@ -23,6 +23,7 @@ whole node.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -76,6 +77,16 @@ def _extract_json(content: str) -> dict[str, Any]:
     return data
 
 
+def _has_normalized_duplicates(values: list[str]) -> bool:
+    """True if `values` contains two entries that are equal after stripping
+    surrounding whitespace and lowercasing — catches near-duplicates like
+    `["lightgbm", "LightGBM"]` or `["lightgbm", " lightgbm "]` that an exact
+    `set()` comparison would miss, without discarding the LLM's original
+    casing in the stored/returned values themselves."""
+    normalized = [v.strip().lower() for v in values]
+    return len(set(normalized)) != len(normalized)
+
+
 def _validate_solution_plan(data: dict[str, Any]) -> dict[str, Any]:
     model_families = data.get("model_families")
     if (
@@ -87,10 +98,15 @@ def _validate_solution_plan(data: dict[str, Any]) -> dict[str, Any]:
             "solution_architect response missing required non-empty list[str] field "
             "'model_families'"
         )
-    if len(set(model_families)) != len(model_families):
+    if _has_normalized_duplicates(model_families):
         raise ValueError(
             "solution_architect response 'model_families' contains duplicate entries: "
             f"{model_families!r}"
+        )
+    if not 2 <= len(model_families) <= 4:
+        raise ValueError(
+            "solution_architect response 'model_families' must contain 2 to 4 entries, got "
+            f"{len(model_families)}: {model_families!r}"
         )
 
     order = data.get("order")
@@ -102,11 +118,13 @@ def _validate_solution_plan(data: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(
             "solution_architect response missing required non-empty list[str] field 'order'"
         )
-    if len(set(order)) != len(order):
+    if _has_normalized_duplicates(order):
         raise ValueError(
             f"solution_architect response 'order' contains duplicate entries: {order!r}"
         )
-    if sorted(order) != sorted(model_families):
+    normalized_order = sorted(o.strip().lower() for o in order)
+    normalized_families = sorted(m.strip().lower() for m in model_families)
+    if normalized_order != normalized_families:
         raise ValueError(
             f"solution_architect response 'order' {order!r} must contain exactly the same "
             f"entries as 'model_families' {model_families!r}"
@@ -131,10 +149,14 @@ def _validate_solution_plan(data: dict[str, Any]) -> dict[str, Any]:
             "solution_architect response 'realistic_ceiling.metric' must be a non-empty string"
         )
     target_score = realistic_ceiling.get("target_score")
-    if isinstance(target_score, bool) or not isinstance(target_score, (int, float)):
+    if (
+        isinstance(target_score, bool)
+        or not isinstance(target_score, (int, float))
+        or not math.isfinite(target_score)
+    ):
         raise ValueError(
-            "solution_architect response 'realistic_ceiling.target_score' must be a number, "
-            f"got {target_score!r}"
+            "solution_architect response 'realistic_ceiling.target_score' must be a finite "
+            f"number, got {target_score!r}"
         )
     ceiling_rationale = realistic_ceiling.get("rationale")
     if not isinstance(ceiling_rationale, str) or not ceiling_rationale.strip():

@@ -794,3 +794,47 @@ Affects: `src/nodes/llm/feature_engineer.py` (`_read_eda_report`, `_read_solutio
 Discarded: importing/reusing `baseline_designer._read_eda_report` directly — would break the
 established convention and create an implicit cross-module dependency between two otherwise
 independent node modules.
+
+## 2026-08-11 — T-023 [pipeline-agent]
+Decided: `specialist_selector`'s 4-branch keyword precedence checks timeseries keywords
+(`"time series forecasting"`, `"forecast"`, `"arima"`, `"prophet"`) and NLP keywords (`"nlp"`,
+`"text"`, `"bert"`, `"transformer"`, `"tfidf"`, `"tf idf"`, `"embedding"`) *before*
+deep-learning keywords (`"neural"`, `"cnn"`, `"rnn"`, `"deep learning"`, `"pytorch"`, `"lstm"`) —
+so a plan naming an LSTM/transformer for a forecasting or text problem routes to
+`timeseries_specialist`/`nlp_specialist`, never `deep_learning_specialist`.
+Why: LSTM/transformer/CNN are architecture signals, not problem-type signals — they legitimately
+co-occur with either a forecasting or an NLP problem (an LSTM is a common forecasting model
+choice; a transformer is a common NLP model choice), so treating them as lower-precedence than
+the problem-type keywords means routing follows the more actionable specialist boundary (what
+domain expertise the specialist needs — time-series or text handling — not which network
+architecture happens to be named). Reordering these branches would misroute exactly the plans
+where a deep-learning architecture is the *implementation detail* of a timeseries/NLP solution,
+not evidence of a distinct "deep learning" problem domain.
+Affects: `src/nodes/compute/specialist_selector.py` (`_TIMESERIES_KEYWORDS`, `_NLP_KEYWORDS`,
+`_DEEP_LEARNING_KEYWORDS`, `_select_by_signal`).
+Discarded: checking deep-learning keywords first (or scoring/ranking all matched keywords instead
+of a fixed precedence) — would route an LSTM-based forecasting plan to `deep_learning_specialist`
+instead of `timeseries_specialist`, losing the timeseries-specific domain expertise (fold-aware
+CV for temporal data, seasonality handling, etc.) the plan actually needs.
+
+## 2026-08-11 — T-023 [pipeline-agent]
+Decided: trimmed `config/phases/phase5_implementation.yaml`'s `nodes`/`sequence` to
+`[specialist_selector, coder, code_critic]`, removing the 5 specialist names
+(`classical_ml_specialist`, `deep_learning_specialist`, `nlp_specialist`, `timeseries_specialist`,
+`ensemble_specialist`) that were previously listed there.
+Why: `src/graph/phases/generic.py` chains every name in `sequence` into real, always-executed
+graph edges. Leaving all 5 specialist names in the YAML would make the compiled Phase 5 subgraph
+invoke every specialist for real once T-024–T-028 land, *in addition to*
+`specialist_selector`'s own internal one-specialist `resolve_node` dispatch (T-023) — double
+work, and a direct contradiction of design.md's "one specialist at a time." `specialist_selector`
+now owns specialist dispatch entirely internally, the same pattern `analysis_critic`'s
+retry-target dispatch already uses without ever appearing twice in its own phase's `sequence`
+(see the 2026-08-05 T-009 entry above).
+Affects: `config/phases/phase5_implementation.yaml`, `tests/unit/graph/test_phase_yaml_contracts.py`
+(`EXPECTED["phase5_implementation"]["nodes"]`), `docs/pipeline.md` (Supervisor section + new
+"Implementation (Phase 5)" subsection).
+Discarded: leaving the 5 specialist names in `sequence` and relying on `specialist_selector`'s
+internal dispatch alone to make the duplicate invocations harmless (e.g. specialists no-op if
+not selected) — rejected because it requires every future specialist implementation (T-024–T-028)
+to defensively special-case "was I actually selected this iteration," rather than making
+non-selection structurally impossible by not being a graph edge at all.

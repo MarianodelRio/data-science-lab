@@ -169,11 +169,15 @@ yet approved), so `analysis_critic`, `code_critic`, and `specialist_selector` ow
 flow internally instead: a critic's own node function re-invokes its target node(s) directly (via
 the same `resolve_node` mechanism) up to `max_retries`, entirely inside its own function, and
 `specialist_selector` internally invokes exactly one chosen specialist the same way. Neither
-surfaces as a graph-level conditional edge. This means `PhaseConfig.sequence` for phase1/phase4/
-phase5 stays a flat one-pass list — the YAML lists every specialist/critic node in sequence, but
-the *actual* runtime dispatch/retry behavior lives inside the node implementations landed by
-T-016/T-023/T-030, not in `GraphBuilder`. See `context/decisions.md` (T-009) for the full
-rationale.
+surfaces as a graph-level conditional edge. `PhaseConfig.sequence` for phase1/phase4 stays a flat
+one-pass list that lists every critic-retry target node once. Phase 5's YAML is different in one
+respect, as of T-023: it does **not** enumerate the 5 specialist names at all — only
+`specialist_selector`, `coder`, `code_critic` — since `specialist_selector` dispatches to exactly
+one specialist internally via `resolve_node`; listing all 5 in `sequence` too would make
+`src/graph/phases/generic.py` chain them in as real, always-executed graph edges, invoking every
+specialist in addition to `specialist_selector`'s own internal single-specialist dispatch. See
+"Implementation (Phase 5)" below for the selection/dispatch mechanism in detail, and
+`context/decisions.md` (T-009, T-023) for the full rationale.
 
 ### Human checkpoints
 
@@ -348,6 +352,55 @@ re-run, never overwritten for the lifetime of the run (design.md § Phase 3).
   own separate copy (Phase 2 research nodes, an intentionally distinct module boundary — see its
   own docstring).
 
+### Implementation (Phase 5)
+
+`config/phases/phase5_implementation.yaml`'s `sequence`: `specialist_selector` → `coder` →
+`code_critic`, critic targets `[coder]` (`max_retries: 3`), no interrupt. As of T-023, the YAML
+deliberately does **not** list any of the 5 specialist names (`classical_ml_specialist`,
+`deep_learning_specialist`, `nlp_specialist`, `timeseries_specialist`, `ensemble_specialist`) —
+`specialist_selector` owns dispatching to exactly one of them internally (see "Supervisor" above).
+
+- **`specialist_selector`** (`src/nodes/compute/specialist_selector.py`, `ComputeNode` subclass,
+  T-023) — the phase's first node, pure Python, no LLM. Reads two upstream artifacts via
+  `self.workspace(state)`, each independently degrading to `{}` (never raising) on an unset
+  `state[...]` path, a missing/unreadable file, or non-dict JSON content:
+  - `state["problem_definition_path"]` → `problem_definition.json` (has `problem_type: str`)
+  - `state["solution_plan_path"]` → `solution_plan.json` (has `model_families: list[str]`,
+    `order: list[str]`, `ensembling_strategy: str`, `rationale: str`)
+
+  It builds one normalized (lowercased, `-`/`_` collapsed to spaces, whitespace collapsed) text
+  blob from `problem_type` + `model_families` + `order` + `rationale`, and selects a specialist
+  by this exact fixed precedence (first match wins), matched with word-boundary regexes:
+  1. timeseries keywords (`"time series forecasting"`, `"forecast"`, `"arima"`, `"prophet"`) →
+     `timeseries_specialist`
+  2. NLP keywords (`"nlp"`, `"text"`, `"bert"`, `"transformer"`, `"tfidf"`, `"tf idf"`,
+     `"embedding"`) → `nlp_specialist`
+  3. deep-learning keywords (`"neural"`, `"cnn"`, `"rnn"`, `"deep learning"`, `"pytorch"`,
+     `"lstm"`) → `deep_learning_specialist`
+  4. no match → `classical_ml_specialist` (default)
+
+  Timeseries is checked before deep learning, and NLP before deep learning, by design: an
+  LSTM/transformer plan for a forecasting or text problem should route to
+  `timeseries_specialist`/`nlp_specialist` — the problem-type-driven specialist — not
+  `deep_learning_specialist`, an architecture-driven signal that can legitimately co-occur with
+  either. Routing by problem type, not architecture, is the more actionable specialist boundary
+  (`context/decisions.md`, 2026-08-11 T-023).
+
+  Independent of the 4-branch precedence, `ensemble_specialist` is selected instead whenever BOTH:
+  (a) `state["experiments"]` already has >= 2 entries, checked first and short-circuiting
+  immediately to the 4-branch precedence when false — `ensemble_specialist` is never selected
+  with fewer than 2 experiments, regardless of anything else — AND (b) `solution_plan.json`'s
+  `ensembling_strategy` field is a non-empty string that does not itself say "no ensembling"
+  (checked via the same normalized-blob word-boundary approach against `"no ensembl"`, a common
+  prefix of both "no ensembling" and "no ensemble").
+
+  Once a specialist name is chosen, `run` dispatches to it exactly once via
+  `resolve_node(chosen_name)` (`src/graph/node_resolver.py`) and returns that specialist's own
+  delta, defensively coerced to `{}` if it isn't a `dict` — the same single-call/merge shape as
+  `analysis_critic`'s own `resolve_node(target_node)(...)` retry-target call, minus the
+  retry loop. All 5 specialist names currently fall back to `NoOpNode` (T-024–T-028 haven't
+  landed yet) — this is `resolve_node`'s documented "not implemented yet" behavior, not a bug.
+
 ## Node classification
 
 > Skeleton — table of LLM nodes vs pure Python nodes vs tools, populated as each node lands.
@@ -360,6 +413,7 @@ re-run, never overwritten for the lifetime of the run (design.md § Phase 3).
 | `leakage_auditor` | LLM (`LLMNode`) | 1 — Understanding | Landed (T-014) |
 | `baseline_designer` | LLM (`LLMNode`) | 3 — Baseline | Landed (T-020) |
 | `baseline_runner` | Compute (`ComputeNode`) | 3 — Baseline | Landed (T-020) |
+| `specialist_selector` | Compute (`ComputeNode`) | 5 — Implementation | Landed (T-023) |
 
 ### ComputeNode base class
 

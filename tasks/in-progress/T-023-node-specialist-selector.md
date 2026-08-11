@@ -3,11 +3,11 @@ id: T-023
 phase: 2
 agent: pipeline-agent
 depends_on: [T-011]
-status: available
+status: in-progress
 folders: ["src/nodes/compute/", "config/phases/"]
 outputs: [specialist_selector compute node]
 size: S
-branch: ~
+branch: feature/T-023-node-specialist-selector
 pr: ~
 ---
 

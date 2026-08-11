@@ -15,6 +15,7 @@ whether `feature_spec_path` has been written yet.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from langchain_core.messages import BaseMessage, HumanMessage
@@ -94,11 +95,46 @@ def _read_eda_report(state: LabState, workspace: WorkspaceManager) -> str:
         return f"(unable to read EDA report at {path})"
 
 
+# Curated set of method names/phrases that denote the target-encoding *family* of
+# techniques — every one of these computes a per-category statistic derived from the
+# target column, so every one of them leaks target information across CV folds unless
+# it is computed per-fold. Deliberately does NOT include bare "target" as a keyword: a
+# method name can legitimately mention "target" without being target encoding (e.g.
+# "frequency_encoding_excluding_target_leak"), so a bare substring match on "target" is
+# both under-inclusive (misses category_encoders-style names below that never say
+# "target" at all, e.g. "leave_one_out", "WOE", "catboost") and over-inclusive (flags
+# unrelated methods that merely mention "target"). Matched as whole phrases with word
+# boundaries against a separator-normalized (- and _ collapsed to spaces) copy of the
+# method string, so "target_encoding" / "target-encoding" / "target encoding" and
+# similar variants of every phrase below all match uniformly.
+_TARGET_ENCODING_KEYWORDS = (
+    "target encoding",
+    "target mean",
+    "smoothed target",
+    "mean encoding",
+    "leave one out",
+    "loo",
+    "woe",
+    "weight of evidence",
+    "catboost",
+    "james stein",
+    "m estimate",
+    "impact encoding",
+)
+
+
 def _is_target_encoding_method(method: str) -> bool:
-    """Case-insensitive substring match on 'target' — robust to LLM phrasing
-    variance (target_encoding, mean_target_encoding, Target Encoding all match)
-    while the prompt names target_encoding as the canonical value."""
-    return "target" in method.lower()
+    """Whole-phrase match against `_TARGET_ENCODING_KEYWORDS`, robust to LLM phrasing
+    variance across the standard `category_encoders`-library names for the
+    target-encoding family (target_encoding, mean_target_encoding, mean_encoding,
+    leave_one_out, WOE, CatBoost encoding, James-Stein, M-estimate, impact_encoding,
+    ...) while not flagging an unrelated method that merely mentions the word "target"
+    (e.g. "frequency_encoding_excluding_target_leak")."""
+    normalized = re.sub(r"[-_]+", " ", method.lower())
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return any(
+        re.search(rf"\b{re.escape(keyword)}\b", normalized) for keyword in _TARGET_ENCODING_KEYWORDS
+    )
 
 
 def _validate_encodings(value: Any) -> list[dict[str, Any]]:

@@ -385,6 +385,158 @@ def test_non_target_encoding_does_not_require_fold_aware(
     assert args[1]["encodings"] == [{"column": "cat1", "method": "one_hot"}]
 
 
+# -- target-encoding-family keyword matching (not just the literal 'target_encoding' string) --
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        "mean_encoding",
+        "leave_one_out",
+        "leave-one-out",
+        "WOE",
+        "weight of evidence",
+        "CatBoost encoding",
+        "James-Stein encoding",
+        "M-estimate encoding",
+        "impact_encoding",
+        "target_mean",
+        "smoothed target encoding",
+    ],
+)
+def test_target_encoding_family_synonym_requires_fold_aware(
+    patched_llm_factory, patched_settings, mock_workspace_manager, method: str
+) -> None:
+    """category_encoders-library names for the target-encoding family (mean encoding,
+    leave-one-out, weight-of-evidence, CatBoost, James-Stein, M-estimate, impact
+    encoding, ...) never contain the literal substring 'target' (except the target_mean/
+    smoothed-target variants), so a bare substring check on 'target' would silently let
+    a leaky, non-fold-aware version of any of these through. All must require
+    'fold_aware': true exactly like 'target_encoding' does."""
+    data = {**VALID_SPEC, "encodings": [{"column": "cat1", "method": method}]}
+    mock_llm = patched_llm_factory.get.return_value
+    mock_llm.invoke.return_value = AIMessage(content=json.dumps(data))
+    node = FeatureEngineerNode()
+    state = _build_state()
+
+    with pytest.raises(ValueError, match="fold_aware"):
+        node(state)
+
+
+def test_target_encoding_family_synonym_with_fold_aware_true_is_accepted(
+    patched_llm_factory, patched_settings, mock_workspace_manager
+) -> None:
+    data = {
+        **VALID_SPEC,
+        "encodings": [{"column": "cat1", "method": "leave_one_out", "fold_aware": True}],
+    }
+    mock_llm = patched_llm_factory.get.return_value
+    mock_llm.invoke.return_value = AIMessage(content=json.dumps(data))
+    _, workspace_instance = mock_workspace_manager
+    node = FeatureEngineerNode()
+    state = _build_state()
+
+    node(state)
+
+    args, _ = workspace_instance.write_json.call_args
+    assert args[1]["encodings"] == [
+        {"column": "cat1", "method": "leave_one_out", "fold_aware": True}
+    ]
+
+
+def test_method_merely_mentioning_target_does_not_require_fold_aware(
+    patched_llm_factory, patched_settings, mock_workspace_manager
+) -> None:
+    """False-positive regression: a method name that mentions the word 'target' without
+    being a target-encoding-family technique (e.g. explicitly excluding a target-related
+    leak) must not be forced to declare 'fold_aware' — only the curated whole-phrase
+    keywords should trigger the requirement, not a bare 'target' substring."""
+    data = {
+        **VALID_SPEC,
+        "encodings": [{"column": "cat1", "method": "frequency_encoding_excluding_target_leak"}],
+    }
+    mock_llm = patched_llm_factory.get.return_value
+    mock_llm.invoke.return_value = AIMessage(content=json.dumps(data))
+    _, workspace_instance = mock_workspace_manager
+    node = FeatureEngineerNode()
+    state = _build_state()
+
+    node(state)
+
+    args, _ = workspace_instance.write_json.call_args
+    assert args[1]["encodings"] == [
+        {"column": "cat1", "method": "frequency_encoding_excluding_target_leak"}
+    ]
+
+
+# -- not-a-dict item guards --
+
+
+def test_encoding_item_not_a_dict_raises_value_error(
+    patched_llm_factory, patched_settings, mock_workspace_manager
+) -> None:
+    data = {**VALID_SPEC, "encodings": ["not a dict"]}
+    mock_llm = patched_llm_factory.get.return_value
+    mock_llm.invoke.return_value = AIMessage(content=json.dumps(data))
+    node = FeatureEngineerNode()
+    state = _build_state()
+
+    with pytest.raises(ValueError, match="must be an object"):
+        node(state)
+
+
+def test_null_handling_item_not_a_dict_raises_value_error(
+    patched_llm_factory, patched_settings, mock_workspace_manager
+) -> None:
+    data = {**VALID_SPEC, "null_handling": ["not a dict"]}
+    mock_llm = patched_llm_factory.get.return_value
+    mock_llm.invoke.return_value = AIMessage(content=json.dumps(data))
+    node = FeatureEngineerNode()
+    state = _build_state()
+
+    with pytest.raises(ValueError, match="must be an object"):
+        node(state)
+
+
+def test_interactions_item_not_a_dict_raises_value_error(
+    patched_llm_factory, patched_settings, mock_workspace_manager
+) -> None:
+    data = {**VALID_SPEC, "interactions": ["not a dict"]}
+    mock_llm = patched_llm_factory.get.return_value
+    mock_llm.invoke.return_value = AIMessage(content=json.dumps(data))
+    node = FeatureEngineerNode()
+    state = _build_state()
+
+    with pytest.raises(ValueError, match="must be an object"):
+        node(state)
+
+
+def test_null_handling_missing_column_raises_value_error(
+    patched_llm_factory, patched_settings, mock_workspace_manager
+) -> None:
+    data = {**VALID_SPEC, "null_handling": [{"strategy": "median_impute"}]}
+    mock_llm = patched_llm_factory.get.return_value
+    mock_llm.invoke.return_value = AIMessage(content=json.dumps(data))
+    node = FeatureEngineerNode()
+    state = _build_state()
+
+    with pytest.raises(ValueError, match="column"):
+        node(state)
+
+
+def test_interactions_missing_type_raises_value_error(
+    patched_llm_factory, patched_settings, mock_workspace_manager
+) -> None:
+    data = {**VALID_SPEC, "interactions": [{"columns": ["num1", "num2"]}]}
+    mock_llm = patched_llm_factory.get.return_value
+    mock_llm.invoke.return_value = AIMessage(content=json.dumps(data))
+    node = FeatureEngineerNode()
+    state = _build_state()
+
+    with pytest.raises(ValueError, match="type"):
+        node(state)
+
+
 def test_interactions_columns_requires_at_least_two(
     patched_llm_factory, patched_settings, mock_workspace_manager
 ) -> None:

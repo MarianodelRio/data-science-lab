@@ -95,6 +95,19 @@ _MOCK_COMPETITION_ANALYSIS = json.dumps(
     ]
 )
 
+# feature_engineer (T-022) is also a structured-JSON node — its own
+# `_extract_json`/`_validate_feature_spec` require exactly `encodings`/
+# `null_handling`/`interactions` list keys (see config/prompts/
+# feature_engineer/v1.md), which `_MOCK_LLM_CONTENT`'s fenced ```python
+# narrative shape would fail, so it needs its own dispatch entry too.
+_MOCK_FEATURE_SPEC = json.dumps(
+    {
+        "encodings": [{"column": "cat1", "method": "one_hot"}],
+        "null_handling": [{"column": "num1", "strategy": "median_impute"}],
+        "interactions": [],
+    }
+)
+
 _FAKE_KERNELS = [
     {
         "ref": "smoke-user/smoke-kernel",
@@ -121,6 +134,8 @@ def _llm_side_effect(messages: list[BaseMessage]) -> AIMessage:
         return AIMessage(content=_MOCK_LEAKAGE_AUDIT)
     if "System prompt — baseline_designer" in system_content:
         return AIMessage(content=_MOCK_BASELINE_DESIGN)
+    if "System prompt — feature_engineer" in system_content:
+        return AIMessage(content=_MOCK_FEATURE_SPEC)
     if "System prompt — literature_researcher" in system_content:
         return AIMessage(content=_MOCK_EMPTY_EXTRACTION)
     if "System prompt — web_researcher" in system_content:

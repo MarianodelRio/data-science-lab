@@ -241,4 +241,52 @@ Status: open
 ## OPEN — 2026-08-11 [pipeline-agent (T-023) → whoever next tunes specialist_selector / builds T-025 (deep_learning_specialist), T-026 (nlp_specialist), T-027 (timeseries_specialist)]
 `specialist_selector` (`src/nodes/compute/specialist_selector.py`) selects a specialist via a deterministic keyword-precedence match against a normalized text blob (`problem_type` + `model_families` + `order` + `rationale`) — approved v1 scope is plain keyword matching, not NLP-level negation/sentiment parsing. This means it has no awareness of negation or the semantic role a keyword plays in the sentence, so a keyword's mere presence can misroute a plan even when the surrounding text clearly means the opposite or means something unrelated to model choice. Two concrete repro examples, confirmed by adversarial review: (1) `rationale: "No BERT/transformer approach needed here, sticking with gradient boosting."` still matches the NLP keywords "bert"/"transformer" and selects `nlp_specialist`, despite the rationale explicitly rejecting that approach. (2) `model_families: ["Prophet-inspired feature engineering for XGBoost"]` still matches the timeseries keyword "prophet" and selects `timeseries_specialist`, even though "Prophet" there qualifies a feature-engineering idea for an XGBoost model, not the model family itself.
 Accepted as a design tradeoff for v1 (reviewers explicitly did not block T-023 on this) — a misrouted specialist just means a plausible-but-suboptimal specialist gets tried for one iteration, not a leakage/correctness invariant violation, and it's a low-frequency phrasing pattern for an LLM-authored `solution_plan.json`. Not fixed here: negation-aware matching is a different, larger mechanism (dependency parsing or an LLM-based classification step) than the curated-keyword/word-boundary convention this task's approved scope specified. Worth revisiting once T-025/T-026/T-027 land for real and there's an actual population of misrouted plans to measure against, rather than guessing at a negation heuristic now with no real specialist behavior yet to validate it against.
+## OPEN — 2026-08-11 [pipeline-agent (T-024) → pipeline-agent (T-031 score_evaluator / T-032 iteration loop)]
+**Nothing in `src/` ever increments `state["current_iteration"]`.** Verified by grep across `src/`
+while implementing T-024: `src/state.py:74` sets it to `0` in `new_state`, `src/graph/supervisor.py`
+and `src/observability/jsonl_callback.py` only *read* it, and every remaining hit is a node reading
+it to interpolate an output path. There is no writer anywhere.
+Consequence: every design→implementation cycle resolves to the same
+`experiments/exp_0/design.json` and silently overwrites the previous iteration's design — the
+pipeline looks like it is iterating while producing exactly one artifact per path forever.
+This is **pre-existing and not specific to T-024**: the identical overwrite already affects T-021's
+`design/iteration_{iteration}/solution_plan.json`, T-022's
+`design/iteration_{iteration}/feature_spec.json`, and `competition_analyst`'s
+`reports/competition_analysis_iter{iteration}.md`. `analysis_critic` already documents the same root
+cause and works around it for its own output with an extra `{phase}` placeholder
+(`src/nodes/llm/analysis_critic.py:207-230`).
+Not fixed here: an id allocator or a `current_iteration` writer is a protected-contract
+(`src/state.py`) or `src/graph/` change, both outside T-024's `folders:`
+(`src/nodes/llm/`, `config/agents/`, `config/prompts/`).
+Whoever lands the iteration loop (T-032, or T-031 `score_evaluator` if the increment lands with the
+scoring step) must increment `current_iteration` exactly once per completed cycle — and should
+sanity-check every `{iteration}`-bearing `output_file_pattern` at that point, since they all start
+producing distinct files only from that commit onward.
 Status: open
+
+## RESOLVED — 2026-08-11 [pipeline-agent (T-024) → whoever merges second of PR #25 (T-023) and T-024]
+**Expected `docs/pipeline.md` merge conflict, plus a docs/YAML ordering dependency.**
+Both branches add a `### Implementation (Phase 5)` section immediately after `### Baseline
+(Phase 3)`, and both add a row to the "Node classification" table. Resolve by keeping **both**
+under a **single** `### Implementation (Phase 5)` heading — T-023's `specialist_selector` bullet
+first, then T-024's `classical_ml_specialist` bullet and the `#### The design.json contract` block
+— and keep both table rows. Same reconcile-don't-pick-a-side situation as the T-045/T-001 README
+entry above. `context/decisions.md` and `context/discoveries.md` will conflict at EOF for the same
+reason (both append-only); keep both blocks.
+`config/phases/phase5_implementation.yaml` is **not** touched by T-024, so there is no conflict
+there — but note the dependency: T-024's new `docs/agents.md` step-3 exception note states that the
+5 Phase-5 specialists are not listed in that YAML, which only becomes true once PR #25 lands its
+(human-approved) trim of `nodes`/`sequence` to `[specialist_selector, coder, code_critic]`. If
+T-024 merges first, that note is forward-looking for exactly as long as PR #25 stays open; until
+then `classical_ml_specialist` is wired as a real graph edge in phase 5 and runs unconditionally.
+The phase-5 subgraph smoke test passes either way (T-024 added the mocked-LLM dispatch entry for
+`classical_ml_specialist`), so nothing fails loudly to flag it — hence this note.
+Resolution (2026-08-12): PR #25 merged first, and T-024 was rebased onto it. The three predicted
+conflicts (`docs/pipeline.md`, `context/decisions.md`, `context/discoveries.md`) occurred exactly
+as described and were resolved keep-both as prescribed: one `### Implementation (Phase 5)` heading
+with T-023's `specialist_selector` bullet, then T-024's `classical_ml_specialist` bullet and the
+`#### The design.json contract` block; both "Node classification" rows kept. Because #25 landed
+first, the forward-looking caveats in `docs/agents.md` step 3 and `docs/pipeline.md` were dropped —
+`config/phases/phase5_implementation.yaml` no longer lists the specialists, so
+`classical_ml_specialist` is dispatched by `specialist_selector`, never a standalone graph edge.
+Status: resolved

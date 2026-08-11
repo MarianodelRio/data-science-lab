@@ -358,7 +358,10 @@ re-run, never overwritten for the lifetime of the run (design.md § Phase 3).
 `code_critic`, critic targets `[coder]` (`max_retries: 3`), no interrupt. As of T-023, the YAML
 deliberately does **not** list any of the 5 specialist names (`classical_ml_specialist`,
 `deep_learning_specialist`, `nlp_specialist`, `timeseries_specialist`, `ensemble_specialist`) —
-`specialist_selector` owns dispatching to exactly one of them internally (see "Supervisor" above).
+`specialist_selector` owns dispatching to exactly one of them internally (see "Supervisor" above),
+so exactly one specialist design is produced per iteration. Listing them in the phase YAML too
+would execute every one of them a second time, unconditionally (see `docs/agents.md` § Adding an
+agent, step 3).
 
 - **`specialist_selector`** (`src/nodes/compute/specialist_selector.py`, `ComputeNode` subclass,
   T-023) — the phase's first node, pure Python, no LLM. Reads two upstream artifacts via
@@ -399,7 +402,74 @@ deliberately does **not** list any of the 5 specialist names (`classical_ml_spec
   delta, defensively coerced to `{}` if it isn't a `dict` — the same single-call/merge shape as
   `analysis_critic`'s own `resolve_node(target_node)(...)` retry-target call, minus the
   retry loop. All 5 specialist names currently fall back to `NoOpNode` (T-024–T-028 haven't
-  landed yet) — this is `resolve_node`'s documented "not implemented yet" behavior, not a bug.
+  landed yet, beyond `classical_ml_specialist` below) — this is `resolve_node`'s documented
+  "not implemented yet" behavior, not a bug.
+
+- **`classical_ml_specialist`** (`src/nodes/llm/classical_ml_specialist.py`, `LLMNode` subclass,
+  `model_role: reasoning`) — `specialist_selector`'s *default* route, for tabular problems.
+  `_build_messages` injects three sections as an extra `HumanMessage`: `## Solution plan` (read
+  from `state["solution_plan_path"]`), `## Frozen CV folds` (`strategy`/`n_folds`/`seed` only, read
+  from `state["validation_config_path"]` — never `fold_indices`, which would flood the context with
+  per-row index data), and `## Feature spec reference` (the workspace-relative path only, not the
+  file's contents). Each degrades to a `(... not yet available)`/`(unable to read ...)` placeholder
+  rather than raising, so Phase 5 remains invokable standalone. It also stashes the resolved
+  feature-spec reference on the instance for `_write_output`, because `LLMNode.__call__` never
+  passes `state` to `_write_output` (same mechanism as `literature_researcher`'s `self._sources`);
+  an unresolved stash raises rather than writing a wrong pointer. `_write_output` extracts a JSON
+  object from the response, validates it against the shared `design.json` contract below, and writes
+  `experiments/exp_{iteration}/design.json` via `workspace.write_json`. It picks one `model_family`
+  out of `xgboost`/`lightgbm`/`catboost`/`extra_trees` — normalized to the canonical token by
+  word-boundary alias matching (`xgb`, `LGBM`, `light-gbm`, `ExtraTrees`, ...), with an **ambiguous**
+  response naming two families (`"xgboost or lightgbm"`) rejected rather than resolved by
+  precedence, since `coder` dispatches on that value. It does **not** override
+  `_build_output_state` — `coder` reads `design.json` back from its well-known workspace path, the
+  same convention `baseline_designer`/`fold_config.json` use, so there is no new `LabState` field.
+
+#### The `design.json` contract (shared by all Phase 5 specialists)
+
+`src/nodes/llm/_experiment_design.py` is the single source of truth for the shape of
+`experiments/exp_{iteration}/design.json` — imported by `classical_ml_specialist` (T-024) and, as
+they land, by `deep_learning_specialist` (T-025), `nlp_specialist` (T-026), `timeseries_specialist`
+(T-027) and `ensemble_specialist` (T-028), and read by `coder` (T-029). Like
+`_research_common.py`, it declares no class whose `name` equals its own module stem, so
+`resolve_node` never mistakes it for a node module.
+
+`validate_experiment_design` is a **whitelist rebuild**: it returns a fresh dict with exactly these
+eight keys, in this order, and the LLM's own object is never written through.
+
+| Key | Source | Contents |
+|---|---|---|
+| `specialist` | **node-injected** | the specialist's own `name` |
+| `model_family` | LLM (normalized) | one canonical family token |
+| `search_space` | LLM (validated) | non-empty map of Optuna parameter specs |
+| `fixed_params` | LLM (validated) | scalars / flat lists of scalars; required even when `{}` |
+| `preprocessing` | LLM (validated) | list of non-empty strings; required even when `[]` |
+| `rationale` | LLM (validated) | non-empty string |
+| `feature_spec_ref` | **node-injected** | workspace-relative path of the feature spec |
+| `cv_strategy_ref` | **node-injected** | always `validation/fold_config.json` |
+
+Any other top-level key the LLM sends — including `n_trials` and `early_stopping_patience` — is
+dropped by the rebuild: the trial budget is a pipeline-wide setting (`config/settings.yaml`'s
+`optuna:` block), never per-experiment.
+
+**Cross-validation may not be redefined.** Before anything else, the validator rejects — loudly,
+naming the key and where it appeared — any of `cv`, `cv_strategy`, `folds`, `fold_indices`,
+`n_folds`, `n_splits`, `validation`, `test_size`, `shuffle` appearing at the top level or as a key
+inside `search_space`/`fixed_params`. Matching is by **exact key name**, never substring, which is
+why the injected `cv_strategy_ref` is not itself caught. Rejecting rather than silently dropping is
+what makes "the design references the frozen folds and does not redefine CV" (CLAUDE.md invariant
+#1) an assertable behavior instead of a vacuous consequence of the whitelist.
+
+**Search-space grammar.** Every `search_space` value must be an object with a `type` of `int`,
+`float` or `categorical` — an expression string (`"trial.suggest_float(...)"`), a distribution-call
+string (`"loguniform(1e-3,1e-1)"`) and a bare 2-tuple (`[0.001, 0.1]`) are all rejected with an
+explicit message. `int`/`float` require finite `low` < `high` (booleans rejected explicitly, since
+`isinstance(True, int)` is `True`; `int` requires integer bounds); optional `log` must be a real
+`bool`, requires `low > 0`, and may not be combined with `step` (Optuna raises on that combination
+at `suggest_*` time, so it fails here instead); optional `step` must be finite and `> 0`, and an
+integer for `int` parameters. `categorical` requires a non-empty `choices` list of JSON scalars with
+no duplicates and no nested objects/lists. Unknown inner keys are dropped silently. Finally, a
+parameter name may not appear in both `search_space` and `fixed_params`.
 
 ## Node classification
 
@@ -414,6 +484,7 @@ deliberately does **not** list any of the 5 specialist names (`classical_ml_spec
 | `baseline_designer` | LLM (`LLMNode`) | 3 — Baseline | Landed (T-020) |
 | `baseline_runner` | Compute (`ComputeNode`) | 3 — Baseline | Landed (T-020) |
 | `specialist_selector` | Compute (`ComputeNode`) | 5 — Implementation | Landed (T-023) |
+| `classical_ml_specialist` | LLM (`LLMNode`) | 5 — Implementation | Landed (T-024) |
 
 ### ComputeNode base class
 

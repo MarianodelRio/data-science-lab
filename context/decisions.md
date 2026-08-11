@@ -838,3 +838,140 @@ internal dispatch alone to make the duplicate invocations harmless (e.g. special
 not selected) — rejected because it requires every future specialist implementation (T-024–T-028)
 to defensively special-case "was I actually selected this iteration," rather than making
 non-selection structurally impossible by not being a graph edge at all.
+## 2026-08-11 — T-024 [pipeline-agent]
+Decided: the experiment id in `experiments/exp_{id}/design.json` is `state["current_iteration"]`,
+resolved by the inherited `LLMNode._resolve_output_path` from
+`output_file_pattern: "experiments/exp_{iteration}/design.json"` — no new code path at all.
+Why: the task file's `exp_{next_id}` wording implies an allocator, but every mechanism for
+producing a "next id" crosses a protected contract: a `WorkspaceManager.next_experiment_id()`
+method (infra-agent's `WorkspaceManager` public API), a new `LabState` field (`src/state.py`), or
+a `config/settings.yaml` counter. `current_iteration` is already the pipeline's per-cycle counter
+and already the placeholder every other iteration-scoped node uses
+(`design/iteration_{iteration}/…`, `reports/competition_analysis_iter{iteration}.md`).
+Human-approved during planning.
+Affects: `config/agents/classical_ml_specialist.yaml`.
+Discarded: an id allocator / `WorkspaceManager.next_experiment_id()` / a new `LabState`
+`next_experiment_id` field — all protected-contract changes, out of scope for a node task. The
+consequence (today `current_iteration` is never incremented, so every cycle overwrites
+`experiments/exp_0/design.json`) is logged as an open discovery rather than worked around here.
+
+## 2026-08-11 — T-024 [pipeline-agent]
+Decided: `src/nodes/llm/_experiment_design.py` was created up front, with only one consumer
+(`classical_ml_specialist`), rather than waiting for the usual "hoist at the third copy" threshold
+this repo has applied to `relative_to_workspace` (T-020) and `_research_common` (T-017/T-019).
+Why: T-024 was scoped to *define* the `design.json` contract for T-025–T-028 (the four remaining
+specialists) and T-029 (`coder`, the consumer). The shared module is the deliverable, not a
+speculative abstraction — four sibling tasks are already written against it. Follows the
+`_research_common.py` precedent for a shared, non-node helper module under `src/nodes/llm/`,
+including its "declares no class matching its own filename stem" note so
+`node_resolver._find_node_class` never mistakes it for a node.
+Affects: `src/nodes/llm/_experiment_design.py`, `src/nodes/llm/classical_ml_specialist.py`.
+Discarded: keeping the validator private to `classical_ml_specialist.py` and letting T-025–T-028
+copy it — four divergent copies of a schema that `coder` has to parse is exactly the failure this
+module prevents.
+
+## 2026-08-11 — T-024 [pipeline-agent]
+Decided: the module boundary is "anything that shapes `design.json` lives in
+`_experiment_design.py`; node-local `_read_*` helpers that assemble free-text prompt context stay
+duplicated per module". `classical_ml_specialist._read_solution_plan` is therefore its own copy of
+`feature_engineer._read_solution_plan`, not an import.
+Why: keeps the shared module's surface exactly the contract T-029 depends on, and follows the
+established per-module-duplication convention for upstream-artifact readers (2026-08-11 T-022
+entry). `read_fold_summary` is deliberately on the *other* side of that line — what it omits
+(`fold_indices`) is a contract decision about the frozen folds, not a per-node prompt choice.
+Affects: `src/nodes/llm/classical_ml_specialist.py`, `src/nodes/llm/_experiment_design.py`.
+Discarded: importing `feature_engineer._read_solution_plan` (implicit cross-module dependency
+between two independent node modules). T-025–T-028 may hoist `_read_solution_plan` into
+`_experiment_design.py` once a third copy exists.
+
+## 2026-08-11 — T-024 [pipeline-agent]
+Decided: forbidden cross-validation keys (`cv`, `cv_strategy`, `folds`, `fold_indices`, `n_folds`,
+`n_splits`, `validation`, `test_size`, `shuffle`) are rejected **loudly** — by exact key name, at
+the top level and inside `search_space`/`fixed_params`, checked before any other validation —
+rather than silently dropped by the whitelist rebuild.
+Why: the whitelist rebuild alone would make "the design does not redefine CV" vacuously true and
+untestable. A loud rejection makes it an assertable behavior (one parametrized test per key per
+location) and gives the LLM a corrective error instead of silently discarding its intent.
+`cv_strategy_ref` is deliberately outside the forbidden set: matching is exact-name, and that key
+is the pipeline's own injected pointer to the frozen folds.
+Affects: `src/nodes/llm/_experiment_design.py` (`FORBIDDEN_CV_KEYS`, `_reject_forbidden_cv_keys`),
+`config/prompts/classical_ml_specialist/v1.md`.
+Discarded: substring matching (would catch `cv_strategy_ref` and any parameter merely containing
+`shuffle`); silently dropping the keys.
+
+## 2026-08-11 — T-024 [pipeline-agent]
+Decided: `model_family` is normalized to a canonical token by whole-phrase word-boundary matching
+against a per-specialist alias table (the approach of
+`feature_engineer._is_target_encoding_method`), and a value matching **two or more** families
+(e.g. `"xgboost or lightgbm"`) is **rejected**, not resolved by precedence.
+Why: `coder` (T-029) dispatches on this exact string, so the written value must be canonical, and a
+wrong-but-plausible pick from an ambiguous response is worse than a loud failure — the specialist
+is cheap to re-run, a whole experiment trained on the wrong family is not. Alias matching absorbs
+the LLM's real phrasing variance (`xgb`, `LGBM`, `light-gbm`, `ExtraTrees`) without accepting
+genuinely unsupported families (`random_forest`, `neural_network`).
+Affects: `src/nodes/llm/_experiment_design.py` (`normalize_model_family`),
+`src/nodes/llm/classical_ml_specialist.py` (`_MODEL_FAMILIES`).
+Discarded: exact match against the four canonical tokens (too brittle); first-match-wins precedence
+on ambiguity (silently picks a family the plan may not have meant).
+
+## 2026-08-11 — T-024 [pipeline-agent]
+Decided: `search_space` must be non-empty, and `log: true` combined with `step` is rejected — both
+enforced by the validator at design time.
+Why: both fail later otherwise, and much more expensively. An empty search space produces an Optuna
+study with nothing to optimize (a silently meaningless experiment); `log`+`step` raises inside
+`suggest_int`/`suggest_float` at trial time, i.e. inside `code_executor`'s subprocess, long after
+the design was accepted. Validating the grammar declaratively (types, bounds, finiteness,
+`low < high`, positive `step`, `low > 0` under `log`) also keeps validation completely eval-free —
+no expression strings are ever parsed or executed.
+Affects: `src/nodes/llm/_experiment_design.py` (`_validate_search_space`, `_validate_numeric_param`,
+`_validate_log`, `_validate_step`), `config/prompts/classical_ml_specialist/v1.md`.
+Discarded: accepting Optuna expression strings / distribution-call strings / bare 2-tuples — all
+would require either `eval` or a bespoke mini-parser to interpret downstream.
+
+## 2026-08-11 — T-024 [pipeline-agent]
+Decided: `feature_spec_ref` is relativized against the workspace root (via `relative_to_workspace`)
+before being written into `design.json`, with a `design/iteration_{current_iteration}/
+feature_spec.json` fallback when `state["feature_spec_path"]` is unset. It is never `""`.
+Why: `LabState` path fields hold the *absolute* path `WorkspaceManager.write_json` returned. Baking
+a host-absolute path into `design.json` breaks silently inside `code_executor`'s subprocess (which
+runs with the workspace as its cwd) and, in production, inside the container, where the workspace
+is bind-mounted at `/competitions/{name}` rather than at the host path that was recorded.
+Affects: `src/nodes/llm/_experiment_design.py` (`resolve_feature_spec_ref`).
+Discarded: storing the absolute path verbatim; omitting the key when unset (T-029 would then have
+to reinvent the fallback).
+
+## 2026-08-11 — T-024 [pipeline-agent]
+Decided: the resolved `feature_spec_ref` is stashed on the node instance in `_build_messages` and
+read back in `_write_output`; an unset stash raises a `ValueError` naming the node rather than
+defaulting to something plausible.
+Why: `LLMNode.__call__` (`src/nodes/llm/base.py:83-94`) never passes `state` to `_write_output`, so
+a value derived from `state` can only reach it through the instance — the same mechanism
+`literature_researcher` uses for `self._sources`. Raising on an unset stash keeps the only way to
+reach that state (calling `_write_output` outside `__call__`'s order) a loud failure instead of a
+`design.json` silently pointing at the wrong feature spec.
+Affects: `src/nodes/llm/classical_ml_specialist.py` (`_feature_spec_ref`).
+Discarded: recomputing the ref inside `_write_output` (would need a second `WorkspaceManager` and
+the `state` it doesn't have); defaulting silently to the iteration pattern.
+
+## 2026-08-11 — T-024 [pipeline-agent]
+Decided: no new `LabState` field for the written design path, and no change to
+`config/phases/phase5_implementation.yaml`.
+Why: `coder` (T-029) reads `experiments/exp_{iteration}/design.json` from its well-known path, the
+convention `baseline_designer`/`baseline_runner` and `validation/fold_config.json` already use —
+`_build_output_state` therefore stays the base class's `{}`. The phase YAML is a protected contract
+and, separately, must not list the specialists at all: `specialist_selector` (T-023) dispatches to
+exactly one of them internally, so a phase-YAML entry would execute the node a second time as a
+real graph edge.
+Affects: `src/nodes/llm/classical_ml_specialist.py`, `docs/agents.md`, `docs/pipeline.md`.
+Discarded: a `current_design_path` `LabState` field (protected contract, and redundant with a fixed
+path).
+
+## 2026-08-11 — T-024 [pipeline-agent]
+Decided: no logging statements were added to either new module.
+Why: no node under `src/nodes/` logs today — observability is a graph-level concern wired through
+`src/observability/` (the JSONL callback handler), not something individual nodes do. Introducing
+per-node logging in a node task would set a new convention unilaterally across ~26 nodes. Error
+context is instead carried by the `ValueError` messages, every one of which names the specialist,
+the offending field, and the offending value.
+Affects: `src/nodes/llm/_experiment_design.py`, `src/nodes/llm/classical_ml_specialist.py`.
+Discarded: adding a module-level `logging.getLogger(__name__)` to the new modules only.

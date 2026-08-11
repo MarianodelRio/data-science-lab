@@ -21,6 +21,7 @@ Each agent-adding task appends one row to the table below. Do not remove or reor
 | `baseline_designer` | Phase 3 — Baseline | `implementation` | `experiments/baseline/design.json` |
 | `solution_architect` | Phase 4 — Design | `reasoning` | `design/iteration_{iteration}/solution_plan.json` |
 | `feature_engineer` | Phase 4 — Design | `reasoning` | `design/iteration_{iteration}/feature_spec.json` |
+| `classical_ml_specialist` | Phase 5 — Implementation | `reasoning` | `experiments/exp_{iteration}/design.json` |
 
 ## Adding an agent
 
@@ -28,6 +29,15 @@ Each agent-adding task appends one row to the table below. Do not remove or reor
    `output_file_pattern`, `max_tokens` (see `AgentConfig` in `src/config/schema.py`).
 2. Create `config/prompts/{name}/v1.md` with the system prompt.
 3. Add `{name}` to the relevant `config/phases/{phase}.yaml`'s `nodes` and `sequence` lists.
+
+   **Exception — the 5 Phase-5 specialists** (`classical_ml_specialist`, `deep_learning_specialist`,
+   `nlp_specialist`, `timeseries_specialist`, `ensemble_specialist`) are deliberately *not* listed in
+   `config/phases/phase5_implementation.yaml`. `specialist_selector`
+   (`src/nodes/compute/specialist_selector.py`, T-023) picks exactly one of them per iteration and
+   dispatches to it internally via `resolve_node`, so listing one in the phase YAML would make
+   `src/graph/phases/generic.py` wire it as a real graph edge and execute it a *second* time,
+   unconditionally. T-023 trimmed `nodes`/`sequence` to `[specialist_selector, coder, code_critic]`
+   for exactly this reason.
 4. Create `src/nodes/llm/{name}.py` with one class, `name` as a plain class attribute
    (not a Pydantic field — see docs/pipeline.md § Node-module convention), subclassing
    `LLMNode` (`src/nodes/llm/base.py`):

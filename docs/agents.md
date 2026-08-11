@@ -20,6 +20,7 @@ Each agent-adding task appends one row to the table below. Do not remove or reor
 | `memory_manager` | Phase 2 — Research | `fast` | `reports/memory_consolidation.md` |
 | `baseline_designer` | Phase 3 — Baseline | `implementation` | `experiments/baseline/design.json` |
 | `solution_architect` | Phase 4 — Design | `reasoning` | `design/iteration_{iteration}/solution_plan.json` |
+| `feature_engineer` | Phase 4 — Design | `reasoning` | `design/iteration_{iteration}/feature_spec.json` |
 
 ## Adding an agent
 

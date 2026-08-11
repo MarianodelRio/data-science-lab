@@ -95,6 +95,38 @@ _MOCK_COMPETITION_ANALYSIS = json.dumps(
     ]
 )
 
+# solution_architect (T-021) is also a structured-JSON node — its own
+# `_extract_json`/`_validate_solution_plan` require `model_families`/`order`
+# (non-empty list[str]), `ensembling_strategy`/`rationale` (non-empty str), and
+# `realistic_ceiling` (dict with `metric`/`target_score`/`rationale`) — see
+# config/prompts/solution_architect/v1.md.
+_MOCK_SOLUTION_PLAN = json.dumps(
+    {
+        "model_families": ["gradient_boosting", "logistic_regression"],
+        "order": ["gradient_boosting", "logistic_regression"],
+        "ensembling_strategy": "single best model for v1, no ensembling",
+        "realistic_ceiling": {
+            "metric": "roc_auc",
+            "target_score": 0.9,
+            "rationale": "Smoke-test placeholder ceiling.",
+        },
+        "rationale": "Smoke-test placeholder solution plan.",
+    }
+)
+
+# feature_engineer (T-022) is also a structured-JSON node — its own
+# `_extract_json`/`_validate_feature_spec` require exactly `encodings`/
+# `null_handling`/`interactions` list keys (see config/prompts/
+# feature_engineer/v1.md), which `_MOCK_LLM_CONTENT`'s fenced ```python
+# narrative shape would fail, so it needs its own dispatch entry too.
+_MOCK_FEATURE_SPEC = json.dumps(
+    {
+        "encodings": [{"column": "cat1", "method": "one_hot"}],
+        "null_handling": [{"column": "num1", "strategy": "median_impute"}],
+        "interactions": [],
+    }
+)
+
 _FAKE_KERNELS = [
     {
         "ref": "smoke-user/smoke-kernel",
@@ -121,6 +153,10 @@ def _llm_side_effect(messages: list[BaseMessage]) -> AIMessage:
         return AIMessage(content=_MOCK_LEAKAGE_AUDIT)
     if "System prompt — baseline_designer" in system_content:
         return AIMessage(content=_MOCK_BASELINE_DESIGN)
+    if "System prompt — solution_architect" in system_content:
+        return AIMessage(content=_MOCK_SOLUTION_PLAN)
+    if "System prompt — feature_engineer" in system_content:
+        return AIMessage(content=_MOCK_FEATURE_SPEC)
     if "System prompt — literature_researcher" in system_content:
         return AIMessage(content=_MOCK_EMPTY_EXTRACTION)
     if "System prompt — web_researcher" in system_content:
@@ -174,6 +210,12 @@ def _mock_llm(monkeypatch: pytest.MonkeyPatch) -> None:
     return an empty list so the node takes its own documented
     empty-candidates short circuit — see `_MOCK_EMPTY_EXTRACTION`'s comment
     above for why that makes `"[]"` the correct mocked LLM response for it.
+
+    `solution_architect` (T-021, phase4_design) has the identical
+    lazily-constructed `RagStore` shape (`_ensure_rag_store`) as
+    `web_researcher`/`memory_manager` — patched at `src.nodes.llm.
+    solution_architect.RagStore` with `.query()` returning an empty list for
+    the same reason.
     """
     for var in (
         "ANTHROPIC_API_KEY",
@@ -199,6 +241,7 @@ def _mock_llm(monkeypatch: pytest.MonkeyPatch) -> None:
         ),
         patch("src.nodes.llm.competition_analyst.RagStore") as mock_rag_store_cls,
         patch("src.nodes.llm.memory_manager.RagStore") as mock_memory_rag_store,
+        patch("src.nodes.llm.solution_architect.RagStore") as mock_sa_rag_store,
         patch("src.nodes.compute.baseline_runner.mlflow") as mock_mlflow,
     ):
         mock_factory.get.return_value = mock_llm
@@ -209,6 +252,8 @@ def _mock_llm(monkeypatch: pytest.MonkeyPatch) -> None:
         mock_rag_store_cls.return_value = MagicMock()
         mock_memory_rag_store.return_value = MagicMock()
         mock_memory_rag_store.return_value.query.return_value = []
+        mock_sa_rag_store.return_value = MagicMock()
+        mock_sa_rag_store.return_value.query.return_value = []
         mock_mlflow.start_run.return_value.__enter__.return_value = MagicMock()
         yield
 

@@ -1,0 +1,6 @@
+name: baseline_designer
+model_role: implementation
+prompt_version: v1
+tools: []
+output_file_pattern: "experiments/baseline/design.json"
+max_tokens: 4096

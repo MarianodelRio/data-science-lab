@@ -10,32 +10,13 @@ Overrides `_build_messages` (inject the EDA report as an extra HumanMessage),
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any
 
 from langchain_core.messages import BaseMessage, HumanMessage
 
-from src.nodes.llm.base import LLMNode
+from src.nodes.llm.base import LLMNode, relative_to_workspace
 from src.state import LabState
 from src.workspace.workspace_manager import WorkspaceManager
-
-
-def _relative_to_workspace(path: str, workspace: WorkspaceManager) -> str:
-    """`WorkspaceManager.write_text`/`write_json` return an *absolute* path
-    (design.md's WorkspaceManager API table: `write_json(...) -> ...  #
-    returns abs path`), and `LLMNode._build_output_state` implementations
-    store that return value verbatim into `LabState` path fields (e.g.
-    `eda_report_path`). But `read_text`/`read_json` require a *relative*
-    path and reject absolute ones. Nodes that consume an upstream node's
-    path field (like this one reading `state['eda_report_path']`) must
-    therefore re-relativize it against the current workspace root before
-    reading — already-relative input (e.g. in unit tests) passes through
-    unchanged.
-    """
-    p = Path(path)
-    if not p.is_absolute():
-        return path
-    return str(p.relative_to(workspace.workspace_path))
 
 
 def _strip_outer_fence(content: str) -> str:
@@ -122,9 +103,7 @@ class ProblemFramerNode(LLMNode):
     ) -> list[BaseMessage]:
         messages = super()._build_messages(trimmed_messages, state)
         workspace = WorkspaceManager(state["workspace_path"])
-        eda_report = workspace.read_text(
-            _relative_to_workspace(state["eda_report_path"], workspace)
-        )
+        eda_report = workspace.read_text(relative_to_workspace(state["eda_report_path"], workspace))
         messages.append(HumanMessage(content=f"## EDA report\n\n{eda_report}"))
         return messages
 

@@ -36,6 +36,28 @@ def trim_context(messages: list[BaseMessage], max_messages_per_node: int) -> lis
     return messages[-max_messages_per_node:]
 
 
+def relative_to_workspace(path: str, workspace: WorkspaceManager) -> str:
+    """`WorkspaceManager.write_text`/`write_json` return an *absolute* path
+    (design.md's WorkspaceManager API table: `write_json(...) -> ...  #
+    returns abs path`), and `LLMNode._build_output_state` implementations
+    store that return value verbatim into `LabState` path fields (e.g.
+    `eda_report_path`, `problem_definition_path`). But `read_text`/
+    `read_json` require a *relative* path and reject absolute ones. Nodes
+    that consume an upstream node's path field must therefore re-relativize
+    it against the current workspace root before reading — already-relative
+    input (e.g. in unit tests) passes through unchanged.
+
+    Hoisted (T-020) from three byte-for-byte-identical private copies
+    (`_relative_to_workspace`) previously duplicated in `problem_framer.py`,
+    `leakage_auditor.py`, and `analysis_critic.py`. `src/nodes/llm/_research_common.py`
+    keeps its own separate copy (Phase 2 research nodes, out of T-020's scope).
+    """
+    p = Path(path)
+    if not p.is_absolute():
+        return path
+    return str(p.relative_to(workspace.workspace_path))
+
+
 class LLMNode:
     """Base class for every LLM-calling node. Subclasses declare a class-level
     `name` matching their `config/agents/{name}.yaml` / `config/prompts/{name}/…`

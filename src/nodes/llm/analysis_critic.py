@@ -23,14 +23,13 @@ correct, since `__init__` is inherited).
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any, cast
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
 from src.config.loaders import load_phase_config
 from src.graph.node_resolver import resolve_node
-from src.nodes.llm.base import LLMNode, trim_context
+from src.nodes.llm.base import LLMNode, relative_to_workspace, trim_context
 from src.nodes.llm.errors import FoldsAlreadyFrozenError
 from src.state import LabState
 from src.workspace.workspace_manager import WorkspaceManager
@@ -57,20 +56,6 @@ _TARGET_FIXED_PATHS: dict[str, str] = {
 _VALID_VERDICTS = ("pass", "iterate")
 
 
-def _relative_to_workspace(path: str, workspace: WorkspaceManager) -> str:
-    """`WorkspaceManager.write_text`/`write_json` return an *absolute* path,
-    and `LabState` path fields store that value verbatim. But `read_text`
-    requires a *relative* path and rejects absolute ones. Re-relativize
-    against the current workspace root before reading — already-relative
-    input (e.g. in unit tests, or the fixed leakage-audit path) passes
-    through unchanged. Pattern copied from problem_framer.py/leakage_auditor.py.
-    """
-    p = Path(path)
-    if not p.is_absolute():
-        return path
-    return str(p.relative_to(workspace.workspace_path))
-
-
 def _read_target_content(target: str, state: dict[str, Any], workspace: WorkspaceManager) -> str:
     """Read one target's output content as raw text (never `read_json` — the
     review only needs the text, and targets vary in output shape). Missing
@@ -87,7 +72,7 @@ def _read_target_content(target: str, state: dict[str, Any], workspace: Workspac
     else:
         raise ValueError(f"analysis_critic has no known output-path mapping for target '{target}'")
 
-    relative_path = _relative_to_workspace(raw_path, workspace)
+    relative_path = relative_to_workspace(raw_path, workspace)
     try:
         return workspace.read_text(relative_path)
     except OSError:

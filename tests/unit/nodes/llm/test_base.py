@@ -15,7 +15,7 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from src.config.settings import ContextConfig, Settings
-from src.nodes.llm.base import LLMNode, trim_context
+from src.nodes.llm.base import LLMNode, relative_to_workspace, trim_context
 from src.state import new_state
 
 FIXTURES_DIR = Path(__file__).resolve().parents[3] / "fixtures"
@@ -254,3 +254,28 @@ def test_default_build_output_state_returns_empty_dict(
     delta = node(state)
 
     assert set(delta.keys()) == {"messages"}
+
+
+# -- relative_to_workspace --
+# Hoisted (T-020) from three byte-for-byte-identical private copies in
+# problem_framer.py/leakage_auditor.py/analysis_critic.py. Mirrors the
+# equivalent pair in test_research_common.py for `_research_common`'s own
+# separate copy.
+
+
+def test_relative_to_workspace_passes_through_relative_path() -> None:
+    workspace = MagicMock()
+    workspace.workspace_path = Path("/workspace")
+
+    assert relative_to_workspace("reports/problem_definition.json", workspace) == (
+        "reports/problem_definition.json"
+    )
+
+
+def test_relative_to_workspace_relativizes_absolute_path() -> None:
+    workspace = MagicMock()
+    workspace.workspace_path = Path("/workspace")
+
+    result = relative_to_workspace("/workspace/reports/problem_definition.json", workspace)
+
+    assert result == "reports/problem_definition.json"

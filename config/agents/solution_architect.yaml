@@ -1,0 +1,6 @@
+name: solution_architect
+model_role: reasoning
+prompt_version: v1
+tools: []
+output_file_pattern: "design/iteration_{iteration}/solution_plan.json"
+max_tokens: 4096

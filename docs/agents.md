@@ -19,6 +19,7 @@ Each agent-adding task appends one row to the table below. Do not remove or reor
 | `competition_analyst` | Phase 2 — Research | `research` | `reports/competition_analysis_iter{iteration}.md` |
 | `memory_manager` | Phase 2 — Research | `fast` | `reports/memory_consolidation.md` |
 | `baseline_designer` | Phase 3 — Baseline | `implementation` | `experiments/baseline/design.json` |
+| `solution_architect` | Phase 4 — Design | `reasoning` | `design/iteration_{iteration}/solution_plan.json` |
 
 ## Adding an agent
 

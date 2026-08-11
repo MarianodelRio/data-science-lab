@@ -3,7 +3,7 @@ id: T-021
 phase: 2
 agent: pipeline-agent
 depends_on: [T-010, T-008]
-status: pr-open
+status: done
 folders: ["src/nodes/llm/", "config/agents/", "config/prompts/"]
 outputs: [solution_architect node, design/iteration_N/solution_plan.json]
 size: S

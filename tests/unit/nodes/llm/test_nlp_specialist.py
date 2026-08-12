@@ -453,6 +453,37 @@ def test_ambiguous_model_family_raises(
         node(_build_state())
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "fine-tuned sentence transformer",
+        "SBERT fine-tuning",
+        "fine tune SBERT",
+        "fine-tune the sentence transformer end to end",
+        "sentence transformer, fine-tuned",
+        "fully fine-tuned sentence-transformers model",
+    ],
+)
+def test_fine_tune_modifier_on_sentence_embeddings_alias_raises_ambiguous(
+    patched_llm_factory, patched_settings, mock_workspace_manager, mock_llm: MagicMock, raw: str
+) -> None:
+    """A fine-tune modifier qualifying a `sentence_embeddings` alias must be
+    rejected as ambiguous rather than silently resolved to
+    `sentence_embeddings` alone: `normalize_model_family` has no
+    longest-match-wins rule (see `context/discoveries.md`), so without the
+    bare modifier tokens in `_MODEL_FAMILIES["transformer_finetune"]` these
+    phrases would drop the fine-tuning intent and write a `design.json` whose
+    `model_family` contradicts its own `rationale`."""
+    mock_llm.invoke.return_value = AIMessage(content=_design(model_family=raw))
+    _, workspace_instance = mock_workspace_manager
+    node = NlpSpecialistNode()
+
+    with pytest.raises(ValueError, match="ambiguous"):
+        node(_build_state())
+
+    workspace_instance.write_json.assert_not_called()
+
+
 def test_nothing_written_when_validation_fails(
     patched_llm_factory, patched_settings, mock_workspace_manager, mock_llm: MagicMock
 ) -> None:

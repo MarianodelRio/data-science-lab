@@ -508,4 +508,38 @@ guidance, but it is a modeling decision), and the fix should be uniform across a
 rather than invented per node. Options for whoever takes it: (a) add generic aliases per specialist,
 (b) give the specialists a retry wrapper, or (c) have `coder`/a critic treat an unresolvable
 `model_family` as recoverable. Worth deciding once, for all five.
+## OPEN — 2026-08-12 [pipeline-agent (T-026) → pipeline-agent (T-025/T-027/T-028 + whoever owns a `normalize_model_family` change)]
+**`normalize_model_family` has no longest-match-wins rule**, so a modifier that qualifies another
+family's alias is silently dropped rather than resolving correctly or conflicting. Found by
+adversarial review of T-026: `normalize_model_family` raises "ambiguous" only when two *complete*
+alias phrases from different families are both literally present as substrings. A phrase like
+"fine-tuned sentence transformer" contains the complete `sentence_embeddings` alias "sentence
+transformer" but no complete phrase from any other family's alias table (unless one happens to be
+added) — it matches `sentence_embeddings` alone and the "fine-tuned" modifier, which actually
+changes the intended family, is discarded with no signal. `coder` (T-029) dispatches on the
+resolved `model_family` and nothing cross-checks it against `rationale`, so this silently writes a
+`design.json` whose `model_family` contradicts its own `rationale` and yields the wrong training
+script.
+This class of bug is specific to any specialist whose families sit on a frozen-vs-fine-tuned (or
+similarly modified) axis — it does not exist in `classical_ml_specialist`'s four families, which are
+distinct model brands with no such modifier axis.
+**T-026's mitigation (local, not a fix):** `nlp_specialist`'s own `_MODEL_FAMILIES["transformer_finetune"]`
+now includes bare fine-tune-modifier tokens ("fine tune", "fine tuned", "fine tuning",
+"finetune", "finetuned", "finetuning"). Any of these co-occurring with a `sentence_embeddings` (or
+`tfidf_linear`) alias now makes both families match, which routes into the *already-existing*
+"ambiguous" rejection instead of a silent misclassification — a hard raise is strictly better than
+a wrong, silent resolution. This is a workaround confined to `nlp_specialist.py`'s own alias table,
+not a change to `_experiment_design.py`.
+**Residual cost:** a semantically clear phrase like "fine-tuned sentence transformer" — which a
+human would read as unambiguously meaning `transformer_finetune` with a specific
+(embeddings-derived) architecture — now raises instead of resolving. The mitigation cannot
+distinguish "modifier legitimately changes the family" from "modifier is incidental prose near an
+unrelated family name"; it treats both as ambiguous.
+**Not fixed here:** the general fix is precedence by longest match (or some other overlap-resolution
+rule) in `_experiment_design.normalize_model_family` — a shared-contract change affecting
+`classical_ml_specialist` and every unstarted sibling specialist (T-025, T-027, T-028), out of
+bounds for a single node task. Whoever next builds a specialist whose families sit on a similar
+modifier axis (or whoever revisits `normalize_model_family` itself) should decide the general rule
+once, rather than each specialist re-solving it locally with its own alias-table workaround the way
+T-026 did.
 Status: open

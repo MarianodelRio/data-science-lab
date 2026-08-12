@@ -41,6 +41,23 @@ _SPECIALIST = "nlp_specialist"
 # string (see `_experiment_design.normalize_model_family`), so `TF-IDF`, `SBERT`,
 # `DistilBERT fine-tuning` all resolve to the canonical key `coder` (T-029)
 # dispatches on. Human checkpoint decision: exactly three canonical families.
+#
+# `normalize_model_family` has no longest-match-wins rule (see the 2026-08-12
+# T-026 entry in `context/discoveries.md`): it only raises "ambiguous" when two
+# *complete* alias phrases from different families both literally appear. A bare
+# family term (e.g. "sentence transformer") combined with an unrelated
+# fine-tune modifier ("fine-tuned sentence transformer") would otherwise match
+# `sentence_embeddings` alone and silently discard the modifier — wrong, since
+# `coder` (T-029) dispatches on the resolved family. `transformer_finetune`'s
+# aliases below therefore include the bare modifier tokens ("fine tune",
+# "fine tuned", "fine tuning" and their one-word "finetune"/"finetuned"/
+# "finetuning" forms — normalization collapses `-`/`_` to a space but never
+# merges/stems words, so both spellings must be listed separately). Any of
+# these tokens co-occurring with a `sentence_embeddings` (or `tfidf_linear`)
+# alias makes both families match, which correctly routes to the *already
+# existing* "ambiguous" rejection in `normalize_model_family` instead of a
+# silent misclassification — a hard raise here is strictly better than a
+# `design.json` whose `model_family` contradicts its `rationale`.
 _MODEL_FAMILIES: dict[str, tuple[str, ...]] = {
     "tfidf_linear": ("tfidf linear", "tfidf", "tf idf", "bag of words", "bow"),
     "sentence_embeddings": (
@@ -59,6 +76,12 @@ _MODEL_FAMILIES: dict[str, tuple[str, ...]] = {
         "bert fine tuning",
         "distilbert finetune",
         "distilbert fine tuning",
+        "fine tune",
+        "fine tuned",
+        "fine tuning",
+        "finetune",
+        "finetuned",
+        "finetuning",
     ),
 }
 

@@ -1283,3 +1283,39 @@ Affects: `src/nodes/llm/nlp_specialist.py`, `src/nodes/llm/_experiment_design.py
 `config/prompts/nlp_specialist/v1.md`.
 Discarded: a fourth divergent `_read_solution_plan` copy local to `nlp_specialist.py`; a
 specialist-namespaced output path for `design.json`.
+
+## 2026-08-12 — T-026 [pipeline-agent]
+Decided (post-checkpoint, adversarial review fix): `_MODEL_FAMILIES["transformer_finetune"]` gained
+six bare fine-tune-modifier tokens — `"fine tune"`, `"fine tuned"`, `"fine tuning"`, `"finetune"`,
+`"finetuned"`, `"finetuning"` — instead of the specific paired combo aliases (e.g. "sentence
+transformer finetune", "sbert fine tuning") the review initially suggested as a minimum.
+Why: `normalize_model_family` matches by literal contiguous substring, so paired combo aliases can
+only catch a fine-tune modifier sitting immediately adjacent to a `sentence_embeddings` term. Three
+of the six adversarial phrases the review raised do not have that shape — an intervening word
+("fine-tune **the** sentence transformer end to end"), a comma ("sentence transformer**,**
+fine-tuned"), and a pluralized/extended noun phrase ("fully fine-tuned **sentence-transformers
+model**") — so literal paired aliases cannot reach them no matter how many are added. The bare
+modifier tokens are a strict superset: any of the eight paired phrases the review listed, and all
+six of its adversarial examples, already contain a bare modifier token *and* a `sentence_embeddings`
+alias as two separate substrings, so both families match and the existing ambiguity check in
+`normalize_model_family` fires — with no `_experiment_design.py` change, per the review's explicit
+boundary. Verified by re-running the alias round-trip check (see this task's `## Completed` section
+and the PR): every original alias in all three families, and each new bare modifier token in
+isolation, still resolves solely to its own family; the eight paired phrases the review suggested,
+and all six adversarial examples, now correctly raise ambiguous.
+Residual risk (recorded in the 2026-08-12 T-026 `context/discoveries.md` entry): `normalize_model_family`
+still has no longest-match-wins rule, so this is a local mitigation, not a fix — a semantically
+clear "fine-tuned sentence transformer" now raises rather than resolving to the intended family.
+The general fix belongs in `_experiment_design.normalize_model_family`, out of bounds for this task
+per the review (a shared-contract change affecting `classical_ml_specialist` and three unstarted
+sibling specialists).
+Also strengthened `config/prompts/nlp_specialist/v1.md`: `model_family` must be the bare literal
+token, never prose describing the approach (defense in depth — the alias-table fix protects against
+an LLM response that already happened to phrase it that way; the prompt change tries to prevent the
+phrasing in the first place).
+Affects: `src/nodes/llm/nlp_specialist.py` (`_MODEL_FAMILIES`), `config/prompts/nlp_specialist/v1.md`,
+`context/discoveries.md`.
+Discarded: adding the eight literal paired-combo aliases the review listed as a minimum (they would
+have been redundant with the bare modifier tokens and still would not have covered three of the six
+adversarial phrases); changing `normalize_model_family`'s matching rule itself (explicitly out of
+scope — shared contract).

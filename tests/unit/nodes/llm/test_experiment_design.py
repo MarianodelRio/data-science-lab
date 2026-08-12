@@ -23,6 +23,7 @@ from src.nodes.llm._experiment_design import (
     extract_json_object,
     normalize_model_family,
     read_fold_summary,
+    read_solution_plan,
     resolve_feature_spec_ref,
     validate_experiment_design,
 )
@@ -853,6 +854,98 @@ def test_read_fold_summary_degrades_on_non_string_path(tmp_path: Path) -> None:
     state["validation_config_path"] = 42  # type: ignore[typeddict-item]
 
     assert read_fold_summary(state, workspace) == _NOT_AVAILABLE
+
+
+# -- read_solution_plan (real WorkspaceManager, real tmp_path files) --
+
+
+def test_read_solution_plan_degrades_on_unset_path(tmp_path: Path) -> None:
+    workspace, state = _workspace_state(tmp_path)
+
+    assert read_solution_plan(state, workspace) == "(solution plan not yet available)"
+
+
+def test_read_solution_plan_degrades_on_oserror(tmp_path: Path) -> None:
+    workspace, state = _workspace_state(tmp_path)
+    state["solution_plan_path"] = "design/iteration_0/solution_plan.json"
+
+    plan = read_solution_plan(state, workspace)
+
+    assert plan.startswith("(unable to read solution plan at")
+
+
+@pytest.mark.parametrize("content", ['{"model_families": ["xgb', "", "   \n"])
+def test_read_solution_plan_degrades_on_malformed_json(tmp_path: Path, content: str) -> None:
+    """A truncated or empty solution plan raises `json.JSONDecodeError` out of
+    `read_json`; it must degrade, not abort the whole graph run."""
+    workspace, state = _workspace_state(tmp_path)
+    workspace.write_text("design/iteration_0/solution_plan.json", content)
+    state["solution_plan_path"] = "design/iteration_0/solution_plan.json"
+
+    assert read_solution_plan(state, workspace).startswith("(unable to read")
+
+
+def test_read_solution_plan_degrades_on_invalid_utf8(tmp_path: Path) -> None:
+    workspace, state = _workspace_state(tmp_path)
+    (tmp_path / "design" / "iteration_0").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "design" / "iteration_0" / "solution_plan.json").write_bytes(
+        b'{"model_families": "\xff\xfe"}'
+    )
+    state["solution_plan_path"] = "design/iteration_0/solution_plan.json"
+
+    assert read_solution_plan(state, workspace).startswith("(unable to read")
+
+
+def test_read_solution_plan_degrades_on_path_outside_the_workspace(tmp_path: Path) -> None:
+    """A resumed run can carry an absolute path recorded against a workspace root
+    that has since moved — `relative_to_workspace` raises `ValueError` there."""
+    workspace, state = _workspace_state(tmp_path)
+    state["solution_plan_path"] = "/elsewhere/design/iteration_0/solution_plan.json"
+
+    assert read_solution_plan(state, workspace).startswith("(unable to read")
+
+
+def test_read_solution_plan_degrades_on_traversal_path(tmp_path: Path) -> None:
+    workspace, state = _workspace_state(tmp_path)
+    state["solution_plan_path"] = "../../etc/passwd"
+
+    assert read_solution_plan(state, workspace).startswith("(unable to read")
+
+
+def test_read_solution_plan_degrades_on_pathological_nesting(tmp_path: Path) -> None:
+    """A deeply nested payload exhausts the interpreter stack inside `json.loads`
+    (and again inside `json.dumps` on the way out). `RecursionError` is a
+    `RuntimeError`, so neither `OSError` nor `ValueError` catches it — but the
+    docstring promises this never raises."""
+    workspace, state = _workspace_state(tmp_path)
+    depth = 100_000
+    workspace.write_text("design/iteration_0/solution_plan.json", "[" * depth + "]" * depth)
+    state["solution_plan_path"] = "design/iteration_0/solution_plan.json"
+
+    assert read_solution_plan(state, workspace).startswith("(unable to read")
+
+
+def test_read_solution_plan_degrades_on_non_string_path(tmp_path: Path) -> None:
+    """`LabState` types this as `str`, but LangGraph does not enforce the
+    TypedDict at runtime — a non-string would raise `TypeError` out of `Path()`,
+    which is not in the caught set."""
+    workspace, state = _workspace_state(tmp_path)
+    state["solution_plan_path"] = 42  # type: ignore[typeddict-item]
+
+    assert read_solution_plan(state, workspace) == "(solution plan not yet available)"
+
+
+def test_read_solution_plan_happy_path_returns_pretty_printed_json(tmp_path: Path) -> None:
+    workspace, state = _workspace_state(tmp_path)
+    written = workspace.write_json(
+        "design/iteration_0/solution_plan.json",
+        {"model_families": ["tfidf_linear"], "order": ["tfidf_linear"]},
+    )
+    state["solution_plan_path"] = written
+
+    plan = read_solution_plan(state, workspace)
+
+    assert json.loads(plan) == {"model_families": ["tfidf_linear"], "order": ["tfidf_linear"]}
 
 
 # -- resolve_feature_spec_ref --

@@ -83,9 +83,22 @@ def test_extract_json_object_strips_json_fence() -> None:
     assert extract_json_object('```json\n{"a": 1}\n```', SPECIALIST) == {"a": 1}
 
 
-def test_extract_json_object_unclosed_fence_raises() -> None:
+def test_extract_json_object_salvages_truncated_fence() -> None:
+    """A fence the response never closed is one of the two most common postamble
+    shapes — the salvage must be reachable even though `_strip_outer_fence`
+    raises first."""
+    assert extract_json_object('```json\n{"a": 1}', SPECIALIST) == {"a": 1}
+
+
+def test_extract_json_object_salvages_sentence_after_closed_fence() -> None:
+    content = '```json\n{"a": 1}\n```\nHope that helps!'
+
+    assert extract_json_object(content, SPECIALIST) == {"a": 1}
+
+
+def test_extract_json_object_unclosed_fence_without_json_raises() -> None:
     with pytest.raises(ValueError, match="never closes it"):
-        extract_json_object('```json\n{"a": 1}', SPECIALIST)
+        extract_json_object("```json\nstill thinking about it", SPECIALIST)
 
 
 def test_extract_json_object_single_line_fence_raises() -> None:
@@ -418,6 +431,25 @@ def test_step_exactly_equal_to_range_accepted() -> None:
     assert result["search_space"]["p"]["step"] == 2
 
 
+@pytest.mark.parametrize(
+    "spec",
+    [
+        {"type": "float", "low": 0.1, "high": 0.3, "step": 0.2},
+        {"type": "float", "low": 0.1, "high": 0.7, "step": 0.6},
+        {"type": "float", "low": 1.1, "high": 2.2, "step": 1.1},
+        {"type": "float", "low": 0.2, "high": 0.9, "step": 0.7},
+    ],
+)
+def test_step_equal_to_range_accepted_despite_float_error(spec: dict[str, Any]) -> None:
+    """Regression guard: `0.3 - 0.1` is `0.19999999999999998` in binary floating
+    point, so a bare `step > high - low` rejects this perfectly legitimate
+    two-value grid while `0.1/0.7/0.6` happens to pass — an input-dependent false
+    rejection, on a node with no retry wrapper. Optuna itself accepts all four."""
+    result = _validate_param(spec)
+
+    assert result["search_space"]["p"]["step"] == spec["step"]
+
+
 @pytest.mark.parametrize("bound", ["low", "high"])
 def test_oversized_int_bound_raises_value_error_not_overflow_error(bound: str) -> None:
     """`math.isfinite(10**400)` raises `OverflowError`, which would escape the
@@ -459,6 +491,22 @@ def test_categorical_choices_equal_values_are_duplicates(choices: list[Any]) -> 
     choice, not several."""
     with pytest.raises(ValueError, match="must not repeat"):
         _validate_param({"type": "categorical", "choices": choices})
+
+
+@pytest.mark.parametrize("value", [2**53 + 1, -(2**53) - 1, 10**400])
+def test_categorical_choices_reject_inexact_int(value: int) -> None:
+    """Python's arbitrary-precision ints serialize in full, but every IEEE-754
+    consumer rounds them: `2**53 + 1` reads back as `2**53` and `10**400` reads
+    back as `Infinity`/`null`. The same ±2**53 limit `_validate_numeric` applies
+    to bounds has to apply here too."""
+    with pytest.raises(ValueError, match="JSON scalars"):
+        _validate_param({"type": "categorical", "choices": [1, value]})
+
+
+def test_categorical_choices_accept_the_exact_int_boundary() -> None:
+    result = _validate_param({"type": "categorical", "choices": [2**53, -(2**53)]})
+
+    assert result["search_space"]["p"]["choices"] == [2**53, -(2**53)]
 
 
 @pytest.mark.parametrize("token", ["Infinity", "-Infinity", "NaN"])
@@ -515,6 +563,24 @@ def test_fixed_params_flat_list_value_accepted() -> None:
     result = _validate(_design(fixed_params={"metric": ["auc", "binary_logloss"]}))
 
     assert result["fixed_params"] == {"metric": ["auc", "binary_logloss"]}
+
+
+@pytest.mark.parametrize("value", [2**53 + 1, -(2**53) - 1, 10**400])
+def test_fixed_params_reject_inexact_int_scalar(value: int) -> None:
+    with pytest.raises(ValueError, match="JSON scalar"):
+        _validate(_design(fixed_params={"scale_pos_weight": value}))
+
+
+@pytest.mark.parametrize("value", [2**53 + 1, 10**400])
+def test_fixed_params_reject_inexact_int_in_a_list(value: int) -> None:
+    with pytest.raises(ValueError, match="JSON scalar"):
+        _validate(_design(fixed_params={"class_weights": [1, value]}))
+
+
+def test_fixed_params_accept_the_exact_int_boundary() -> None:
+    result = _validate(_design(fixed_params={"seed": 2**53}))
+
+    assert result["fixed_params"] == {"seed": 2**53}
 
 
 @pytest.mark.parametrize("token", ["Infinity", "-Infinity", "NaN"])
@@ -766,6 +832,29 @@ def test_read_fold_summary_degrades_on_traversal_path(tmp_path: Path) -> None:
     assert read_fold_summary(state, workspace).startswith("(unable to read")
 
 
+def test_read_fold_summary_degrades_on_pathological_nesting(tmp_path: Path) -> None:
+    """A deeply nested payload exhausts the interpreter stack inside `json.loads`
+    (and again inside `json.dumps` on the way out). `RecursionError` is a
+    `RuntimeError`, so neither `OSError` nor `ValueError` catches it — but the
+    docstring promises this never raises."""
+    workspace, state = _workspace_state(tmp_path)
+    depth = 100_000
+    workspace.write_text("validation/fold_config.json", "[" * depth + "]" * depth)
+    state["validation_config_path"] = "validation/fold_config.json"
+
+    assert read_fold_summary(state, workspace).startswith("(unable to read")
+
+
+def test_read_fold_summary_degrades_on_non_string_path(tmp_path: Path) -> None:
+    """`LabState` types this as `str`, but LangGraph does not enforce the
+    TypedDict at runtime — a non-string would raise `TypeError` out of `Path()`,
+    which is not in the caught set."""
+    workspace, state = _workspace_state(tmp_path)
+    state["validation_config_path"] = 42  # type: ignore[typeddict-item]
+
+    assert read_fold_summary(state, workspace) == _NOT_AVAILABLE
+
+
 # -- resolve_feature_spec_ref --
 
 
@@ -818,5 +907,12 @@ def test_resolve_feature_spec_ref_falls_back_on_traversal_path(tmp_path: Path, s
     this pointer relative to the workspace root."""
     workspace, state = _workspace_state(tmp_path)
     state["feature_spec_path"] = stored
+
+    assert resolve_feature_spec_ref(state, workspace) == "design/iteration_0/feature_spec.json"
+
+
+def test_resolve_feature_spec_ref_falls_back_on_non_string_path(tmp_path: Path) -> None:
+    workspace, state = _workspace_state(tmp_path)
+    state["feature_spec_path"] = 42  # type: ignore[typeddict-item]
 
     assert resolve_feature_spec_ref(state, workspace) == "design/iteration_0/feature_spec.json"

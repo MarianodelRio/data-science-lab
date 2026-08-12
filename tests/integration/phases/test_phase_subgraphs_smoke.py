@@ -337,7 +337,7 @@ def test_phase_subgraph_compiles_and_runs(stem: str, tmp_path) -> None:
         design = json.loads(design_path.read_text(encoding="utf-8"))
         assert design["specialist"] == "classical_ml_specialist"
         assert design["cv_strategy_ref"] == "validation/fold_config.json"
-        assert design["search_space"]
+        assert "n_estimators" in design["search_space"]
 
 
 def test_phase2_fan_in_join_node_runs_exactly_once() -> None:

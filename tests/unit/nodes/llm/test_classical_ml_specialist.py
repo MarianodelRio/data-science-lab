@@ -339,6 +339,43 @@ def test_build_messages_handles_unreadable_upstream_paths(
     assert "unable to read" in mock_llm.invoke.call_args[0][0][-1].content
 
 
+def test_build_messages_handles_corrupt_upstream_json(
+    patched_llm_factory, patched_settings, mock_workspace_manager, mock_llm: MagicMock
+) -> None:
+    """A truncated `solution_plan.json` raises `json.JSONDecodeError` out of
+    `read_json`. Both readers in `_build_messages` must absorb it — hardening only
+    the fold reader would leave the run just as dead."""
+    _, workspace_instance = mock_workspace_manager
+    workspace_instance.read_json.side_effect = json.JSONDecodeError("truncated", "{", 0)
+    node = ClassicalMlSpecialistNode()
+
+    node(_build_state())
+
+    content = mock_llm.invoke.call_args[0][0][-1].content
+    assert "unable to read solution plan" in content
+    assert "unable to read frozen fold config" in content
+
+
+def test_build_messages_handles_foreign_absolute_upstream_paths(
+    patched_llm_factory, patched_settings, mock_workspace_manager, mock_llm: MagicMock
+) -> None:
+    """Resuming a checkpointed run after the workspace moved leaves absolute
+    paths that no longer sit under the current root — `relative_to_workspace`
+    raises `ValueError`, which every reader in this node must absorb."""
+    _, workspace_instance = mock_workspace_manager
+    state = _build_state()
+    state["solution_plan_path"] = "/old/workspace/design/iteration_0/solution_plan.json"
+    state["validation_config_path"] = "/old/workspace/validation/fold_config.json"
+    node = ClassicalMlSpecialistNode()
+
+    node(state)
+
+    content = mock_llm.invoke.call_args[0][0][-1].content
+    assert "unable to read solution plan" in content
+    assert "unable to read frozen fold config" in content
+    workspace_instance.write_json.assert_called_once()
+
+
 # -- response parsing / validation failures --
 
 

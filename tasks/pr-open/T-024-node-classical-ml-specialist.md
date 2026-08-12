@@ -79,3 +79,65 @@ with the `design.json` contract block and a node-classification row.
 Explicitly not modified: `config/phases/phase5_implementation.yaml`, `src/state.py`,
 `src/workspace/workspace_manager.py`, `src/config/*`, `config/settings.yaml`, and every sibling
 node module.
+
+## Review round (2026-08-12)
+
+Code-quality WARNING, security WARNING, adversarial WARNING, smoke-tester 5/5 PASS — no blockers,
+but adversarial proved several defects by execution. Since `_experiment_design.py` is the contract
+T-025–T-029 inherit, all eleven were fixed now rather than four tasks from now.
+
+**Correctness / robustness.** `read_fold_summary` caught only `OSError`, so a truncated or empty
+`validation/fold_config.json` (`json.JSONDecodeError`), invalid UTF-8 (`UnicodeDecodeError`) or a
+path outside the workspace root (`ValueError` from `Path.relative_to`) escaped and killed the run —
+reproduced through the real phase-5 subgraph. It now catches `(OSError, ValueError)`, which covers
+all three. `resolve_feature_spec_ref` raised on a foreign absolute path (a resumed run whose
+workspace moved or is bind-mounted elsewhere) despite documenting "never returns `""`", and passed a
+stored `..` traversal straight into `design.json`; both now fall back to the iteration pattern.
+`math.isfinite` raises `OverflowError` on a large enough Python int, and `json.loads` raises a bare
+`ValueError` on an integer literal past CPython's 4300-digit limit — both are now `ValueError`s
+naming the specialist, so the module's single-exception-type contract actually holds.
+
+**Security.** `search_space`/`fixed_params` parameter *names* were entirely unvalidated and become
+Python keyword arguments in `coder`-generated code that `code_executor` runs; they now must match
+`^[A-Za-z_][A-Za-z0-9_]{0,63}$`. `preprocessing` entries were "any non-empty string", which let
+`"StratifiedKFold(n_splits=3, shuffle=True)"` reach disk — a CV redefinition hiding in a list value,
+past the forbidden-*key* guard, defeating this task's own acceptance criterion; entries are now
+lower_snake tokens (`^[a-z][a-z0-9_]{0,63}$`), a shape constraint rather than a closed vocabulary so
+T-025–T-028 keep their own choice of steps. Non-finite floats are rejected everywhere, since
+`WorkspaceManager.write_json` uses `json.dump`'s `allow_nan=True` default and would otherwise emit a
+`design.json` that fails `JSON.parse` in any non-Python consumer.
+
+**Optuna semantics** (verified against optuna 3.5.0): `step > high - low` is rejected — Optuna does
+not complain, it just returns the same value on every trial and burns the budget without tuning;
+and `choices` is now deduplicated by value, because `CategoricalDistribution` maps `1`, `1.0` and
+`True` to one internal index, so a trial trained on `True` is recorded as `1` and is not
+reproducible. The previous type-keyed dedup had the consumer's requirement backwards.
+
+**Input tolerance.** `extract_json_object` now retries once on the first-`{`-to-last-`}` slice,
+keeping the original error if that fails too. A single sentence of preamble previously aborted the
+whole run on a node with no retry wrapper (`code_critic` targets `coder`, not the specialists). This
+is a deliberate divergence from the stricter sibling nodes, logged in `context/decisions.md`.
+
+**Test integrity.** Adversarial mutated the production `_MODEL_FAMILIES` table — gutting it to one
+family, deleting three, typo'ing every alias, swapping word-boundary for substring matching — and
+the suite stayed green every time, because the tests parametrized over a hand-copied table. The copy
+is deleted; tests now import the real table and parametrize over its actual aliases, plus assert the
+four-family set and that substring-only matches (`LGBMClassifier`) are rejected. The phase-5 smoke
+test now asserts the design file actually landed with the injected `specialist`/`cv_strategy_ref`,
+not merely that the subgraph ran.
+
+**Hygiene.** `strip_outer_fence` is private (`_strip_outer_fence`, exercised through
+`extract_json_object`); `_validate_bound`/`_validate_step` merged into one `_validate_numeric(...,
+positive=...)`; `FEATURE_SPEC_FALLBACK_PATTERN` carries a sync-with-`config/agents/
+feature_engineer.yaml` note. `docs/pipeline.md`'s Phase-5 section gained the same
+pre-PR-#25 caveat `docs/agents.md` already carried.
+
+Three items were deliberately **not** implemented and logged as OPEN discoveries instead: hoisting
+the now-seventh JSON-extraction copy into `src/nodes/llm/base.py`; adding a per-specialist component
+to `output_file_pattern` (a design decision across four unstarted tasks); and banning
+`validation_fraction`/`early_stopping`/`n_iter_no_change`/`eval_set` — legitimate practice whose
+prohibition is a modeling decision, so `FORBIDDEN_CV_KEYS`'s docstring is now honest that it is a
+tripwire rather than a proof, with the escape hatch flagged for T-029/T-031.
+
+Final: 234 unit tests across the two new test modules (205 + 29), 785 passing suite-wide,
+coverage 96.7%.

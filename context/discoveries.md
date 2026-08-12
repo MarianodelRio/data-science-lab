@@ -290,3 +290,60 @@ first, the forward-looking caveats in `docs/agents.md` step 3 and `docs/pipeline
 `config/phases/phase5_implementation.yaml` no longer lists the specialists, so
 `classical_ml_specialist` is dispatched by `specialist_selector`, never a standalone graph edge.
 Status: resolved
+
+## OPEN — 2026-08-12 [pipeline-agent (T-024) → pipeline-agent (whoever owns a `src/nodes/llm/base.py` refactor)]
+`_strip_outer_fence`/JSON-extraction is now duplicated **seven** times across `src/nodes/llm/`:
+`problem_framer.py`, `leakage_auditor.py`, `analysis_critic.py`, `baseline_designer.py`,
+`feature_engineer.py`, `solution_architect.py`, `_research_common.py` (array variant), plus
+`_experiment_design.py` (object variant, T-024). T-020 already hoisted `relative_to_workspace` into
+`src/nodes/llm/base.py` on exactly this reasoning at three copies.
+Proposal: one small dedicated task that moves a `strip_outer_fence(content, node_name)` /
+`extract_json_object(content, node_name)` / `extract_json_array(content, node_name)` trio into
+`base.py` and migrates all seven call sites, deleting the private copies.
+Not done in T-024: `base.py` is imported by every LLM node, so touching it from a node task means
+either migrating six landed modules in a PR scoped to one node, or adding an eighth copy's worth of
+surface to `base.py` and leaving the duplication anyway. Note for whoever picks it up:
+`_experiment_design.extract_json_object` is deliberately more permissive than its siblings (it
+salvages a brace-delimited slice when the whole-text parse fails — see the 2026-08-12 T-024
+decision-log entry), so a naive merge would either regress that tolerance or silently extend it to
+five nodes that were reviewed on the stricter behavior. Preserve the difference explicitly.
+Status: open
+
+## OPEN — 2026-08-12 [pipeline-agent (T-024) → pipeline-agent (T-025, T-026, T-027, T-028)]
+**All five Phase-5 specialists write the same path.** `output_file_pattern` is
+`experiments/exp_{iteration}/design.json` for `classical_ml_specialist`, and T-025–T-028 are
+specified the same way. The only thing distinguishing the outputs is the `specialist` field
+*inside* the file. Today that is harmless — `specialist_selector` (T-023) activates exactly one
+specialist per iteration — but it means the path scheme carries no specialist identity, so any
+future change that runs two specialists in the same iteration (an ensembling pass reading two
+candidate designs, a comparison run, a retry after a different route) silently overwrites instead
+of accumulating.
+Same root cause as the `current_iteration` entry above: there is exactly one design slot per
+iteration. Whoever lands T-025 should decide the path scheme for all four remaining specialists at
+once — either `experiments/exp_{iteration}/design.json` stays and the constraint "one specialist
+per iteration" gets written down as an invariant, or the pattern grows a specialist component
+(`experiments/exp_{iteration}/{specialist}/design.json`) and `coder` (T-029) is told how to find
+it. Not decided in T-024: it is a design decision affecting four unstarted tasks and their
+consumer.
+Status: open
+
+## OPEN — 2026-08-12 [pipeline-agent (T-024) → pipeline-agent (T-029 coder / T-031 score_evaluator)]
+**`FORBIDDEN_CV_KEYS` is a tripwire, not a proof.** T-024's validator rejects a design that names
+`cv`/`cv_strategy`/`folds`/`fold_indices`/`n_folds`/`n_splits`/`validation`/`test_size`/`shuffle`,
+which catches an explicit attempt to redefine cross-validation. It does **not** catch a model that
+carves its own holdout out of the training fold through ordinary model-side hyperparameters:
+`validation_fraction` (sklearn's `HistGradientBoostingClassifier`/`MLPClassifier`),
+`early_stopping`, `n_iter_no_change`, `eval_set`/`early_stopping_rounds` (xgboost/lightgbm),
+`od_type`/`od_wait` (catboost). Any of these can shrink the effective training data or leak the
+fold's validation split into the stopping decision, making the recorded CV score
+non-comparable against the baseline and against other experiments.
+Deliberately not added to `FORBIDDEN_CV_KEYS` in T-024: early stopping evaluated against the frozen
+fold's *own* validation split is legitimate, widely-used practice, and banning it outright is a
+modeling decision that would be made unilaterally on behalf of four unstarted specialist tasks
+(T-025–T-028). The `FORBIDDEN_CV_KEYS` docstring now states this limitation explicitly rather than
+implying the guard is exhaustive.
+For T-029/T-031: when generating the training script, decide per model family whether these
+parameters are honored, translated to use the frozen fold's validation split, or dropped — and
+make the choice visible in the experiment results so a score computed under early stopping is not
+silently compared against one that was not.
+Status: open

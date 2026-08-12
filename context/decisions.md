@@ -975,3 +975,80 @@ context is instead carried by the `ValueError` messages, every one of which name
 the offending field, and the offending value.
 Affects: `src/nodes/llm/_experiment_design.py`, `src/nodes/llm/classical_ml_specialist.py`.
 Discarded: adding a module-level `logging.getLogger(__name__)` to the new modules only.
+
+## 2026-08-12 — T-024 [pipeline-agent] (review round)
+Decided: `preprocessing` entries must match `^[a-z][a-z0-9_]{0,63}$` — a lower_snake token that
+*names* a step, never a string that expresses one.
+Why: the original "non-empty string" rule let adversarial review write
+`["StratifiedKFold(n_splits=3, shuffle=True)", "train_test_split(X, y, test_size=0.2)"]` to disk —
+a cross-validation redefinition that slips past `FORBIDDEN_CV_KEYS` entirely, because that guard
+matches dict *keys* and this hid in a list *value*. It therefore defeated T-024's own "does not
+redefine CV" acceptance criterion. A token shape (rather than a closed vocabulary of allowed
+techniques) is the narrowest fix that closes it without deciding on behalf of T-025–T-028 which
+preprocessing steps their specialists may name.
+Affects: `src/nodes/llm/_experiment_design.py` (`_PREPROCESSING_STEP_RE`,
+`_validate_preprocessing`), `config/prompts/classical_ml_specialist/v1.md`.
+Discarded: an allow-list of known preprocessing step names (would need one union across five
+specialists that do not exist yet, and would reject legitimate model-specific steps).
+
+## 2026-08-12 — T-024 [pipeline-agent] (review round)
+Decided: every `search_space`/`fixed_params` key must match `^[A-Za-z_][A-Za-z0-9_]{0,63}$`.
+Why: parameter names were the one part of the payload passing through completely unvalidated, and
+`coder` (T-029) turns them into Python keyword arguments in a script `code_executor` runs on the
+host — so a key containing quotes, parentheses, newlines or backslashes is an
+injection precondition, not a cosmetic issue. Every real hyperparameter name of xgboost/lightgbm/
+catboost/sklearn already satisfies the pattern, so the false-rejection cost is zero.
+Affects: `src/nodes/llm/_experiment_design.py` (`_PARAM_NAME_RE`, `_validate_param_name`),
+`config/prompts/classical_ml_specialist/v1.md`.
+
+## 2026-08-12 — T-024 [pipeline-agent] (review round)
+Decided: two Optuna-semantics rules the library itself does not enforce — `step <= high - low`, and
+`choices` deduplicated by **value** (`1`, `1.0` and `True` are one choice) rather than by
+`(type_name, value)`.
+Why: both were verified by execution against optuna 3.5.0. `suggest_int(low=1, high=2, step=5)`
+does not raise; it returns the same value on every trial, so the entire trial budget is spent
+without ever tuning that parameter (the float case emits only a `UserWarning`) — the same class of
+silent waste this module already rejects `log` + `step` for. And `CategoricalDistribution` maps
+`1`, `1.0` and `True` to the same internal index, so a trial that trains on `True` is *recorded* as
+`1` and the winning configuration is no longer reproducible by `coder`. The original type-keyed
+dedup comment ("so `1` and `True` aren't conflated into a false duplicate") had the consumer's
+requirement backwards and is corrected in place.
+Affects: `src/nodes/llm/_experiment_design.py` (`_validate_numeric_param`, `_validate_choices`),
+`config/prompts/classical_ml_specialist/v1.md`.
+
+## 2026-08-12 — T-024 [pipeline-agent] (review round)
+Decided: `extract_json_object` retries **once** on the substring between the first `{` and the last
+`}` when the whole-text parse fails, and reports the *original* error if that also fails. This
+diverges from the sibling structured-output nodes (`baseline_designer`, `feature_engineer`,
+`solution_architect`, `problem_framer`, `leakage_auditor`), which reject outright.
+Why: this validator has ~40 distinct reject paths and sits on a node with no retry wrapper — Phase
+5's `code_critic` targets `coder`, not the specialists, and `LLMNode.__call__` has no retry of its
+own. A single sentence of preamble before a fenced block therefore aborted the entire run.
+Tolerance is warranted *because* the downstream validation is unusually strict: the salvage only
+widens what reaches the validator, it never weakens what the validator accepts. Deliberately scoped
+to this module rather than pushed into `src/nodes/llm/base.py`, which would change five landed
+nodes' behavior in a node task.
+Affects: `src/nodes/llm/_experiment_design.py` (`extract_json_object`, `_slice_outermost_braces`).
+Discarded: a bracket-matching scanner (more code, no benefit — the validator rejects anything the
+naive slice gets wrong); making the sibling nodes tolerant too (out of scope, and they are not the
+ones with 40 reject paths).
+
+## 2026-08-12 — T-024 [pipeline-agent] (review round)
+Decided: every degradation path widened to match its documented "never raises" claim, and every
+validation failure guaranteed to be a `ValueError`.
+Why: three claims in the module were false as written. `read_fold_summary` caught only `OSError`,
+so a truncated/empty `fold_config.json` (`json.JSONDecodeError`), invalid UTF-8
+(`UnicodeDecodeError`) or a path outside the workspace root (`ValueError` from
+`Path.relative_to`) escaped and killed the run — reproduced through the real phase-5 subgraph. It
+now catches `(OSError, ValueError)`, which covers all three, since both decode errors are
+`ValueError` subclasses. `resolve_feature_spec_ref` claimed "never returns `""`" but raised on a
+foreign absolute path — the exact shape of a resumed run whose workspace moved — and passed a
+stored `..` traversal through into `design.json`; both now fall back to the iteration pattern.
+And `math.isfinite` raises `OverflowError` on a sufficiently large Python int, so integer bounds
+are range-checked against ±2**53 first, and `json.loads` raises a bare `ValueError` (not
+`JSONDecodeError`) on an integer literal past CPython's 4300-digit limit, which is now wrapped and
+attributed to the specialist. Non-finite floats are also rejected in `_is_json_scalar`, since
+`WorkspaceManager.write_json` uses `json.dump`'s default `allow_nan=True` and would otherwise write
+a `design.json` that fails `JSON.parse` in the frontend.
+Affects: `src/nodes/llm/_experiment_design.py` (`read_fold_summary`, `resolve_feature_spec_ref`,
+`_validate_numeric`, `_parse_json`, `_is_json_scalar`).

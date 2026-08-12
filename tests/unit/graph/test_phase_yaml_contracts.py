@@ -60,16 +60,7 @@ EXPECTED: dict[str, dict] = {
     },
     "phase5_implementation": {
         "name": "implementation",
-        "nodes": (
-            "specialist_selector",
-            "classical_ml_specialist",
-            "deep_learning_specialist",
-            "nlp_specialist",
-            "timeseries_specialist",
-            "ensemble_specialist",
-            "coder",
-            "code_critic",
-        ),
+        "nodes": ("specialist_selector", "coder", "code_critic"),
         "parallel_nodes": (),
         "critic": CriticConfig(node="code_critic", targets=("coder",), max_retries=3),
         "interrupt_after": False,

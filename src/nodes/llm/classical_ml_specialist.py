@@ -22,6 +22,7 @@ import json
 from langchain_core.messages import BaseMessage, HumanMessage
 
 from src.nodes.llm._experiment_design import (
+    DEGRADE_ERRORS,
     extract_json_object,
     read_fold_summary,
     resolve_feature_spec_ref,
@@ -50,15 +51,23 @@ def _read_solution_plan(state: LabState, workspace: WorkspaceManager) -> str:
     """Read state['solution_plan_path'] as pretty-printed JSON text. Degrades to a
     placeholder, never raises — own copy of `feature_engineer._read_solution_plan`,
     per the established per-module-duplication convention for these
-    upstream-artifact readers (T-020/T-022 decision-log entries)."""
+    upstream-artifact readers (T-020/T-022 decision-log entries).
+
+    Catches `DEGRADE_ERRORS`, not just `OSError`, so this reader degrades on
+    exactly the same inputs as `read_fold_summary` — the two run one line apart in
+    `_build_messages`, and a corrupt solution plan or a workspace that has moved
+    since the path was recorded must not abort the graph through one of them while
+    the other absorbs it. The sibling modules' copies of this helper still catch
+    `OSError` alone; see `context/discoveries.md`.
+    """
     path = state.get("solution_plan_path") or ""
-    if not path:
+    if not isinstance(path, str) or not path:
         return "(solution plan not yet available)"
     try:
         data = workspace.read_json(relative_to_workspace(path, workspace))
-    except OSError:
+        return json.dumps(data, indent=2)
+    except DEGRADE_ERRORS:
         return f"(unable to read solution plan at {path})"
-    return json.dumps(data, indent=2)
 
 
 class ClassicalMlSpecialistNode(LLMNode):

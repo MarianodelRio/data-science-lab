@@ -99,10 +99,12 @@ FORBIDDEN_CV_KEYS = frozenset(
 _PARAM_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
 
 # `preprocessing` entries name a step, they do not express one: a token, never a
-# call. This shape (and NOT a closed vocabulary — which techniques are meaningful
-# is T-025–T-028's decision, not this module's) is what stops a code-shaped entry
-# such as `"StratifiedKFold(n_splits=3, shuffle=True)"` — a CV redefinition that
-# slips past the forbidden-*key* guard because it lives in a list value.
+# call. This is a *shape* constraint only, and deliberately not a closed
+# vocabulary — which techniques are meaningful is T-025–T-028's decision, not this
+# module's. It rejects the executable-looking form (a call, an expression, a prose
+# sentence), e.g. `"StratifiedKFold(n_splits=3, shuffle=True)"`. It does NOT judge
+# meaning: `["stratified_kfold"]`, `["cv"]` and `["custom_holdout_split"]` are all
+# accepted tokens. Same tripwire framing as `FORBIDDEN_CV_KEYS` — see its note.
 _PREPROCESSING_STEP_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
 # Beyond 2**53 an int is no longer exactly representable as an IEEE-754 double,
@@ -111,8 +113,35 @@ _PREPROCESSING_STEP_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 # module's "always `ValueError`" contract holds.
 _MAX_EXACT_INT = 2**53
 
+# `step` is compared against `high - low` with a relative slack, because binary
+# floating point makes that subtraction lossy: `0.3 - 0.1` is
+# `0.19999999999999998`, so the perfectly legitimate two-value grid
+# low=0.1/high=0.3/step=0.2 would be rejected while low=0.1/high=0.7/step=0.6
+# passes — an input-dependent false rejection is worse than no check at all on a
+# node with no retry wrapper. The slack is far too small to readmit the real bug
+# (a step several times the range).
+_STEP_RANGE_TOLERANCE = 1 + 1e-9
+
 _FOLD_SUMMARY_KEYS = ("strategy", "n_folds", "seed")
 _FOLDS_NOT_AVAILABLE = "(frozen fold config not yet available)"
+
+# Everything an upstream-artifact read may throw at a node that promises to
+# degrade rather than abort the graph. Deliberately wide, and each member earns
+# its place: `OSError` — file missing, unreadable, a directory. `ValueError` —
+# `json.JSONDecodeError` (truncated/empty JSON) and `UnicodeDecodeError` (invalid
+# UTF-8), both `ValueError` subclasses, plus `WorkspaceManager._resolve`/
+# `Path.relative_to` rejecting a path that is absolute outside the workspace root
+# or contains a `..` component. `RecursionError` — a pathologically nested
+# payload (~993 levels) exhausts the interpreter's stack inside `json.loads`, and
+# again inside `json.dumps` on the way back out; it is a `RuntimeError`, so
+# neither of the other two catches it.
+#
+# Reader helpers in the sibling node modules (`feature_engineer`,
+# `baseline_designer`, `solution_architect`, `_research_common`) still catch
+# `OSError` alone despite carrying the same "never raises" promise — see the
+# T-024 entry in `context/discoveries.md`; fixing them is out of this task's
+# scope, but this module's own readers are consistent with each other.
+DEGRADE_ERRORS = (OSError, ValueError, RecursionError)
 
 
 def _strip_outer_fence(content: str, specialist: str) -> str:
@@ -164,12 +193,17 @@ def extract_json_object(content: str, specialist: str) -> dict[str, Any]:
     """Extract a top-level JSON object from an LLM response.
 
     Accepts raw JSON with no fence, or the entire response wrapped in a single
-    ```json or unlabeled ``` fence. If neither parses, retries **once** on the
-    substring between the first `{` and the last `}`, which salvages the common
-    "one sentence of preamble before/after the JSON" failure mode. Raises
-    `ValueError` naming `specialist` — with the *original* parse error, not the
-    salvage attempt's — when both parses fail or the top-level value isn't an
-    object.
+    ```json or unlabeled ``` fence. If **either** the fence handling or the parse
+    fails, retries once on the substring of the raw response between the first
+    `{` and the last `}` — which salvages the three common wrapper failures: a
+    sentence of preamble, a sentence of postamble after a closed fence, and a
+    fence the response never closed. Raises `ValueError` naming `specialist` —
+    with the *original* error, not the salvage attempt's — when the salvage is
+    unavailable or also fails, or when the top-level value isn't an object.
+
+    Fail-closed by construction: the salvage only ever hands `json.loads` one
+    contiguous substring of the response. It widens what reaches the validator;
+    it never weakens what the validator accepts.
 
     This is deliberately more permissive than the sibling structured-output nodes
     (`baseline_designer`, `feature_engineer`, `solution_architect`), which reject
@@ -177,17 +211,16 @@ def extract_json_object(content: str, specialist: str) -> dict[str, Any]:
     retry wrapper (Phase 5's `code_critic` targets `coder`, not the specialists),
     so a stray sentence must not abort the whole run.
     """
-    text = _strip_outer_fence(content, specialist)
     try:
-        data = _parse_json(text, specialist)
-    except ValueError as parse_error:
-        salvaged = _slice_outermost_braces(text)
-        if salvaged is None or salvaged == text:
+        data = _parse_json(_strip_outer_fence(content, specialist), specialist)
+    except ValueError as first_error:
+        salvaged = _slice_outermost_braces(content)
+        if salvaged is None or salvaged == content.strip():
             raise
         try:
             data = _parse_json(salvaged, specialist)
         except ValueError:
-            raise parse_error from None
+            raise first_error from None
     if not isinstance(data, dict):
         raise ValueError(f"{specialist} response must be a JSON object, got {type(data).__name__}")
     return data
@@ -234,14 +267,26 @@ def normalize_model_family(value: Any, allowed: dict[str, tuple[str, ...]], spec
 def _is_json_scalar(value: Any) -> bool:
     """A value that survives a `json.dump`/`JSON.parse` round trip unchanged.
 
-    Non-finite floats are excluded: `WorkspaceManager.write_json` uses
-    `json.dump`'s default `allow_nan=True`, which happily emits the bare
-    `Infinity`/`NaN` tokens — valid Python, but not RFC-8259, so the written
-    `design.json` would fail `JSON.parse` in the frontend and in any non-Python
-    consumer.
+    Two exclusions, both of which `WorkspaceManager.write_json` would otherwise
+    write happily (it uses `json.dump`'s default `allow_nan=True`) while any
+    non-Python consumer silently misreads the result:
+
+    - **Non-finite floats** — emitted as the bare `Infinity`/`NaN` tokens, which
+      are valid Python but not RFC-8259; `JSON.parse` rejects them outright, and
+      a tolerant parser turns them into `null`.
+    - **Ints beyond ±2**53** — Python's arbitrary-precision ints serialize in
+      full, but every IEEE-754 double consumer rounds them: `2**53 + 1` reads
+      back as `2**53`, and `10**400` reads back as `Infinity`/`null`. The same
+      limit `_validate_numeric` applies to bounds, applied here to `choices` and
+      `fixed_params` values.
+
+    `bool` is matched before `int` (it is a subclass) so `true`/`false` stay
+    scalars regardless of the magnitude check.
     """
-    if value is None or isinstance(value, (str, bool, int)):
+    if value is None or isinstance(value, (str, bool)):
         return True
+    if isinstance(value, int):
+        return abs(value) <= _MAX_EXACT_INT
     if isinstance(value, float):
         return math.isfinite(value)
     return False
@@ -362,7 +407,7 @@ def _validate_numeric_param(
         validated["log"] = _validate_log(param, spec, low, specialist)
     if "step" in spec:
         step = _validate_numeric(param, "step", spec["step"], param_type, specialist, positive=True)
-        if step > high - low:
+        if step > (high - low) * _STEP_RANGE_TOLERANCE:
             # Optuna does not reject this: `suggest_int(low=1, high=2, step=5)`
             # silently returns the same value on every trial, so the whole trial
             # budget is spent never tuning the parameter. Same class of silent
@@ -545,26 +590,25 @@ def read_fold_summary(state: LabState, workspace: WorkspaceManager) -> str:
     listing that would flood the context window with data the specialist has no
     use for (it designs against the folds, it does not re-derive them).
 
-    Never raises: an unset, unreachable, corrupt or non-object fold config all
-    degrade to a placeholder string, because Phase 5 can legitimately run with no
-    Phase 1 run ahead of it and a malformed upstream artifact must not abort the
-    whole graph (same convention as `baseline_designer._read_problem_definition`).
-    The caught set is deliberately wide: `OSError` covers a missing/unreadable
-    file, and `ValueError` covers both `json.JSONDecodeError` (truncated or empty
-    JSON) and `UnicodeDecodeError` (invalid UTF-8) — each a `ValueError` subclass
-    — as well as `WorkspaceManager._resolve`/`Path.relative_to` rejecting a path
-    that is absolute outside the workspace root or contains a `..` component.
+    Never raises — see `DEGRADE_ERRORS` for the caught set and why it is that
+    wide. An unset, non-string, unreachable, corrupt, pathologically nested or
+    non-object fold config all degrade to a placeholder string, because Phase 5
+    can legitimately run with no Phase 1 run ahead of it and a malformed upstream
+    artifact must not abort the whole graph (same convention as
+    `baseline_designer._read_problem_definition`). Both the read *and* the
+    re-serialization sit inside the guard: a deeply nested payload blows the
+    recursion limit on the way out as readily as on the way in.
     """
     path = state.get("validation_config_path") or ""
-    if not path:
+    if not isinstance(path, str) or not path:
         return _FOLDS_NOT_AVAILABLE
     try:
         data = workspace.read_json(relative_to_workspace(path, workspace))
-    except (OSError, ValueError):
+        if not isinstance(data, dict):
+            return _FOLDS_NOT_AVAILABLE
+        return json.dumps({key: data.get(key) for key in _FOLD_SUMMARY_KEYS}, indent=2)
+    except DEGRADE_ERRORS:
         return f"(unable to read frozen fold config at {path})"
-    if not isinstance(data, dict):
-        return _FOLDS_NOT_AVAILABLE
-    return json.dumps({key: data.get(key) for key in _FOLD_SUMMARY_KEYS}, indent=2)
 
 
 def resolve_feature_spec_ref(state: LabState, workspace: WorkspaceManager) -> str:
@@ -584,11 +628,11 @@ def resolve_feature_spec_ref(state: LabState, workspace: WorkspaceManager) -> st
     """
     fallback = FEATURE_SPEC_FALLBACK_PATTERN.format(iteration=state["current_iteration"])
     path = state.get("feature_spec_path") or ""
-    if not path:
+    if not isinstance(path, str) or not path:
         return fallback
     try:
         ref = relative_to_workspace(path, workspace)
-    except ValueError:
+    except DEGRADE_ERRORS:
         return fallback
     resolved = Path(ref)
     if resolved.is_absolute() or ".." in resolved.parts:

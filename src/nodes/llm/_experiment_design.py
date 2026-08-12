@@ -12,7 +12,10 @@ referenced in `config/phases/*.yaml`.
 
 Every public function takes the calling node's `specialist` name so error
 messages attribute the bad response to the specialist that produced it —
-the same `node_name`-parameter convention `_research_common.py` uses.
+the same `node_name`-parameter convention `_research_common.py` uses. Every
+validation failure raises `ValueError` (never `OverflowError`, `TypeError`, or
+a bare `json` exception), so a future critic-retry wrapper has exactly one
+exception type to catch.
 """
 
 from __future__ import annotations
@@ -20,6 +23,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from pathlib import Path
 from typing import Any
 
 from src.nodes.llm.base import relative_to_workspace
@@ -34,6 +38,11 @@ CV_STRATEGY_REF = "validation/fold_config.json"
 # Where `feature_engineer` (T-022) writes `feature_spec.json` when
 # `state["feature_spec_path"]` has not been populated yet (Phase 5 exercised
 # standalone, ahead of a real Phase 4 run).
+# MUST stay in sync with `config/agents/feature_engineer.yaml`'s
+# `output_file_pattern`. Deliberately duplicated rather than read via
+# `load_agent_config("feature_engineer")`: resolving one agent's config at
+# another agent's runtime would couple two otherwise-independent nodes and make
+# this module fail whenever `feature_engineer`'s YAML is absent or renamed.
 FEATURE_SPEC_FALLBACK_PATTERN = "design/iteration_{iteration}/feature_spec.json"
 
 # The exact top-level key set of `experiments/exp_{iteration}/design.json`, in
@@ -58,6 +67,16 @@ PARAM_TYPES = ("int", "float", "categorical")
 # by *exact key name* (never substring), which is why `cv_strategy_ref` — the
 # pipeline-injected pointer to the frozen folds — is deliberately absent from this
 # set: whatever the LLM sends under that key is simply ignored and re-injected.
+#
+# HONEST SCOPE: this is a **tripwire against explicit CV redefinition**, not a
+# proof that the frozen folds are respected. A model can still carve its own
+# holdout out of the training fold through model-side hyperparameters that are
+# not CV keys at all (`validation_fraction`, `early_stopping`, `n_iter_no_change`,
+# `eval_set`, ...). Those are deliberately NOT banned here: early stopping against
+# the fold's own validation split is legitimate practice, and forbidding it would
+# be a modeling decision made unilaterally on behalf of T-025–T-028. Whoever
+# builds `coder` (T-029) / `score_evaluator` (T-031) must look for that escape
+# hatch at code-generation time — see the T-024 entry in `context/discoveries.md`.
 FORBIDDEN_CV_KEYS = frozenset(
     {
         "cv",
@@ -72,11 +91,31 @@ FORBIDDEN_CV_KEYS = frozenset(
     }
 )
 
+# A hyperparameter name becomes a Python keyword argument in the training code
+# `coder` (T-029) generates and `code_executor` runs, so it must be a plain
+# identifier: no quotes, newlines, parentheses, backslashes or dunder names of
+# unbounded length. Every real hyperparameter of the supported model families
+# satisfies this.
+_PARAM_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
+
+# `preprocessing` entries name a step, they do not express one: a token, never a
+# call. This shape (and NOT a closed vocabulary — which techniques are meaningful
+# is T-025–T-028's decision, not this module's) is what stops a code-shaped entry
+# such as `"StratifiedKFold(n_splits=3, shuffle=True)"` — a CV redefinition that
+# slips past the forbidden-*key* guard because it lives in a list value.
+_PREPROCESSING_STEP_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+
+# Beyond 2**53 an int is no longer exactly representable as an IEEE-754 double,
+# and `math.isfinite` raises `OverflowError` on a sufficiently large Python int
+# rather than returning `False` — range-check before the finiteness check so the
+# module's "always `ValueError`" contract holds.
+_MAX_EXACT_INT = 2**53
+
 _FOLD_SUMMARY_KEYS = ("strategy", "n_folds", "seed")
 _FOLDS_NOT_AVAILABLE = "(frozen fold config not yet available)"
 
 
-def strip_outer_fence(content: str, specialist: str) -> str:
+def _strip_outer_fence(content: str, specialist: str) -> str:
     """Strip a single outer fence wrapping the entire response, if present.
 
     Same outer-fence-anchoring approach as `_research_common._strip_outer_fence`/
@@ -100,18 +139,55 @@ def strip_outer_fence(content: str, specialist: str) -> str:
     return inner[:closing_idx].strip()
 
 
+def _parse_json(text: str, specialist: str) -> Any:
+    # A bare `except ValueError` rather than `except json.JSONDecodeError`:
+    # `json.loads` also raises a plain `ValueError` for an integer literal beyond
+    # CPython's 4300-digit conversion limit, which `JSONDecodeError` would miss
+    # and let escape unwrapped (and unattributed to a specialist).
+    try:
+        return json.loads(text)
+    except ValueError as e:
+        raise ValueError(f"{specialist} response is not valid JSON: {e}") from e
+
+
+def _slice_outermost_braces(text: str) -> str | None:
+    """The substring from the first `{` to the last `}`, or `None` if there isn't
+    one — the salvage window for a response that wrapped its JSON in prose."""
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end < start:
+        return None
+    return text[start : end + 1]
+
+
 def extract_json_object(content: str, specialist: str) -> dict[str, Any]:
     """Extract a top-level JSON object from an LLM response.
 
     Accepts raw JSON with no fence, or the entire response wrapped in a single
-    ```json or unlabeled ``` fence. Raises `ValueError` naming `specialist` if
-    the content isn't valid JSON or the top-level value isn't an object.
+    ```json or unlabeled ``` fence. If neither parses, retries **once** on the
+    substring between the first `{` and the last `}`, which salvages the common
+    "one sentence of preamble before/after the JSON" failure mode. Raises
+    `ValueError` naming `specialist` — with the *original* parse error, not the
+    salvage attempt's — when both parses fail or the top-level value isn't an
+    object.
+
+    This is deliberately more permissive than the sibling structured-output nodes
+    (`baseline_designer`, `feature_engineer`, `solution_architect`), which reject
+    outright: this validator has ~40 reject paths and sits on a node with no
+    retry wrapper (Phase 5's `code_critic` targets `coder`, not the specialists),
+    so a stray sentence must not abort the whole run.
     """
-    text = strip_outer_fence(content, specialist)
+    text = _strip_outer_fence(content, specialist)
     try:
-        data = json.loads(text)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"{specialist} response is not valid JSON: {e}") from e
+        data = _parse_json(text, specialist)
+    except ValueError as parse_error:
+        salvaged = _slice_outermost_braces(text)
+        if salvaged is None or salvaged == text:
+            raise
+        try:
+            data = _parse_json(salvaged, specialist)
+        except ValueError:
+            raise parse_error from None
     if not isinstance(data, dict):
         raise ValueError(f"{specialist} response must be a JSON object, got {type(data).__name__}")
     return data
@@ -156,7 +232,19 @@ def normalize_model_family(value: Any, allowed: dict[str, tuple[str, ...]], spec
 
 
 def _is_json_scalar(value: Any) -> bool:
-    return value is None or isinstance(value, (str, int, float, bool))
+    """A value that survives a `json.dump`/`JSON.parse` round trip unchanged.
+
+    Non-finite floats are excluded: `WorkspaceManager.write_json` uses
+    `json.dump`'s default `allow_nan=True`, which happily emits the bare
+    `Infinity`/`NaN` tokens — valid Python, but not RFC-8259, so the written
+    `design.json` would fail `JSON.parse` in the frontend and in any non-Python
+    consumer.
+    """
+    if value is None or isinstance(value, (str, bool, int)):
+        return True
+    if isinstance(value, float):
+        return math.isfinite(value)
+    return False
 
 
 def _reject_forbidden_cv_keys_in(mapping: Any, location: str, specialist: str) -> None:
@@ -179,63 +267,55 @@ def _reject_forbidden_cv_keys(data: dict[str, Any], specialist: str) -> None:
     specific ground rather than on some incidental schema error. Rejected loudly
     instead of silently dropped by the whitelist rebuild below, so "the design
     does not redefine CV" is an assertable behavior rather than vacuously true.
+    See `FORBIDDEN_CV_KEYS` for what this guard does and does not prove.
     """
     _reject_forbidden_cv_keys_in(data, "at the top level", specialist)
     _reject_forbidden_cv_keys_in(data.get("search_space"), "inside 'search_space'", specialist)
     _reject_forbidden_cv_keys_in(data.get("fixed_params"), "inside 'fixed_params'", specialist)
 
 
-def _validate_bound(
-    param: str, key: str, value: Any, param_type: str, specialist: str
+def _validate_param_name(name: Any, field: str, specialist: str) -> str:
+    if not isinstance(name, str) or not _PARAM_NAME_RE.fullmatch(name):
+        raise ValueError(
+            f"{specialist} response {field} key {name!r} is not a usable parameter name — "
+            f"it must match {_PARAM_NAME_RE.pattern}, because it becomes a Python keyword "
+            "argument in the generated training code"
+        )
+    return name
+
+
+def _validate_numeric(
+    param: str,
+    field: str,
+    value: Any,
+    param_type: str,
+    specialist: str,
+    *,
+    positive: bool = False,
 ) -> int | float:
+    """Validate one numeric field (`low`, `high` or `step`) of a `search_space`
+    entry. `positive=True` additionally requires `value > 0` (used for `step`)."""
+    label = f"{specialist} response 'search_space.{param}.{field}'"
     # `isinstance(True, int)` is True in Python, so booleans must be rejected
     # explicitly *before* the numeric check — same trap guarded in
     # `validation_strategist._validate_fold_payload`/`_research_common`.
     if isinstance(value, bool):
-        raise ValueError(
-            f"{specialist} response 'search_space.{param}.{key}' must be a number, "
-            f"got boolean {value!r}"
-        )
+        raise ValueError(f"{label} must be a number, got boolean {value!r}")
     if param_type == "int":
         if not isinstance(value, int):
-            raise ValueError(
-                f"{specialist} response 'search_space.{param}.{key}' must be an int for an "
-                f"'int' parameter, got {value!r}"
-            )
+            raise ValueError(f"{label} must be an int for an 'int' parameter, got {value!r}")
     elif not isinstance(value, (int, float)):
+        raise ValueError(f"{label} must be a number, got {value!r}")
+    if isinstance(value, int) and abs(value) > _MAX_EXACT_INT:
         raise ValueError(
-            f"{specialist} response 'search_space.{param}.{key}' must be a number, got {value!r}"
+            f"{label} is too large to be represented exactly (limit ±2**53), got {value!r}"
         )
     if not math.isfinite(value):
         # `json.loads` happily parses the bare `Infinity`/`NaN` tokens, so a
         # non-finite bound reaches this validator as a real float.
-        raise ValueError(
-            f"{specialist} response 'search_space.{param}.{key}' must be finite, got {value!r}"
-        )
-    return value
-
-
-def _validate_step(param: str, value: Any, param_type: str, specialist: str) -> int | float:
-    if isinstance(value, bool):
-        raise ValueError(
-            f"{specialist} response 'search_space.{param}.step' must be a number, "
-            f"got boolean {value!r}"
-        )
-    if param_type == "int":
-        if not isinstance(value, int):
-            raise ValueError(
-                f"{specialist} response 'search_space.{param}.step' must be an int for an "
-                f"'int' parameter, got {value!r}"
-            )
-    elif not isinstance(value, (int, float)):
-        raise ValueError(
-            f"{specialist} response 'search_space.{param}.step' must be a number, got {value!r}"
-        )
-    if not math.isfinite(value) or value <= 0:
-        raise ValueError(
-            f"{specialist} response 'search_space.{param}.step' must be a finite number "
-            f"greater than 0, got {value!r}"
-        )
+        raise ValueError(f"{label} must be finite, got {value!r}")
+    if positive and value <= 0:
+        raise ValueError(f"{label} must be greater than 0, got {value!r}")
     return value
 
 
@@ -269,8 +349,8 @@ def _validate_numeric_param(
                 f"{specialist} response 'search_space.{param}' of type {param_type!r} requires "
                 f"a {key!r} bound"
             )
-    low = _validate_bound(param, "low", spec["low"], param_type, specialist)
-    high = _validate_bound(param, "high", spec["high"], param_type, specialist)
+    low = _validate_numeric(param, "low", spec["low"], param_type, specialist)
+    high = _validate_numeric(param, "high", spec["high"], param_type, specialist)
     if low >= high:
         raise ValueError(
             f"{specialist} response 'search_space.{param}' requires 'low' < 'high', "
@@ -281,7 +361,17 @@ def _validate_numeric_param(
     if "log" in spec:
         validated["log"] = _validate_log(param, spec, low, specialist)
     if "step" in spec:
-        validated["step"] = _validate_step(param, spec["step"], param_type, specialist)
+        step = _validate_numeric(param, "step", spec["step"], param_type, specialist, positive=True)
+        if step > high - low:
+            # Optuna does not reject this: `suggest_int(low=1, high=2, step=5)`
+            # silently returns the same value on every trial, so the whole trial
+            # budget is spent never tuning the parameter. Same class of silent
+            # waste `_validate_log` rejects `log` + `step` for.
+            raise ValueError(
+                f"{specialist} response 'search_space.{param}' has 'step' {step!r} larger than "
+                f"its range ({high!r} - {low!r}); the parameter would collapse to a constant"
+            )
+        validated["step"] = step
     return validated
 
 
@@ -291,22 +381,24 @@ def _validate_choices(param: str, value: Any, specialist: str) -> list[Any]:
             f"{specialist} response 'search_space.{param}.choices' must be a non-empty list, "
             f"got {value!r}"
         )
-    seen: set[tuple[str, Any]] = set()
+    seen: set[Any] = set()
     for choice in value:
         if not _is_json_scalar(choice):
             raise ValueError(
-                f"{specialist} response 'search_space.{param}.choices' must contain only JSON "
-                f"scalars (string/number/boolean/null), got {choice!r}"
+                f"{specialist} response 'search_space.{param}.choices' must contain only finite "
+                f"JSON scalars (string/number/boolean/null), got {choice!r}"
             )
-        # Keyed by type name as well as value so `1` and `True` (equal and
-        # equally-hashed in Python) are not conflated into a false duplicate.
-        key = (type(choice).__name__, choice)
-        if key in seen:
+        # Deduped by *value*, so `1`, `1.0` and `True` count as the same choice:
+        # Optuna's `CategoricalDistribution` maps all three to the same internal
+        # index, so a trial that trained on `True` is recorded as `1` and the
+        # winning configuration is no longer reproducible by `coder`.
+        if choice in seen:
             raise ValueError(
                 f"{specialist} response 'search_space.{param}.choices' must not repeat a "
-                f"choice, got {choice!r} more than once"
+                f"choice, got {choice!r} more than once (values that compare equal — e.g. "
+                "1, 1.0 and true — are the same choice to Optuna)"
             )
-        seen.add(key)
+        seen.add(choice)
     return list(value)
 
 
@@ -343,7 +435,12 @@ def _validate_search_space(value: Any, specialist: str) -> dict[str, Any]:
             f"{specialist} response 'search_space' must not be empty — an experiment with no "
             "tunable parameters gives Optuna nothing to search"
         )
-    return {param: _validate_param_spec(param, spec, specialist) for param, spec in value.items()}
+    return {
+        _validate_param_name(param, "'search_space'", specialist): _validate_param_spec(
+            param, spec, specialist
+        )
+        for param, spec in value.items()
+    }
 
 
 def _validate_fixed_params(value: Any, specialist: str) -> dict[str, Any]:
@@ -352,17 +449,19 @@ def _validate_fixed_params(value: Any, specialist: str) -> dict[str, Any]:
             f"{specialist} response missing required object field 'fixed_params' (use an empty "
             f"object when there are none), got {value!r}"
         )
+    validated: dict[str, Any] = {}
     for key, item in value.items():
-        if _is_json_scalar(item):
-            continue
-        if isinstance(item, list) and all(_is_json_scalar(entry) for entry in item):
-            continue
-        raise ValueError(
-            f"{specialist} response 'fixed_params.{key}' must be a JSON scalar or a flat list "
-            f"of scalars — a nested object cannot be passed to the model constructor, "
-            f"got {item!r}"
-        )
-    return dict(value)
+        name = _validate_param_name(key, "'fixed_params'", specialist)
+        if not _is_json_scalar(item) and not (
+            isinstance(item, list) and all(_is_json_scalar(entry) for entry in item)
+        ):
+            raise ValueError(
+                f"{specialist} response 'fixed_params.{key}' must be a finite JSON scalar or a "
+                f"flat list of them — a nested object cannot be passed to the model "
+                f"constructor, and a non-finite number is not valid JSON, got {item!r}"
+            )
+        validated[name] = item
+    return validated
 
 
 def _validate_preprocessing(value: Any, specialist: str) -> list[str]:
@@ -372,9 +471,11 @@ def _validate_preprocessing(value: Any, specialist: str) -> list[str]:
             f"list when there are none), got {value!r}"
         )
     for i, item in enumerate(value):
-        if not isinstance(item, str) or not item.strip():
+        if not isinstance(item, str) or not _PREPROCESSING_STEP_RE.fullmatch(item):
             raise ValueError(
-                f"{specialist} response 'preprocessing[{i}]' must be a non-empty string, "
+                f"{specialist} response 'preprocessing[{i}]' must name a step as a lower_snake "
+                f"token matching {_PREPROCESSING_STEP_RE.pattern} (e.g. "
+                f"'native_categorical_handling') — not a call, an expression, or free prose, "
                 f"got {item!r}"
             )
     return list(value)
@@ -444,17 +545,22 @@ def read_fold_summary(state: LabState, workspace: WorkspaceManager) -> str:
     listing that would flood the context window with data the specialist has no
     use for (it designs against the folds, it does not re-derive them).
 
-    Degrades to a placeholder string, never raises, when
-    `state["validation_config_path"]` is unset, unreadable, or holds a non-object
-    payload — Phase 5 can legitimately be exercised standalone with no Phase 1 run
-    ahead of it (same convention as `baseline_designer._read_problem_definition`).
+    Never raises: an unset, unreachable, corrupt or non-object fold config all
+    degrade to a placeholder string, because Phase 5 can legitimately run with no
+    Phase 1 run ahead of it and a malformed upstream artifact must not abort the
+    whole graph (same convention as `baseline_designer._read_problem_definition`).
+    The caught set is deliberately wide: `OSError` covers a missing/unreadable
+    file, and `ValueError` covers both `json.JSONDecodeError` (truncated or empty
+    JSON) and `UnicodeDecodeError` (invalid UTF-8) — each a `ValueError` subclass
+    — as well as `WorkspaceManager._resolve`/`Path.relative_to` rejecting a path
+    that is absolute outside the workspace root or contains a `..` component.
     """
     path = state.get("validation_config_path") or ""
     if not path:
         return _FOLDS_NOT_AVAILABLE
     try:
         data = workspace.read_json(relative_to_workspace(path, workspace))
-    except OSError:
+    except (OSError, ValueError):
         return f"(unable to read frozen fold config at {path})"
     if not isinstance(data, dict):
         return _FOLDS_NOT_AVAILABLE
@@ -467,10 +573,24 @@ def resolve_feature_spec_ref(state: LabState, workspace: WorkspaceManager) -> st
     Uses `state["feature_spec_path"]` (re-relativized — an absolute host path
     baked into `design.json` breaks inside `code_executor`'s subprocess and inside
     the container, where the workspace is bind-mounted elsewhere) and falls back to
-    `FEATURE_SPEC_FALLBACK_PATTERN` for the current iteration when `feature_engineer`
-    hasn't run yet. Never returns `""`.
+    `FEATURE_SPEC_FALLBACK_PATTERN` for the current iteration whenever that path is
+    unset, unusable, or would escape the workspace.
+
+    Never raises and never returns `""`. The fallback also covers a resumed run
+    whose recorded absolute path no longer sits under the (moved, renamed or
+    differently bind-mounted) workspace root — `relative_to_workspace` raises
+    `ValueError` there — and a stored `..` traversal, which must never reach
+    `design.json` since `coder` resolves this pointer relative to the workspace.
     """
+    fallback = FEATURE_SPEC_FALLBACK_PATTERN.format(iteration=state["current_iteration"])
     path = state.get("feature_spec_path") or ""
-    if path:
-        return relative_to_workspace(path, workspace)
-    return FEATURE_SPEC_FALLBACK_PATTERN.format(iteration=state["current_iteration"])
+    if not path:
+        return fallback
+    try:
+        ref = relative_to_workspace(path, workspace)
+    except ValueError:
+        return fallback
+    resolved = Path(ref)
+    if resolved.is_absolute() or ".." in resolved.parts:
+        return fallback
+    return ref

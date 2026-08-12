@@ -3,7 +3,7 @@ id: T-024
 phase: 2
 agent: pipeline-agent
 depends_on: [T-010]
-status: in-progress
+status: done
 folders: ["src/nodes/llm/", "config/agents/", "config/prompts/"]
 outputs: [classical_ml_specialist node, experiment design with Optuna search space]
 size: S

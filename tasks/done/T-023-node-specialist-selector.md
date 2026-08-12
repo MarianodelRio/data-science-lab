@@ -3,7 +3,7 @@ id: T-023
 phase: 2
 agent: pipeline-agent
 depends_on: [T-011]
-status: pr-open
+status: done
 folders: ["src/nodes/compute/", "config/phases/"]
 outputs: [specialist_selector compute node]
 size: S

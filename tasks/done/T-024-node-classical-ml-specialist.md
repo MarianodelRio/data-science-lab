@@ -8,7 +8,7 @@ folders: ["src/nodes/llm/", "config/agents/", "config/prompts/"]
 outputs: [classical_ml_specialist node, experiment design with Optuna search space]
 size: S
 branch: feature/T-024-node-classical-ml-specialist
-pr: ~
+pr: "https://github.com/MarianodelRio/data-science-lab/pull/26"
 ---
 
 ## Node: classical_ml_specialist (Pipeline Phase 5)

@@ -1128,9 +1128,16 @@ and T-024's own table is node-local, so the shared module is already parameteriz
 Editing it would put the contract that T-026–T-028 inherit and T-029 consumes into a single-node PR.
 `node` (Neural Oblivious Decision Ensembles) is kept as the canonical token for literature fidelity
 and symmetry with the other two despite colliding lexically with the pipeline's own "node"
-vocabulary; whole-phrase word-boundary matching makes it safe (`nodes`, `NODEv2`, `node_count` do
-not match), and its spelled-out aliases sit in the same family so `"NODE (Neural Oblivious Decision
-Ensembles)"` resolves to one family rather than reading as ambiguous.
+vocabulary. Word-boundary matching keeps the obvious near-misses out (`nodes`, `NODEv2`), and its
+spelled-out aliases sit in the same family so `"NODE (Neural Oblivious Decision Ensembles)"` resolves
+to one family rather than reading as ambiguous. Correction, flagged by review: the token is **not**
+narrower than that — `normalize_model_family` collapses `-`/`_` to spaces *before* matching, so
+`node_count`/`node-count` become `"node count"` and DO match. The consequence is over-matching rather
+than mis-matching (a descriptive mention of "node" in a single-family answer such as `"TabNet
+(attentive node selection)"` is rejected as ambiguous, not silently resolved to the wrong family),
+which is the safe failure direction given `coder` dispatches on the written value. Both behaviors are
+now pinned by tests. T-026–T-028 reusing this reasoning should note the separator-collapse
+interaction when choosing short canonical tokens.
 Affects: `src/nodes/llm/deep_learning_specialist.py` (`_MODEL_FAMILIES`).
 Discarded: `neural_oblivious_decision_ensembles` as the canonical key — unwieldy in `coder`'s
 dispatch and inconsistent with `tabnet`/`mlp`. Also discarded: adding the neural families to a shared

@@ -11,15 +11,19 @@ output path, injected fields, prompt assembly, its own neural model-family
 table, and the two neural-specific rules that live in the prompt rather than in
 the validator (fit-per-fold preprocessing, scalar-only architecture params).
 
-Every model-family case is parametrized over the **imported production table**,
-never a hand-written copy: T-024's review round found that a copied table let
-adversarial mutation of the real one leave the suite green.
+Model-family coverage is deliberately two-layered: a parametrization derived from
+the **imported production table** (so every real alias is exercised and the table
+cannot drift away from the tests, the defect T-024's review round found in its own
+hand-copied table), plus hand-written literal pins asserting the real table still
+*contains* the aliases this node promises (so deleting one fails a test instead of
+merely deleting a test case). See `_REQUIRED_ALIASES` for why both are needed.
 """
 
 from __future__ import annotations
 
 import copy
 import json
+import re
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -30,7 +34,10 @@ from langchain_core.messages import AIMessage
 from src.config.loaders import load_agent_config
 from src.config.prompts import PromptLoader
 from src.config.settings import ContextConfig, Settings
-from src.nodes.llm._experiment_design import FORBIDDEN_CV_KEYS
+from src.nodes.llm._experiment_design import (
+    _PREPROCESSING_STEP_RE,
+    FORBIDDEN_CV_KEYS,
+)
 from src.nodes.llm.deep_learning_specialist import (
     _MODEL_FAMILIES,
     DeepLearningSpecialistNode,
@@ -79,8 +86,42 @@ FOLD_CONFIG = {
     "fold_indices": [{"train": [111111], "val": [222222]}],
 }
 
-# (alias the LLM might write, canonical family it must resolve to) for every alias
-# in the real table. Deleting, shrinking or typo'ing a production alias fails a test.
+# Hand-written literal expectations, deliberately NOT derived from the production
+# table: the real `_MODEL_FAMILIES` must contain *at least* these, which is what
+# `test_production_table_contains_every_required_alias` asserts.
+#
+# Both this and the derived list below are kept, because each catches what the other
+# misses. T-024's review round found tests parametrized over a hand-*copied* table,
+# which let the real one drift freely — so the derived list exists to keep every real
+# alias behaviorally exercised. But a derived list cannot catch a *deletion*: removing
+# an alias merely removes a test case. Verified by mutating the real table — dropping
+# `"multi layer perceptron"` or the spelled-out NODE aliases left the suite green,
+# while `"Multi-Layer Perceptron"` became a hard `ValueError` in production (this node
+# has no retry wrapper). These pins make deletions and typos fail. A superset
+# assertion rather than equality, so adding an alias stays a non-breaking change.
+_REQUIRED_ALIASES: dict[str, tuple[str, ...]] = {
+    "tabnet": ("tabnet", "tab net"),
+    "node": (
+        "node",
+        "neural oblivious decision ensembles",
+        "neural oblivious decision ensemble",
+    ),
+    "mlp": (
+        "mlp",
+        "multilayer perceptron",
+        "multi layer perceptron",
+        "feedforward network",
+        "feed forward network",
+    ),
+}
+_REQUIRED_ALIAS_CASES = [
+    (alias, family) for family, aliases in _REQUIRED_ALIASES.items() for alias in aliases
+]
+
+# (alias the LLM might write, canonical family it must resolve to) for every alias in
+# the real table. Catches a renamed canonical key, a typo'd alias, and an alias that is
+# unreachable after normalization or that matches two families — none of which the
+# hand-written pins above would notice.
 _ALIAS_CASES = [(alias, family) for family, aliases in _MODEL_FAMILIES.items() for alias in aliases]
 
 
@@ -361,6 +402,40 @@ def test_model_family_table_is_exactly_the_three_neural_families() -> None:
     assert set(_MODEL_FAMILIES) == {"tabnet", "node", "mlp"}
 
 
+def test_production_table_contains_every_required_alias() -> None:
+    """Deleting or typo'ing an alias in the production table fails here.
+
+    The behavioral parametrization below is *derived* from the real table, so a
+    deletion silently removes a case instead of failing one; this pin closes that
+    hole. Superset, not equality — adding an alias is a non-breaking change.
+    """
+    for family, required in _REQUIRED_ALIASES.items():
+        assert family in _MODEL_FAMILIES
+        missing = set(required) - set(_MODEL_FAMILIES[family])
+        assert not missing, f"{family} lost required aliases: {sorted(missing)}"
+
+
+@pytest.mark.parametrize(("alias", "expected_family"), _REQUIRED_ALIAS_CASES)
+def test_every_required_alias_resolves_to_its_family(
+    patched_llm_factory,
+    patched_settings,
+    mock_workspace_manager,
+    mock_llm: MagicMock,
+    alias: str,
+    expected_family: str,
+) -> None:
+    """Same behavioral check as the derived parametrization, but driven from the
+    hand-written literals — so it keeps running even if the real table loses an
+    entry, which is exactly the mutation the derived version cannot see."""
+    mock_llm.invoke.return_value = AIMessage(content=_design(model_family=alias))
+    _, workspace_instance = mock_workspace_manager
+    node = DeepLearningSpecialistNode()
+
+    node(_build_state())
+
+    assert _written_design(workspace_instance)["model_family"] == expected_family
+
+
 @pytest.mark.parametrize(("alias", "expected_family"), _ALIAS_CASES)
 def test_every_production_alias_resolves_to_its_family(
     patched_llm_factory,
@@ -395,6 +470,46 @@ def test_spelled_out_node_with_acronym_resolves_to_one_family(
     node(_build_state())
 
     assert _written_design(workspace_instance)["model_family"] == "node"
+
+
+@pytest.mark.parametrize("family", ["node_count", "node-count", "graph node"])
+def test_separator_collapse_makes_node_match_more_than_the_bare_acronym(
+    patched_llm_factory,
+    patched_settings,
+    mock_workspace_manager,
+    mock_llm: MagicMock,
+    family: str,
+) -> None:
+    """`normalize_model_family` collapses `-`/`_` to spaces before matching, so the
+    short `node` token matches more broadly than word boundaries alone suggest.
+    Pinned because that breadth is the stated justification for keeping `node` as the
+    canonical token, and because the failure direction matters: over-matching yields a
+    loud ambiguity rejection (see the test below), never a silent wrong family."""
+    mock_llm.invoke.return_value = AIMessage(content=_design(model_family=family))
+    _, workspace_instance = mock_workspace_manager
+    node = DeepLearningSpecialistNode()
+
+    node(_build_state())
+
+    assert _written_design(workspace_instance)["model_family"] == "node"
+
+
+def test_single_family_answer_mentioning_node_as_a_word_is_rejected_as_ambiguous(
+    patched_llm_factory, patched_settings, mock_workspace_manager, mock_llm: MagicMock
+) -> None:
+    """The cost of the short `node` token: a one-family answer that uses "node"
+    descriptively is rejected rather than resolved. Loud beats wrong here, since
+    `coder` (T-029) dispatches on the written value."""
+    mock_llm.invoke.return_value = AIMessage(
+        content=_design(model_family="TabNet (attentive node selection)")
+    )
+    _, workspace_instance = mock_workspace_manager
+    node = DeepLearningSpecialistNode()
+
+    with pytest.raises(ValueError, match="ambiguous"):
+        node(_build_state())
+
+    workspace_instance.write_json.assert_not_called()
 
 
 @pytest.mark.parametrize("family", ["mlpclassifier", "tabnetv2", "nodes"])
@@ -506,20 +621,22 @@ def test_fixed_flat_list_hidden_dims_is_accepted(
     assert _written_design(workspace_instance)["fixed_params"]["hidden_dims"] == [256, 128]
 
 
-def test_preprocessing_fit_per_fold_tokens_are_valid_step_names(
-    patched_llm_factory, patched_settings, mock_workspace_manager
-) -> None:
-    """The prompt tells the LLM to make fit scope visible in the token itself
-    (`standard_scaler_fitted_per_fold`); those tokens must satisfy the shared
-    lower_snake shape constraint, or the advice would break every design."""
-    _, workspace_instance = mock_workspace_manager
-    node = DeepLearningSpecialistNode()
+def test_every_preprocessing_token_the_prompt_recommends_satisfies_the_validator() -> None:
+    """The prompt tells the LLM to encode fit scope in the token itself
+    (`standard_scaler_fitted_per_fold`), which pushes tokens toward the shared
+    64-character limit. If any recommended token failed `_PREPROCESSING_STEP_RE`, the
+    prompt's own advice would produce designs the validator rejects — a self-inflicted
+    outage on a node with no retry wrapper. Read from the real prompt, so adding a
+    longer recommendation later fails here rather than in production.
+    """
+    prompt = PromptLoader().load("deep_learning_specialist", "v1")
+    recommended = re.findall(r"`([a-z][a-z0-9_]*_per_fold|categorical_embeddings)`", prompt)
 
-    node(_build_state())
-
-    written = _written_design(workspace_instance)
-    assert written["preprocessing"] == VALID_DESIGN["preprocessing"]
-    assert "standard_scaler_fitted_per_fold" in written["preprocessing"]
+    assert recommended, "prompt no longer recommends any fit-scope-bearing token"
+    for token in set(recommended):
+        assert _PREPROCESSING_STEP_RE.fullmatch(token), (
+            f"prompt recommends {token!r} ({len(token)} chars), which the shared validator rejects"
+        )
 
 
 # -- prompt assembly --

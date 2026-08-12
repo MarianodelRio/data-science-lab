@@ -59,8 +59,14 @@ _SPECIALIST = "deep_learning_specialist"
 #
 # `node` (Neural Oblivious Decision Ensembles) is a deliberately short canonical
 # token, kept for literature fidelity and symmetry with the other two. Word-
-# boundary matching makes it safe: `nodes`, `NODEv2` and `node_count` do not
-# match it. Its spelled-out aliases belong to the same family, so
+# boundary matching keeps the obvious near-misses out: `nodes` and `NODEv2` do not
+# match. It is NOT narrower than that, though — `normalize_model_family` collapses
+# `-`/`_` to spaces *before* matching, so `node_count` and `node-count` both become
+# `"node count"` and do match. The practical consequence is over-matching, not
+# mis-matching: a single-family answer that happens to use "node" as a word (e.g.
+# `"TabNet (attentive node selection)"`) is rejected as ambiguous rather than
+# silently resolved to the wrong family, which is the safe direction to fail.
+# Its spelled-out aliases belong to the same family, so
 # `"NODE (Neural Oblivious Decision Ensembles)"` resolves to one family rather
 # than being flagged ambiguous — while a genuinely two-family answer like
 # `"MLP node"` is still rejected, which is the intended outcome.
@@ -88,10 +94,12 @@ def _read_solution_plan(state: LabState, workspace: WorkspaceManager) -> str:
     per-module-duplication convention for these upstream-artifact readers
     (T-020/T-022/T-024 decision-log entries).
 
-    This is the third copy carrying the wider `DEGRADE_ERRORS` catch. Hoisting it
-    would mean editing `_experiment_design.py`, which is frozen for this task
-    (it is the contract T-026–T-028 inherit and T-029 consumes), and importing it
-    from a sibling node module is the cross-module dependency T-024 explicitly
+    This is the third copy of the helper overall, but only the **second** carrying
+    the wider `DEGRADE_ERRORS` catch — `feature_engineer._read_solution_plan` still
+    catches `OSError` alone, as the open `context/discoveries.md` entry records.
+    Hoisting it would mean editing `_experiment_design.py`, which is frozen for this
+    task (it is the contract T-026–T-028 inherit and T-029 consumes), and importing
+    it from a sibling node module is the cross-module dependency T-024 explicitly
     discarded — see `context/discoveries.md`.
     """
     path = state.get("solution_plan_path") or ""

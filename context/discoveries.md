@@ -402,6 +402,14 @@ Cross-reference: T-047 introduces `fit_scope: global | per_fold` on `feature_spe
 classifies scalers/normalizers as mandatorily `per_fold`. These are two schemas describing the same
 property — whoever lands T-047 or T-029 should converge them on one fit-scope vocabulary rather than
 letting `feature_spec.json` and `design.json` grow separate ones.
+Two concrete holes verified by T-025's security review, both worth pinning down at T-029 time
+(neither is a T-025 defect — both are properties of the shared T-024 contract, but neural designs are
+what make them reachable, since they are the designs that actually want a validation split):
+(1) `FORBIDDEN_CV_KEYS` is **case-sensitive** — `fixed_params: {"Shuffle": true}` is accepted and
+reaches `design.json` while `"shuffle"` is rejected;
+(2) the non-CV-key holdout escape hatch has concrete names: `validation_split` (the Keras kwarg) and
+`val_size` both pass every guard, because only `validation` and `test_size` are banned. T-025
+mitigates in prompt prose ("Never carve your own holdout") but nothing enforces it.
 Status: open
 
 ## OPEN — 2026-08-12 [pipeline-agent (T-025) → pipeline-agent (T-029 coder), infra-agent (`pyproject.toml`)]
@@ -436,4 +444,27 @@ The remaining conflicts are ordinary append/table merges — keep both rows, kee
 Note for future task selection: this pattern repeats for T-027 and T-028. Landing the five
 specialists in parallel guarantees this conflict every time; sequencing them, or moving the
 NoOp-fallback test to a specialist that will never land, would remove it permanently.
+Status: open
+
+## OPEN — 2026-08-12 [pipeline-agent (T-025) → pipeline-agent (T-026, T-027, T-028, T-029)]
+**The selector's routing vocabulary and the specialists' `model_family` vocabularies are disjoint, and
+a specialist that echoes the plan's own wording aborts the phase.** `specialist_selector` routes to
+`deep_learning_specialist` on `_DEEP_LEARNING_KEYWORDS` = `neural`, `cnn`, `rnn`, `deep learning`,
+`pytorch`, `lstm`. But T-025's `_MODEL_FAMILIES` only accepts `tabnet`/`node`/`mlp` and their aliases,
+so **none** of `neural network`, `neural net`, `dnn`, `deep neural network`, `fully connected network`
+resolves — each is a hard `ValueError`. The same asymmetry exists for `classical_ml_specialist`
+(routed by `gradient boosting`, which is not an accepted family either), so this is template-inherited,
+not new.
+Why it matters more than it looks: these nodes have **no retry wrapper** — Phase 5's `code_critic`
+targets `coder`, not the specialists (`extract_json_object`'s docstring says so explicitly). So an LLM
+that answers with the plan's own phrasing (`"model_family": "neural network"`) aborts the phase with no
+artifact at all, which is precisely the outcome each specialist prompt's "never refuse / design
+something defensible, always" section exists to prevent. Prompt wording is the only thing standing
+between the two vocabularies.
+Not changed in T-025: adding generic aliases means deciding what a generic answer *maps to* (mapping
+`"neural network"` → `mlp` is coherent with this prompt's own "prefer the lowest-capacity family"
+guidance, but it is a modeling decision), and the fix should be uniform across all five specialists
+rather than invented per node. Options for whoever takes it: (a) add generic aliases per specialist,
+(b) give the specialists a retry wrapper, or (c) have `coder`/a critic treat an unresolvable
+`model_family` as recoverable. Worth deciding once, for all five.
 Status: open

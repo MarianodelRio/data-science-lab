@@ -402,17 +402,22 @@ def test_model_family_table_is_exactly_the_three_neural_families() -> None:
     assert set(_MODEL_FAMILIES) == {"tabnet", "node", "mlp"}
 
 
-def test_production_table_contains_every_required_alias() -> None:
-    """Deleting or typo'ing an alias in the production table fails here.
+def test_production_table_matches_the_required_aliases_exactly() -> None:
+    """Any change to the alias table — deletion, typo, or addition — fails here.
 
-    The behavioral parametrization below is *derived* from the real table, so a
-    deletion silently removes a case instead of failing one; this pin closes that
-    hole. Superset, not equality — adding an alias is a non-breaking change.
+    Equality, not a superset, and deliberately so. A derived parametrization cannot
+    see a deletion (it just loses a case), and a superset pin cannot see an
+    *addition* — and an over-broad addition is the more dangerous of the two: adding
+    `"net"` to `tabnet` would make `"neural net"`, `"deep neural net"` and
+    `"a residual net"` all silently write `model_family: "tabnet"`, which `coder`
+    (T-029) dispatches on. Verified by mutation: that addition left the suite green
+    under a superset assertion.
+
+    The cost is that a legitimate new alias must be added in two places. That is the
+    intended friction — widening what an LLM string maps to changes what `coder`
+    builds, so it should be a deliberate edit, not a one-line drive-by.
     """
-    for family, required in _REQUIRED_ALIASES.items():
-        assert family in _MODEL_FAMILIES
-        missing = set(required) - set(_MODEL_FAMILIES[family])
-        assert not missing, f"{family} lost required aliases: {sorted(missing)}"
+    assert _MODEL_FAMILIES == _REQUIRED_ALIASES
 
 
 @pytest.mark.parametrize(("alias", "expected_family"), _REQUIRED_ALIAS_CASES)
@@ -470,6 +475,47 @@ def test_spelled_out_node_with_acronym_resolves_to_one_family(
     node(_build_state())
 
     assert _written_design(workspace_instance)["model_family"] == "node"
+
+
+@pytest.mark.parametrize(
+    "family",
+    [
+        "neural net",
+        "deep neural net",
+        "a residual net",
+        "neural network",
+        "dnn",
+        "fully connected network",
+    ],
+)
+def test_generic_neural_phrasings_do_not_silently_map_to_a_family(
+    patched_llm_factory,
+    patched_settings,
+    mock_workspace_manager,
+    mock_llm: MagicMock,
+    family: str,
+) -> None:
+    """A generic phrasing must fail loudly rather than resolve to an arbitrary family.
+
+    This is the negative half of the alias contract. An over-broad alias (e.g. `"net"`
+    on `tabnet`) would make these resolve silently, and `coder` (T-029) would build the
+    wrong architecture with nothing flagging it.
+
+    Note what this test does *not* claim: that rejecting these is ideal. It is a known
+    gap — `specialist_selector` routes here on the keyword `neural`, and these nodes
+    have no retry wrapper, so a plan-echoing answer aborts the phase with no artifact
+    (see the OPEN entry in `context/discoveries.md`). If a future task decides generic
+    phrasings should map to `mlp`, it must change this test deliberately — which is the
+    point of pinning it.
+    """
+    mock_llm.invoke.return_value = AIMessage(content=_design(model_family=family))
+    _, workspace_instance = mock_workspace_manager
+    node = DeepLearningSpecialistNode()
+
+    with pytest.raises(ValueError, match="not a supported model family"):
+        node(_build_state())
+
+    workspace_instance.write_json.assert_not_called()
 
 
 @pytest.mark.parametrize("family", ["node_count", "node-count", "graph node"])
@@ -559,6 +605,32 @@ def test_ambiguous_two_family_response_rejected(
 # -- prompt <-> validator agreement (the two neural-specific rules) --
 
 
+def test_prompt_contains_exactly_one_parseable_json_example() -> None:
+    """Only the *first* ```json block is pinned by the tests below, so a second,
+    contradicting worked example would reach the model unchecked (adversarial review
+    appended one declaring `"tabnet or mlp"`, duplicate `choices` and a forbidden
+    `shuffle`, and every test stayed green).
+
+    The § Search-space grammar block is intentionally not parseable — it shows
+    `<int>`/`<number>` placeholders — so "exactly one block that parses" is the
+    invariant, not "exactly one block".
+    """
+    prompt = PromptLoader().load("deep_learning_specialist", "v1")
+    blocks = re.findall(r"```json\n(.*?)\n```", prompt, flags=re.DOTALL)
+
+    parseable = []
+    for block in blocks:
+        try:
+            parseable.append(json.loads(block))
+        except ValueError:
+            continue
+
+    assert len(parseable) == 1, (
+        f"expected exactly one parseable ```json example, found {len(parseable)} "
+        f"(of {len(blocks)} json blocks) — a second example is not validated by any test"
+    )
+
+
 def test_prompt_json_example_matches_this_modules_payload() -> None:
     """Keeps `VALID_DESIGN` — reused by every mocked response here and by the
     phase-5 integration mock — in sync with what the prompt actually asks for."""
@@ -621,21 +693,49 @@ def test_fixed_flat_list_hidden_dims_is_accepted(
     assert _written_design(workspace_instance)["fixed_params"]["hidden_dims"] == [256, 128]
 
 
+# Backticked strings in the prompt's § Preprocessing scope section that are deliberately
+# NOT step-name recommendations: the shape regex itself, the two call forms the section
+# shows as *rejected*, and a filename. Everything else backticked in that section is read
+# as a recommended token and must satisfy `_PREPROCESSING_STEP_RE`.
+#
+# Hand-written on purpose. The earlier version of this test extracted tokens with a regex
+# that only matched already-conforming shapes, so it was self-satisfying: adding
+# `PowerTransformer_fitted_per_fold`, `quantile-transform-fitted-per-fold`, or a 79-char
+# token left it green while making the prompt recommend designs the validator rejects
+# (found by the adversarial review). Inverting it — extract everything, allowlist the
+# known non-tokens — means a new bad recommendation fails by default.
+_PROMPT_NON_TOKEN_MENTIONS = frozenset(
+    {
+        "^[a-z][a-z0-9_]{0,63}$",
+        "StandardScaler().fit(X)",
+        "train_test_split(X, y, test_size=0.2)",
+        "feature_spec.json",
+    }
+)
+
+
 def test_every_preprocessing_token_the_prompt_recommends_satisfies_the_validator() -> None:
-    """The prompt tells the LLM to encode fit scope in the token itself
+    """No token the prompt recommends may be one the shared validator rejects.
+
+    The prompt tells the LLM to encode fit scope in the token itself
     (`standard_scaler_fitted_per_fold`), which pushes tokens toward the shared
-    64-character limit. If any recommended token failed `_PREPROCESSING_STEP_RE`, the
-    prompt's own advice would produce designs the validator rejects — a self-inflicted
-    outage on a node with no retry wrapper. Read from the real prompt, so adding a
-    longer recommendation later fails here rather than in production.
+    64-character limit and toward CamelCase transformer names. If a recommended token
+    failed `_PREPROCESSING_STEP_RE`, the prompt's own advice would produce designs the
+    validator rejects — a self-inflicted outage, on a node with no retry wrapper.
     """
     prompt = PromptLoader().load("deep_learning_specialist", "v1")
-    recommended = re.findall(r"`([a-z][a-z0-9_]*_per_fold|categorical_embeddings)`", prompt)
+    start = prompt.index("## Preprocessing scope")
+    section = prompt[start : prompt.index("\n## ", start + 1)]
+    backticked = set(re.findall(r"`([^`\n]+)`", section))
 
-    assert recommended, "prompt no longer recommends any fit-scope-bearing token"
-    for token in set(recommended):
+    candidates = backticked - _PROMPT_NON_TOKEN_MENTIONS
+    assert candidates, "prompt no longer recommends any preprocessing token"
+    for token in sorted(candidates):
         assert _PREPROCESSING_STEP_RE.fullmatch(token), (
-            f"prompt recommends {token!r} ({len(token)} chars), which the shared validator rejects"
+            f"§ Preprocessing scope presents {token!r} ({len(token)} chars) as a step token, "
+            f"but the shared validator rejects it (must match "
+            f"{_PREPROCESSING_STEP_RE.pattern}). If it is not a recommendation, add it to "
+            "_PROMPT_NON_TOKEN_MENTIONS."
         )
 
 
@@ -651,16 +751,26 @@ def test_build_messages_includes_plan_and_fold_summary(
 
     node(_build_state())
 
-    last_message = mock_llm.invoke.call_args[0][0][-1]
-    assert "## Solution plan" in last_message.content
-    assert "neural network" in last_message.content
-    assert "## Frozen CV folds" in last_message.content
-    assert "stratified_kfold" in last_message.content
-    assert "## Feature spec reference" in last_message.content
+    content = mock_llm.invoke.call_args[0][0][-1].content
+
+    # Assert each value sits under its OWN heading, not merely that both strings are
+    # present somewhere: swapping the two labels left the suite green (adversarial
+    # review), which would feed the LLM the fold summary as the solution plan.
+    plan_section = content.split("## Solution plan")[1].split("## Frozen CV folds")[0]
+    folds_section = content.split("## Frozen CV folds")[1].split("## Feature spec reference")[0]
+    spec_section = content.split("## Feature spec reference")[1]
+
+    assert "neural network" in plan_section
+    assert "stratified_kfold" not in plan_section
+    assert "stratified_kfold" in folds_section
+    assert "neural network" not in folds_section
+    # Dropping the value while keeping the heading also survived — pin the value.
+    assert "design/iteration_0/feature_spec.json" in spec_section
+
     # The per-row fold assignments are never injected — they would flood the
     # context window with data the specialist has no use for.
-    assert "fold_indices" not in last_message.content
-    assert "222222" not in last_message.content
+    assert "fold_indices" not in content
+    assert "222222" not in content
 
 
 def test_build_messages_handles_missing_upstream_paths(
@@ -707,6 +817,41 @@ def test_build_messages_handles_corrupt_upstream_json(
     content = mock_llm.invoke.call_args[0][0][-1].content
     assert "unable to read solution plan" in content
     assert "unable to read frozen fold config" in content
+
+
+def test_build_messages_handles_pathologically_nested_upstream_json(
+    patched_llm_factory, patched_settings, mock_workspace_manager, mock_llm: MagicMock
+) -> None:
+    """`RecursionError` is a `RuntimeError`, so neither `OSError` nor `ValueError`
+    catches it — which is why `_read_solution_plan` catches the wider `DEGRADE_ERRORS`.
+    Narrowing that catch to `(OSError, ValueError)` left the suite green (adversarial
+    review) while a deeply nested `solution_plan.json` killed the run.
+    """
+    _, workspace_instance = mock_workspace_manager
+    workspace_instance.read_json.side_effect = RecursionError("too deep")
+    node = DeepLearningSpecialistNode()
+
+    node(_build_state())
+
+    assert "unable to read solution plan" in mock_llm.invoke.call_args[0][0][-1].content
+    workspace_instance.write_json.assert_called_once()
+
+
+def test_build_messages_handles_non_string_upstream_path(
+    patched_llm_factory, patched_settings, mock_workspace_manager, mock_llm: MagicMock
+) -> None:
+    """A non-string path field would raise `TypeError` out of `Path()` — not in
+    `DEGRADE_ERRORS` — so `_read_solution_plan` guards with `isinstance` first.
+    Dropping that guard left the suite green (adversarial review)."""
+    _, workspace_instance = mock_workspace_manager
+    state = _build_state()
+    state["solution_plan_path"] = 42  # type: ignore[typeddict-item]
+    node = DeepLearningSpecialistNode()
+
+    node(state)
+
+    assert "not yet available" in mock_llm.invoke.call_args[0][0][-1].content
+    workspace_instance.write_json.assert_called_once()
 
 
 def test_build_messages_handles_foreign_absolute_upstream_paths(

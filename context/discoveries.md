@@ -444,6 +444,39 @@ The remaining conflicts are ordinary append/table merges — keep both rows, kee
 Note for future task selection: this pattern repeats for T-027 and T-028. Landing the five
 specialists in parallel guarantees this conflict every time; sequencing them, or moving the
 NoOp-fallback test to a specialist that will never land, would remove it permanently.
+Update (T-025's adversarial review, verified): T-026 is PR #27 and is **already open**, so T-025
+merges second and re-pointed the two tests to `timeseries_specialist` (T-027) within its own PR
+rather than leaving it to whoever merges after. Two things the original note got wrong or missed:
+(1) the sharp part merges **without a conflict marker** — a real `git merge` of the two branches
+conflicts only on the prose comment and the two *added* landed-case tests, while the two edited test
+*bodies* merge silently as one side's version. Resolving the visible hunks and keeping both tests
+ships a stale route; with fake API keys set, the merged tree produced a real `401` from a live
+provider call inside a unit test. Whoever lands T-027 must therefore diff the test bodies explicitly,
+not just resolve markers.
+(2) T-026 **does** modify `src/nodes/llm/_experiment_design.py` — it hoists `read_solution_plan` into
+the shared module. No functional conflict with T-025 (which only imports from that module), but once
+T-026 lands there will be four copies of that reader on main, and `deep_learning_specialist`'s own
+copy becomes the redundant one: it should switch to the shared `read_solution_plan`, and
+`classical_ml_specialist`/`feature_engineer` should follow. That belongs to the `base.py`/reader hoist
+task already logged above, not to a node task.
+Status: open
+
+## OPEN — 2026-08-12 [pipeline-agent (T-025) → pipeline-agent (T-029 coder), whoever adds a critic-retry wrapper]
+**`_experiment_design.py`'s "every failure is a `ValueError`" contract does not hold on the
+LLM-response path.** `_parse_json` catches only `ValueError`, but `json.loads` raises
+`RecursionError` (a `RuntimeError`) on a sufficiently nested payload — measured threshold **994
+levels, ~6 KB**, well within any model's output budget. Driven through the real
+`deep_learning_specialist` with a 5000-deep response: the exception escapes as `RecursionError`, does
+**not** name the specialist, and nothing is written.
+This is an asymmetry rather than an oversight: the module already guards `RecursionError` on the
+*upstream-read* path through `DEGRADE_ERRORS` (tested at depth 100 000), with a comment explaining the
+~993-level threshold. The response path never got the same treatment. Identical for
+`classical_ml_specialist`, so it is a property of the T-024 contract, not a T-025 defect — but it
+matters specifically because these nodes have no retry wrapper today, and a future wrapper written to
+catch `ValueError` (exactly what the module docstring promises is sufficient) will not catch this.
+Fix when `_experiment_design.py` is next legitimately opened: add `RecursionError` to `_parse_json`'s
+catch, or wrap `extract_json_object`'s body. Not done here — that module is frozen for T-025, and
+T-026 is concurrently modifying it.
 Status: open
 
 ## OPEN — 2026-08-12 [pipeline-agent (T-025) → pipeline-agent (T-026, T-027, T-028, T-029)]

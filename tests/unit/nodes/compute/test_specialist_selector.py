@@ -561,24 +561,31 @@ def test_non_dict_specialist_return_value_becomes_empty_dict(tmp_path) -> None:
 
 # -- real, un-mocked resolve_node: NoOpNode for specialists that have not landed yet --
 #
-# `classical_ml_specialist` (T-024) and `deep_learning_specialist` (T-025) have both landed, so
-# neither is a NoOpNode any more and neither may be routed to here: dispatching to a real LLMNode
-# would construct a chat model and attempt a live API call, which unit tests may never do. These
-# two tests therefore route to a specialist that is still unimplemented (`nlp_specialist`, T-026),
-# which the 4-branch precedence in `_select_by_signal` reaches before the deep-learning branch. See
-# `test_real_resolve_node_resolves_landed_classical_ml_specialist` and
-# `test_real_resolve_node_resolves_landed_deep_learning_specialist` below for the landed cases.
+# `classical_ml_specialist` (T-024), `deep_learning_specialist` (T-025) and `nlp_specialist` (T-026)
+# have landed, so none of them is a NoOpNode any more and none may be routed to here: dispatching
+# to a real LLMNode would construct a chat model and attempt a live API call, which unit tests may
+# never do. These two tests therefore route to a specialist that is still unimplemented
+# (`timeseries_specialist`, T-027), which the 4-branch precedence in `_select_by_signal` reaches
+# first of all. See the three `..._resolves_landed_..._specialist` tests below for the landed cases.
+#
+# NOTE for whoever lands T-027 and T-028: this re-pointing has now happened three times (T-024 ->
+# deep_learning, T-025 -> nlp, T-025/T-026 -> timeseries) and there is no unlanded specialist left
+# after T-027. The chain must end there: `test_real_resolve_node_resolves_unlanded_...` can use a
+# name that will never exist (it only exercises `resolve_node`'s not-implemented path), and the
+# selector test below needs either a mocked `resolve_node` or deletion, since the real selector can
+# only ever choose one of the five real names. Do not simply re-point again -- and note that the two
+# test *bodies* merge without a conflict marker, so a silent stale route is easy to ship.
 
 
 def test_real_resolve_node_falls_back_to_noop_and_returns_empty_dict(tmp_path) -> None:
     _seed_workspace(
         tmp_path,
-        {"problem_type": "text_classification"},
+        {"problem_type": "time_series_forecasting"},
         {
-            "model_families": ["bert"],
-            "order": ["bert"],
+            "model_families": ["prophet"],
+            "order": ["prophet"],
             "ensembling_strategy": "",
-            "rationale": "transformer baseline",
+            "rationale": "forecast baseline",
         },
     )
     state = _build_state(tmp_path)
@@ -592,10 +599,10 @@ def test_real_resolve_node_falls_back_to_noop_and_returns_empty_dict(tmp_path) -
 def test_real_resolve_node_resolves_unlanded_specialist_to_noopnode(tmp_path) -> None:
     from src.graph.node_resolver import resolve_node
 
-    _seed_workspace(tmp_path, {"problem_type": "text_classification"}, {})
-    resolved = resolve_node("nlp_specialist")
+    _seed_workspace(tmp_path, {"problem_type": "time_series_forecasting"}, {})
+    resolved = resolve_node("timeseries_specialist")
     assert isinstance(resolved, NoOpNode)
-    assert resolved.name == "nlp_specialist"
+    assert resolved.name == "timeseries_specialist"
 
 
 def test_real_resolve_node_resolves_landed_classical_ml_specialist(tmp_path, monkeypatch) -> None:

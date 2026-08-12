@@ -150,6 +150,25 @@ _MOCK_CLASSICAL_ML_DESIGN = json.dumps(
     }
 )
 
+# deep_learning_specialist (T-025) shares that schema but carries its own model
+# family table (`tabnet`/`node`/`mlp`), so `_MOCK_CLASSICAL_ML_DESIGN`'s
+# `"lightgbm"` would be rejected as an unsupported family — it needs its own
+# dispatch entry and payload. Mirrors the worked example in
+# config/prompts/deep_learning_specialist/v1.md.
+_MOCK_DEEP_LEARNING_DESIGN = json.dumps(
+    {
+        "model_family": "mlp",
+        "search_space": {
+            "n_layers": {"type": "int", "low": 2, "high": 5},
+            "layer_width": {"type": "int", "low": 64, "high": 512, "log": True},
+            "learning_rate": {"type": "float", "low": 0.0001, "high": 0.01, "log": True},
+        },
+        "fixed_params": {"batch_size": 256},
+        "preprocessing": ["standard_scaler_fitted_per_fold"],
+        "rationale": "Smoke-test placeholder neural experiment design.",
+    }
+)
+
 _FAKE_KERNELS = [
     {
         "ref": "smoke-user/smoke-kernel",
@@ -182,6 +201,8 @@ def _llm_side_effect(messages: list[BaseMessage]) -> AIMessage:
         return AIMessage(content=_MOCK_FEATURE_SPEC)
     if "System prompt — classical_ml_specialist" in system_content:
         return AIMessage(content=_MOCK_CLASSICAL_ML_DESIGN)
+    if "System prompt — deep_learning_specialist" in system_content:
+        return AIMessage(content=_MOCK_DEEP_LEARNING_DESIGN)
     if "System prompt — literature_researcher" in system_content:
         return AIMessage(content=_MOCK_EMPTY_EXTRACTION)
     if "System prompt — web_researcher" in system_content:
@@ -338,6 +359,50 @@ def test_phase_subgraph_compiles_and_runs(stem: str, tmp_path) -> None:
         assert design["specialist"] == "classical_ml_specialist"
         assert design["cv_strategy_ref"] == "validation/fold_config.json"
         assert "n_estimators" in design["search_space"]
+
+
+def test_phase5_subgraph_routes_neural_plan_to_deep_learning_specialist(tmp_path) -> None:
+    """The parametrized phase-5 case above runs on an unseeded workspace, so
+    `specialist_selector`'s keyword precedence falls through to its default
+    (`classical_ml_specialist`). This seeds a plan whose signal is neural, so the
+    real selector takes its deep-learning branch — covering keyword branch ->
+    `resolve_node` -> real node -> file on disk, which nothing else exercises now
+    that `test_specialist_selector.py`'s NoOp test routes to `nlp_specialist`
+    instead.
+    """
+    reports_dir = tmp_path / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    (reports_dir / "problem_definition.json").write_text(
+        json.dumps({"problem_type": "tabular_binary_classification"}), encoding="utf-8"
+    )
+    design_dir = tmp_path / "design" / "iteration_0"
+    design_dir.mkdir(parents=True, exist_ok=True)
+    (design_dir / "solution_plan.json").write_text(
+        json.dumps(
+            {
+                "model_families": ["neural network"],
+                "order": ["neural network"],
+                "ensembling_strategy": "",
+                "rationale": "Deep learning on a large tabular dataset.",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    module = importlib.import_module("src.graph.phases.phase5_implementation")
+    compiled = module.build(resolve_node)
+
+    state = new_state("comp", str(tmp_path))
+    state["problem_definition_path"] = "reports/problem_definition.json"
+    state["solution_plan_path"] = "design/iteration_0/solution_plan.json"
+    compiled.invoke(state)
+
+    design_path = tmp_path / "experiments" / "exp_0" / "design.json"
+    assert design_path.is_file()
+    design = json.loads(design_path.read_text(encoding="utf-8"))
+    assert design["specialist"] == "deep_learning_specialist"
+    assert design["cv_strategy_ref"] == "validation/fold_config.json"
+    assert "n_layers" in design["search_space"]
 
 
 def test_phase2_fan_in_join_node_runs_exactly_once() -> None:

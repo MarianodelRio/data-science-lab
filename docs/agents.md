@@ -22,6 +22,7 @@ Each agent-adding task appends one row to the table below. Do not remove or reor
 | `solution_architect` | Phase 4 — Design | `reasoning` | `design/iteration_{iteration}/solution_plan.json` |
 | `feature_engineer` | Phase 4 — Design | `reasoning` | `design/iteration_{iteration}/feature_spec.json` |
 | `classical_ml_specialist` | Phase 5 — Implementation | `reasoning` | `experiments/exp_{iteration}/design.json` |
+| `deep_learning_specialist` | Phase 5 — Implementation | `reasoning` | `experiments/exp_{iteration}/design.json` |
 
 ## Adding an agent
 

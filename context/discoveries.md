@@ -325,7 +325,10 @@ per iteration" gets written down as an invariant, or the pattern grows a special
 (`experiments/exp_{iteration}/{specialist}/design.json`) and `coder` (T-029) is told how to find
 it. Not decided in T-024: it is a design decision affecting four unstarted tasks and their
 consumer.
-Status: open
+Status: resolved in T-025 — the pattern stays `experiments/exp_{iteration}/design.json` for all five
+specialists, and the "one specialist per iteration" constraint is now written down in
+`docs/pipeline.md` § The design.json contract, with the escape hatch recorded in the 2026-08-12
+T-025 entry in `context/decisions.md`. Human-confirmed at T-025's Phase-1 checkpoint.
 
 ## OPEN — 2026-08-12 [pipeline-agent (T-024) → pipeline-agent (T-029 coder / T-031 score_evaluator)]
 **`FORBIDDEN_CV_KEYS` is a tripwire, not a proof.** T-024's validator rejects a design that names
@@ -373,4 +376,64 @@ than touched from a node task.
 Whoever picks up the `base.py` hoist proposed in the entry above should fix these at the same time
 — the same PR is already migrating all seven call sites, and `DEGRADE_ERRORS` is the natural thing
 to hoist alongside the extractor trio.
+Status: open
+
+## OPEN — 2026-08-12 [pipeline-agent (T-025) → pipeline-agent (T-029 coder, T-031 score_evaluator), cross-ref T-047]
+**Fit scope is unrepresentable in `design.json`, and the leak it allows is invisible to every
+existing guard.** `preprocessing` is a flat list of lower_snake tokens with no notion of *when* a
+step is fitted, and `FORBIDDEN_CV_KEYS` matches dict **keys**, never list **values** — so a design
+naming `standard_scaling` or `median_imputation` says nothing about whether the scaler/imputer is
+fitted over the full training set or inside each fold. Fitted over the full set, it leaks feature
+statistics from every validation fold into training: the CV score against the frozen folds is
+inflated and is no longer comparable to any other experiment in the run, which is a silent violation
+of the comparability guarantee `validation/fold_config.json` exists to provide. Nothing in the
+validator can catch it, because the design is textually identical either way.
+This matters much more for neural designs than for trees: `classical_ml_specialist`'s families are
+scale-invariant and consume categoricals natively (its example tokens are literally
+`no_scaling_required`/`native_categorical_handling`), whereas TabNet/NODE/MLP all *require* fitted
+scaling and imputation.
+T-025 addresses it in prompt wording only (§ Preprocessing scope requires fitting inside each fold
+and recommends encoding the scope in the token itself, e.g. `standard_scaler_fitted_per_fold`) —
+deliberately not in the validator, since extending the schema means editing the shared contract that
+T-026–T-028 inherit. Action needed: `coder` (T-029) must fit every fitted preprocessing step inside
+the fold when it generates the training script, regardless of what the token says, and must not trust
+the token to be well-named.
+Cross-reference: T-047 introduces `fit_scope: global | per_fold` on `feature_spec.json` entries and
+classifies scalers/normalizers as mandatorily `per_fold`. These are two schemas describing the same
+property — whoever lands T-047 or T-029 should converge them on one fit-scope vocabulary rather than
+letting `feature_spec.json` and `design.json` grow separate ones.
+Status: open
+
+## OPEN — 2026-08-12 [pipeline-agent (T-025) → pipeline-agent (T-029 coder), infra-agent (`pyproject.toml`)]
+**PyTorch is not a dependency, so `coder` will generate a neural script that cannot run.**
+`pyproject.toml` lists `optuna`, `xgboost`, `lightgbm` and `catboost`, but no `torch` and no
+`pytorch-tabnet`; `design.md` marks PyTorch as "Optional ML (deep_learning_specialist only)".
+Harmless for T-025 itself — the node only *designs* an experiment, imports nothing neural, and its
+tests mock the LLM — but the moment `specialist_selector` routes a real run to
+`deep_learning_specialist` and `coder` (T-029) turns the resulting `design.json` into a training
+script, `code_executor` will run it and it will `ImportError` on the first line.
+Not added here: `pyproject.toml` is infra-agent's, and which of `torch`/`pytorch-tabnet` is needed
+depends on how `coder` implements the three families (an `mlp` needs only `torch`; `tabnet` and
+`node` pull in more). Whoever lands T-029 should decide the dependency set and coordinate the
+`pyproject.toml` change — and note that adding `torch` materially changes image size and CI time, so
+the docker/CI config (a protected contract) is affected too.
+Status: open
+
+## OPEN — 2026-08-12 [pipeline-agent (T-025) → pipeline-agent (T-026 nlp_specialist)]
+**T-025 and T-026 are in flight simultaneously and will conflict in four files.**
+`origin/feature/T-026-node-nlp-specialist` was claimed while T-025 was being implemented (T-025's
+own Phase-1 analysis saw an empty `tasks/in-progress/`). Both are Phase-5 specialists built from the
+same T-024 template, so both PRs touch: `tests/unit/nodes/compute/test_specialist_selector.py`,
+`docs/agents.md` (the agent table), `docs/pipeline.md` (the Phase-5 section and the node
+classification table), and both context files.
+The sharp edge is the selector test. T-025 re-pointed the two "unlanded specialist" tests from
+`deep_learning_specialist` to **`nlp_specialist`**, because that was the next unlanded specialist —
+which is precisely the node T-026 is landing. Whichever PR merges second must re-point them again,
+to `timeseries_specialist` (T-027), and add a landed-case test for its own node. Merging T-026
+without doing so reintroduces exactly the defect this hand-off exists to prevent: a unit test that
+dispatches into a real `LLMNode` and attempts a live API call on any machine with API keys set.
+The remaining conflicts are ordinary append/table merges — keep both rows, keep both entries.
+Note for future task selection: this pattern repeats for T-027 and T-028. Landing the five
+specialists in parallel guarantees this conflict every time; sequencing them, or moving the
+NoOp-fallback test to a specialist that will never land, would remove it permanently.
 Status: open

@@ -561,22 +561,24 @@ def test_non_dict_specialist_return_value_becomes_empty_dict(tmp_path) -> None:
 
 # -- real, un-mocked resolve_node: NoOpNode for specialists that have not landed yet --
 #
-# `classical_ml_specialist` landed in T-024, so it is no longer a NoOpNode and must NOT be routed
-# to here: dispatching to the real LLMNode would construct a chat model and attempt a live API
-# call, which unit tests may never do. These two tests therefore route to a specialist that is
-# still unimplemented (`deep_learning_specialist`, T-025); see
-# `test_real_resolve_node_resolves_landed_classical_ml_specialist` below for the landed case.
+# `classical_ml_specialist` (T-024) and `deep_learning_specialist` (T-025) have both landed, so
+# neither is a NoOpNode any more and neither may be routed to here: dispatching to a real LLMNode
+# would construct a chat model and attempt a live API call, which unit tests may never do. These
+# two tests therefore route to a specialist that is still unimplemented (`nlp_specialist`, T-026),
+# which the 4-branch precedence in `_select_by_signal` reaches before the deep-learning branch. See
+# `test_real_resolve_node_resolves_landed_classical_ml_specialist` and
+# `test_real_resolve_node_resolves_landed_deep_learning_specialist` below for the landed cases.
 
 
 def test_real_resolve_node_falls_back_to_noop_and_returns_empty_dict(tmp_path) -> None:
     _seed_workspace(
         tmp_path,
-        {"problem_type": "image_classification"},
+        {"problem_type": "text_classification"},
         {
-            "model_families": ["pytorch cnn"],
-            "order": ["pytorch cnn"],
+            "model_families": ["bert"],
+            "order": ["bert"],
             "ensembling_strategy": "",
-            "rationale": "neural network baseline",
+            "rationale": "transformer baseline",
         },
     )
     state = _build_state(tmp_path)
@@ -590,10 +592,10 @@ def test_real_resolve_node_falls_back_to_noop_and_returns_empty_dict(tmp_path) -
 def test_real_resolve_node_resolves_unlanded_specialist_to_noopnode(tmp_path) -> None:
     from src.graph.node_resolver import resolve_node
 
-    _seed_workspace(tmp_path, {"problem_type": "image_classification"}, {})
-    resolved = resolve_node("deep_learning_specialist")
+    _seed_workspace(tmp_path, {"problem_type": "text_classification"}, {})
+    resolved = resolve_node("nlp_specialist")
     assert isinstance(resolved, NoOpNode)
-    assert resolved.name == "deep_learning_specialist"
+    assert resolved.name == "nlp_specialist"
 
 
 def test_real_resolve_node_resolves_landed_classical_ml_specialist(tmp_path, monkeypatch) -> None:
@@ -617,6 +619,28 @@ def test_real_resolve_node_resolves_landed_classical_ml_specialist(tmp_path, mon
     assert isinstance(resolved, ClassicalMlSpecialistNode)
     assert not isinstance(resolved, NoOpNode)
     assert resolved.name == "classical_ml_specialist"
+
+
+def test_real_resolve_node_resolves_landed_deep_learning_specialist(tmp_path, monkeypatch) -> None:
+    from src.graph.node_resolver import resolve_node
+    from src.nodes.llm.deep_learning_specialist import DeepLearningSpecialistNode
+
+    # Same fake-env rationale as the classical case above: resolution constructs the node (which
+    # loads `Settings`), it never invokes it, so no client is built and no request is made.
+    for var in (
+        "ANTHROPIC_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "GROQ_API_KEY",
+        "KAGGLE_USERNAME",
+        "KAGGLE_KEY",
+    ):
+        monkeypatch.setenv(var, "unit-test-fake-value")
+
+    _seed_workspace(tmp_path, {"problem_type": "image_classification"}, {})
+    resolved = resolve_node("deep_learning_specialist")
+    assert isinstance(resolved, DeepLearningSpecialistNode)
+    assert not isinstance(resolved, NoOpNode)
+    assert resolved.name == "deep_learning_specialist"
 
 
 # -- ComputeNode.__call__ delegates to run --

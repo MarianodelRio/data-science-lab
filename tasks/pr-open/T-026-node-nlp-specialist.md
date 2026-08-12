@@ -3,12 +3,12 @@ id: T-026
 phase: 2
 agent: pipeline-agent
 depends_on: [T-010]
-status: in-progress
+status: pr-open
 folders: ["src/nodes/llm/", "config/agents/", "config/prompts/"]
 outputs: [nlp_specialist node, experiment design with Optuna search space]
 size: S
 branch: feature/T-026-node-nlp-specialist
-pr: ~
+pr: "https://github.com/MarianodelRio/data-science-lab/pull/27"
 ---
 
 ## Node: nlp_specialist (Pipeline Phase 5)

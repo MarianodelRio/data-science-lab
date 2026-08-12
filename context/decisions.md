@@ -1234,3 +1234,52 @@ Affects: `tests/integration/phases/test_phase_subgraphs_smoke.py`
 (`_MOCK_DEEP_LEARNING_DESIGN`, `_llm_side_effect`, the new test).
 Discarded: asserting only that the subgraph ran — that was the weakness T-024's review round fixed
 for the classical path.
+## 2026-08-12 — T-026 [pipeline-agent]
+Decided: `nlp_specialist` recognizes exactly **three** canonical `model_family` values —
+`tfidf_linear`, `sentence_embeddings`, `transformer_finetune` — rather than the four
+`classical_ml_specialist` uses.
+Why: chosen at the human checkpoint as the smallest set that separates the three text-modeling
+approaches by cost/complexity tier (sparse linear, frozen embeddings, fine-tuned transformer)
+without inviting an LLM to pick an ensemble-of-approaches family that `coder` (T-029) would have no
+single code path for. Same alias-table mechanism as `classical_ml_specialist`
+(`normalize_model_family`, word-boundary matching on a separator-normalized string) — zero changes
+to the shared validation contract.
+
+Decided: all five Phase-5 specialists keep writing `experiments/exp_{iteration}/design.json` — the
+path scheme is **not** given a specialist-namespaced component. This relies on, and this entry
+records as an explicit invariant, "exactly one specialist runs per iteration": true by construction
+today at `specialist_selector.py:227-233` (`resolve_node(chosen)(state)` is called exactly once per
+`run`). Resolves the `context/discoveries.md` entry logged 2026-08-12 by T-024 ("All five Phase-5
+specialists write the same path").
+Why: a specialist-namespaced path (`experiments/exp_{iteration}/{specialist}/design.json`) is a
+real alternative, but it is a decision affecting four tasks (T-025, T-027, T-028 still unstarted,
+plus `coder`/T-029's consumer contract) and nothing in the current single-specialist-per-iteration
+design requires it yet. Should the invariant ever need to change (e.g. an ensembling pass reading
+two candidate designs in the same iteration), the path scheme decision needs revisiting alongside
+it — noted here rather than acted on speculatively.
+Note: "exactly one specialist per iteration" is arguably CLAUDE.md-invariant material, but
+CLAUDE.md is outside a node task's `folders:` and editing it is a governance change this task does
+not make; the human decides separately whether it graduates there.
+
+Decided: `ngram_range` and other tuple-shaped hyperparameters are a **prompt-level convention**,
+not a validator change — `nlp_specialist/v1.md` instructs the LLM to express them either as a
+`categorical` `search_space` entry whose `choices` are string tokens (`"1-1"`, `"1-2"`, `"1-3"`) or
+as a single string token pinned in `fixed_params`, never as a JSON array-of-two.
+Why: `_experiment_design._validate_choices`/`_is_json_scalar` correctly reject non-scalar
+`choices` entries, and a bare 2-tuple round-trips through JSON as a plain list anyway — Optuna's
+`CategoricalDistribution` cannot safely reconstruct a tuple from that list. Solving it in the prompt
+keeps the shared validator family-agnostic, consistent with the "shape constraint only, not a
+closed vocabulary" framing `_validate_preprocessing`/`FORBIDDEN_CV_KEYS` already use.
+
+Decided: hoisted `read_solution_plan` into `src/nodes/llm/_experiment_design.py`, verbatim from
+`classical_ml_specialist._read_solution_plan` (T-024), rather than writing a third node-local copy
+for `nlp_specialist`.
+Why: this is the third copy of that reader (`feature_engineer`'s divergent `OSError`-only copy is
+the first, `classical_ml_specialist`'s `DEGRADE_ERRORS` copy is the second) — the 2026-08-11 T-024
+decision-log entry explicitly sanctions the hoist once a third copy exists. `classical_ml_specialist`'s
+own private copy is deliberately left in place: it already shipped and is already tested, and
+retroactively migrating it is not required by this task.
+Affects: `src/nodes/llm/nlp_specialist.py`, `src/nodes/llm/_experiment_design.py`,
+`config/prompts/nlp_specialist/v1.md`.
+Discarded: a fourth divergent `_read_solution_plan` copy local to `nlp_specialist.py`; a
+specialist-namespaced output path for `design.json`.

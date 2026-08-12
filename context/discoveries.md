@@ -309,7 +309,7 @@ decision-log entry), so a naive merge would either regress that tolerance or sil
 five nodes that were reviewed on the stricter behavior. Preserve the difference explicitly.
 Status: open
 
-## OPEN — 2026-08-12 [pipeline-agent (T-024) → pipeline-agent (T-025, T-026, T-027, T-028)]
+## RESOLVED — 2026-08-12 [pipeline-agent (T-024) → pipeline-agent (T-025, T-026, T-027, T-028)]
 **All five Phase-5 specialists write the same path.** `output_file_pattern` is
 `experiments/exp_{iteration}/design.json` for `classical_ml_specialist`, and T-025–T-028 are
 specified the same way. The only thing distinguishing the outputs is the `specialist` field
@@ -329,6 +329,14 @@ Status: resolved in T-025 — the pattern stays `experiments/exp_{iteration}/des
 specialists, and the "one specialist per iteration" constraint is now written down in
 `docs/pipeline.md` § The design.json contract, with the escape hatch recorded in the 2026-08-12
 T-025 entry in `context/decisions.md`. Human-confirmed at T-025's Phase-1 checkpoint.
+Independently confirmed by T-026 (2026-08-13), which reached the same conclusion at its own
+Phase-1 checkpoint before T-025 had merged: keep the shared path and record "exactly one specialist
+runs per iteration" as the invariant it relies on (true by construction at
+`specialist_selector.py:227-233`); a specialist-namespaced path was considered and discarded as
+premature, since no current mechanism runs two specialists in one iteration and the change would
+alter T-027/T-028's consumer contract. Two independent agents converging on the same ruling is the
+strongest signal available that this is the right default — but note it was decided twice in
+parallel, which is exactly the duplicated-work failure mode the discovery was written to prevent.
 
 ## OPEN — 2026-08-12 [pipeline-agent (T-024) → pipeline-agent (T-029 coder / T-031 score_evaluator)]
 **`FORBIDDEN_CV_KEYS` is a tripwire, not a proof.** T-024's validator rejects a design that names

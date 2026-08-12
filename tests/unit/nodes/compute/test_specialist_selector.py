@@ -559,18 +559,24 @@ def test_non_dict_specialist_return_value_becomes_empty_dict(tmp_path) -> None:
         assert delta == {}
 
 
-# -- real, un-mocked resolve_node: confirms the genuine NoOpNode fallback today --
+# -- real, un-mocked resolve_node: NoOpNode for specialists that have not landed yet --
+#
+# `classical_ml_specialist` landed in T-024, so it is no longer a NoOpNode and must NOT be routed
+# to here: dispatching to the real LLMNode would construct a chat model and attempt a live API
+# call, which unit tests may never do. These two tests therefore route to a specialist that is
+# still unimplemented (`deep_learning_specialist`, T-025); see
+# `test_real_resolve_node_resolves_landed_classical_ml_specialist` below for the landed case.
 
 
 def test_real_resolve_node_falls_back_to_noop_and_returns_empty_dict(tmp_path) -> None:
     _seed_workspace(
         tmp_path,
-        {"problem_type": "binary_classification"},
+        {"problem_type": "image_classification"},
         {
-            "model_families": ["lightgbm"],
-            "order": ["lightgbm"],
+            "model_families": ["pytorch cnn"],
+            "order": ["pytorch cnn"],
             "ensembling_strategy": "",
-            "rationale": "",
+            "rationale": "neural network baseline",
         },
     )
     state = _build_state(tmp_path)
@@ -581,12 +587,35 @@ def test_real_resolve_node_falls_back_to_noop_and_returns_empty_dict(tmp_path) -
     assert delta == {}
 
 
-def test_real_resolve_node_resolves_classical_ml_specialist_to_noopnode(tmp_path) -> None:
+def test_real_resolve_node_resolves_unlanded_specialist_to_noopnode(tmp_path) -> None:
     from src.graph.node_resolver import resolve_node
+
+    _seed_workspace(tmp_path, {"problem_type": "image_classification"}, {})
+    resolved = resolve_node("deep_learning_specialist")
+    assert isinstance(resolved, NoOpNode)
+    assert resolved.name == "deep_learning_specialist"
+
+
+def test_real_resolve_node_resolves_landed_classical_ml_specialist(tmp_path, monkeypatch) -> None:
+    from src.graph.node_resolver import resolve_node
+    from src.nodes.llm.classical_ml_specialist import ClassicalMlSpecialistNode
+
+    # Resolving an LLMNode constructs it, and `LLMNode.__init__` loads `Settings`, which resolves
+    # `${ENV_VAR}` references in config/settings.yaml. Fake values only — the node is never
+    # invoked here, so no client is ever built and no request is ever made.
+    for var in (
+        "ANTHROPIC_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "GROQ_API_KEY",
+        "KAGGLE_USERNAME",
+        "KAGGLE_KEY",
+    ):
+        monkeypatch.setenv(var, "unit-test-fake-value")
 
     _seed_workspace(tmp_path, {"problem_type": "binary_classification"}, {})
     resolved = resolve_node("classical_ml_specialist")
-    assert isinstance(resolved, NoOpNode)
+    assert isinstance(resolved, ClassicalMlSpecialistNode)
+    assert not isinstance(resolved, NoOpNode)
     assert resolved.name == "classical_ml_specialist"
 
 

@@ -241,4 +241,136 @@ Status: open
 ## OPEN — 2026-08-11 [pipeline-agent (T-023) → whoever next tunes specialist_selector / builds T-025 (deep_learning_specialist), T-026 (nlp_specialist), T-027 (timeseries_specialist)]
 `specialist_selector` (`src/nodes/compute/specialist_selector.py`) selects a specialist via a deterministic keyword-precedence match against a normalized text blob (`problem_type` + `model_families` + `order` + `rationale`) — approved v1 scope is plain keyword matching, not NLP-level negation/sentiment parsing. This means it has no awareness of negation or the semantic role a keyword plays in the sentence, so a keyword's mere presence can misroute a plan even when the surrounding text clearly means the opposite or means something unrelated to model choice. Two concrete repro examples, confirmed by adversarial review: (1) `rationale: "No BERT/transformer approach needed here, sticking with gradient boosting."` still matches the NLP keywords "bert"/"transformer" and selects `nlp_specialist`, despite the rationale explicitly rejecting that approach. (2) `model_families: ["Prophet-inspired feature engineering for XGBoost"]` still matches the timeseries keyword "prophet" and selects `timeseries_specialist`, even though "Prophet" there qualifies a feature-engineering idea for an XGBoost model, not the model family itself.
 Accepted as a design tradeoff for v1 (reviewers explicitly did not block T-023 on this) — a misrouted specialist just means a plausible-but-suboptimal specialist gets tried for one iteration, not a leakage/correctness invariant violation, and it's a low-frequency phrasing pattern for an LLM-authored `solution_plan.json`. Not fixed here: negation-aware matching is a different, larger mechanism (dependency parsing or an LLM-based classification step) than the curated-keyword/word-boundary convention this task's approved scope specified. Worth revisiting once T-025/T-026/T-027 land for real and there's an actual population of misrouted plans to measure against, rather than guessing at a negation heuristic now with no real specialist behavior yet to validate it against.
+## OPEN — 2026-08-11 [pipeline-agent (T-024) → pipeline-agent (T-031 score_evaluator / T-032 iteration loop)]
+**Nothing in `src/` ever increments `state["current_iteration"]`.** Verified by grep across `src/`
+while implementing T-024: `src/state.py:74` sets it to `0` in `new_state`, `src/graph/supervisor.py`
+and `src/observability/jsonl_callback.py` only *read* it, and every remaining hit is a node reading
+it to interpolate an output path. There is no writer anywhere.
+Consequence: every design→implementation cycle resolves to the same
+`experiments/exp_0/design.json` and silently overwrites the previous iteration's design — the
+pipeline looks like it is iterating while producing exactly one artifact per path forever.
+This is **pre-existing and not specific to T-024**: the identical overwrite already affects T-021's
+`design/iteration_{iteration}/solution_plan.json`, T-022's
+`design/iteration_{iteration}/feature_spec.json`, and `competition_analyst`'s
+`reports/competition_analysis_iter{iteration}.md`. `analysis_critic` already documents the same root
+cause and works around it for its own output with an extra `{phase}` placeholder
+(`src/nodes/llm/analysis_critic.py:207-230`).
+Not fixed here: an id allocator or a `current_iteration` writer is a protected-contract
+(`src/state.py`) or `src/graph/` change, both outside T-024's `folders:`
+(`src/nodes/llm/`, `config/agents/`, `config/prompts/`).
+Whoever lands the iteration loop (T-032, or T-031 `score_evaluator` if the increment lands with the
+scoring step) must increment `current_iteration` exactly once per completed cycle — and should
+sanity-check every `{iteration}`-bearing `output_file_pattern` at that point, since they all start
+producing distinct files only from that commit onward.
+Status: open
+
+## RESOLVED — 2026-08-11 [pipeline-agent (T-024) → whoever merges second of PR #25 (T-023) and T-024]
+**Expected `docs/pipeline.md` merge conflict, plus a docs/YAML ordering dependency.**
+Both branches add a `### Implementation (Phase 5)` section immediately after `### Baseline
+(Phase 3)`, and both add a row to the "Node classification" table. Resolve by keeping **both**
+under a **single** `### Implementation (Phase 5)` heading — T-023's `specialist_selector` bullet
+first, then T-024's `classical_ml_specialist` bullet and the `#### The design.json contract` block
+— and keep both table rows. Same reconcile-don't-pick-a-side situation as the T-045/T-001 README
+entry above. `context/decisions.md` and `context/discoveries.md` will conflict at EOF for the same
+reason (both append-only); keep both blocks.
+`config/phases/phase5_implementation.yaml` is **not** touched by T-024, so there is no conflict
+there — but note the dependency: T-024's new `docs/agents.md` step-3 exception note states that the
+5 Phase-5 specialists are not listed in that YAML, which only becomes true once PR #25 lands its
+(human-approved) trim of `nodes`/`sequence` to `[specialist_selector, coder, code_critic]`. If
+T-024 merges first, that note is forward-looking for exactly as long as PR #25 stays open; until
+then `classical_ml_specialist` is wired as a real graph edge in phase 5 and runs unconditionally.
+The phase-5 subgraph smoke test passes either way (T-024 added the mocked-LLM dispatch entry for
+`classical_ml_specialist`), so nothing fails loudly to flag it — hence this note.
+Resolution (2026-08-12): PR #25 merged first, and T-024 was rebased onto it. The three predicted
+conflicts (`docs/pipeline.md`, `context/decisions.md`, `context/discoveries.md`) occurred exactly
+as described and were resolved keep-both as prescribed: one `### Implementation (Phase 5)` heading
+with T-023's `specialist_selector` bullet, then T-024's `classical_ml_specialist` bullet and the
+`#### The design.json contract` block; both "Node classification" rows kept. Because #25 landed
+first, the forward-looking caveats in `docs/agents.md` step 3 and `docs/pipeline.md` were dropped —
+`config/phases/phase5_implementation.yaml` no longer lists the specialists, so
+`classical_ml_specialist` is dispatched by `specialist_selector`, never a standalone graph edge.
+Status: resolved
+
+## OPEN — 2026-08-12 [pipeline-agent (T-024) → pipeline-agent (whoever owns a `src/nodes/llm/base.py` refactor)]
+`_strip_outer_fence`/JSON-extraction is now duplicated **seven** times across `src/nodes/llm/`:
+`problem_framer.py`, `leakage_auditor.py`, `analysis_critic.py`, `baseline_designer.py`,
+`feature_engineer.py`, `solution_architect.py`, `_research_common.py` (array variant), plus
+`_experiment_design.py` (object variant, T-024). T-020 already hoisted `relative_to_workspace` into
+`src/nodes/llm/base.py` on exactly this reasoning at three copies.
+Proposal: one small dedicated task that moves a `strip_outer_fence(content, node_name)` /
+`extract_json_object(content, node_name)` / `extract_json_array(content, node_name)` trio into
+`base.py` and migrates all seven call sites, deleting the private copies.
+Not done in T-024: `base.py` is imported by every LLM node, so touching it from a node task means
+either migrating six landed modules in a PR scoped to one node, or adding an eighth copy's worth of
+surface to `base.py` and leaving the duplication anyway. Note for whoever picks it up:
+`_experiment_design.extract_json_object` is deliberately more permissive than its siblings (it
+salvages a brace-delimited slice when the whole-text parse fails — see the 2026-08-12 T-024
+decision-log entry), so a naive merge would either regress that tolerance or silently extend it to
+five nodes that were reviewed on the stricter behavior. Preserve the difference explicitly.
+Status: open
+
+## OPEN — 2026-08-12 [pipeline-agent (T-024) → pipeline-agent (T-025, T-026, T-027, T-028)]
+**All five Phase-5 specialists write the same path.** `output_file_pattern` is
+`experiments/exp_{iteration}/design.json` for `classical_ml_specialist`, and T-025–T-028 are
+specified the same way. The only thing distinguishing the outputs is the `specialist` field
+*inside* the file. Today that is harmless — `specialist_selector` (T-023) activates exactly one
+specialist per iteration — but it means the path scheme carries no specialist identity, so any
+future change that runs two specialists in the same iteration (an ensembling pass reading two
+candidate designs, a comparison run, a retry after a different route) silently overwrites instead
+of accumulating.
+Same root cause as the `current_iteration` entry above: there is exactly one design slot per
+iteration. Whoever lands T-025 should decide the path scheme for all four remaining specialists at
+once — either `experiments/exp_{iteration}/design.json` stays and the constraint "one specialist
+per iteration" gets written down as an invariant, or the pattern grows a specialist component
+(`experiments/exp_{iteration}/{specialist}/design.json`) and `coder` (T-029) is told how to find
+it. Not decided in T-024: it is a design decision affecting four unstarted tasks and their
+consumer.
+Status: open
+
+## OPEN — 2026-08-12 [pipeline-agent (T-024) → pipeline-agent (T-029 coder / T-031 score_evaluator)]
+**`FORBIDDEN_CV_KEYS` is a tripwire, not a proof.** T-024's validator rejects a design that names
+`cv`/`cv_strategy`/`folds`/`fold_indices`/`n_folds`/`n_splits`/`validation`/`test_size`/`shuffle`,
+which catches an explicit attempt to redefine cross-validation. It does **not** catch a model that
+carves its own holdout out of the training fold through ordinary model-side hyperparameters:
+`validation_fraction` (sklearn's `HistGradientBoostingClassifier`/`MLPClassifier`),
+`early_stopping`, `n_iter_no_change`, `eval_set`/`early_stopping_rounds` (xgboost/lightgbm),
+`od_type`/`od_wait` (catboost). Any of these can shrink the effective training data or leak the
+fold's validation split into the stopping decision, making the recorded CV score
+non-comparable against the baseline and against other experiments.
+Deliberately not added to `FORBIDDEN_CV_KEYS` in T-024: early stopping evaluated against the frozen
+fold's *own* validation split is legitimate, widely-used practice, and banning it outright is a
+modeling decision that would be made unilaterally on behalf of four unstarted specialist tasks
+(T-025–T-028). The `FORBIDDEN_CV_KEYS` docstring now states this limitation explicitly rather than
+implying the guard is exhaustive.
+For T-029/T-031: when generating the training script, decide per model family whether these
+parameters are honored, translated to use the frozen fold's validation split, or dropped — and
+make the choice visible in the experiment results so a score computed under early stopping is not
+silently compared against one that was not.
+Status: open
+
+## OPEN — 2026-08-12 [pipeline-agent (T-024) → pipeline-agent (whoever does the `src/nodes/llm/base.py` reader/extractor hoist)]
+**The `_read_*` upstream-artifact helpers across `src/nodes/llm/` all under-catch.** Every copy —
+`feature_engineer._read_solution_plan`/`_read_eda_report`, `baseline_designer._read_problem_definition`/
+`_read_eda_report`, `solution_architect`'s and `analysis_critic`'s readers, and
+`_research_common.read_problem_type` — catches `OSError` alone while documenting (or plainly
+implying) that it degrades rather than raises. Three inputs escape all of them:
+1. a truncated/empty JSON artifact — `json.JSONDecodeError` (a `ValueError`),
+2. an artifact that is not valid UTF-8 — `UnicodeDecodeError` (also a `ValueError`),
+3. an absolute path recorded before the workspace was moved, renamed or bind-mounted elsewhere, or
+   one containing `..` — `ValueError` out of `Path.relative_to`/`WorkspaceManager._resolve`.
+Additionally, a pathologically nested payload (~993 levels) raises `RecursionError`, which is a
+`RuntimeError` and so is caught by none of the above — and it recurses again inside `json.dumps`
+when the reader pretty-prints the artifact back out, so the guard has to cover the serialization
+too, not just the read.
+Each one aborts the whole graph run from a code path whose entire purpose is to survive a missing
+or malformed upstream artifact. Reproduced through the real phase-5 subgraph for T-024's own
+readers.
+Fixed **only** inside T-024's own modules (`src/nodes/llm/_experiment_design.py`,
+`src/nodes/llm/classical_ml_specialist.py`), which now share a
+`DEGRADE_ERRORS = (OSError, ValueError, RecursionError)` tuple plus an `isinstance(path, str)`
+guard. The sibling modules are outside this task's scope and were deliberately left alone rather
+than touched from a node task.
+Whoever picks up the `base.py` hoist proposed in the entry above should fix these at the same time
+— the same PR is already migrating all seven call sites, and `DEGRADE_ERRORS` is the natural thing
+to hoist alongside the extractor trio.
 Status: open

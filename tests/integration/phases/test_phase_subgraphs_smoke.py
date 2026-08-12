@@ -127,6 +127,29 @@ _MOCK_FEATURE_SPEC = json.dumps(
     }
 )
 
+# classical_ml_specialist (T-024) is also a structured-JSON node — its own
+# `extract_json_object`/`validate_experiment_design` (src/nodes/llm/
+# _experiment_design.py) require `model_family` (one of the four supported
+# families), a non-empty `search_space` of `{"type": ...}` objects, and
+# `fixed_params`/`preprocessing`/`rationale` (see config/prompts/
+# classical_ml_specialist/v1.md), which `_MOCK_LLM_CONTENT`'s fenced ```python
+# narrative shape would fail, so it needs its own dispatch entry too. Every
+# input it reads degrades to a placeholder in this standalone-phase run
+# (`feature_spec_path`/`solution_plan_path`/`validation_config_path` are all
+# `""` in `new_state`), so no fixture seeding is needed.
+_MOCK_CLASSICAL_ML_DESIGN = json.dumps(
+    {
+        "model_family": "lightgbm",
+        "search_space": {
+            "n_estimators": {"type": "int", "low": 100, "high": 1000},
+            "boosting_type": {"type": "categorical", "choices": ["gbdt", "dart"]},
+        },
+        "fixed_params": {},
+        "preprocessing": [],
+        "rationale": "Smoke-test placeholder experiment design.",
+    }
+)
+
 _FAKE_KERNELS = [
     {
         "ref": "smoke-user/smoke-kernel",
@@ -157,6 +180,8 @@ def _llm_side_effect(messages: list[BaseMessage]) -> AIMessage:
         return AIMessage(content=_MOCK_SOLUTION_PLAN)
     if "System prompt — feature_engineer" in system_content:
         return AIMessage(content=_MOCK_FEATURE_SPEC)
+    if "System prompt — classical_ml_specialist" in system_content:
+        return AIMessage(content=_MOCK_CLASSICAL_ML_DESIGN)
     if "System prompt — literature_researcher" in system_content:
         return AIMessage(content=_MOCK_EMPTY_EXTRACTION)
     if "System prompt — web_researcher" in system_content:
@@ -302,6 +327,17 @@ def test_phase_subgraph_compiles_and_runs(stem: str, tmp_path) -> None:
     result = compiled.invoke(state)
 
     assert result["competition_name"] == "comp"
+
+    if stem == "phase5_implementation":
+        # `classical_ml_specialist` (T-024) is the first real node in this phase
+        # to produce a file — assert the artifact actually landed, not just that
+        # the subgraph ran without raising.
+        design_path = tmp_path / "experiments" / "exp_0" / "design.json"
+        assert design_path.is_file()
+        design = json.loads(design_path.read_text(encoding="utf-8"))
+        assert design["specialist"] == "classical_ml_specialist"
+        assert design["cv_strategy_ref"] == "validation/fold_config.json"
+        assert "n_estimators" in design["search_space"]
 
 
 def test_phase2_fan_in_join_node_runs_exactly_once() -> None:

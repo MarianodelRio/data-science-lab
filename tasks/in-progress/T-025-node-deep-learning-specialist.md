@@ -3,11 +3,11 @@ id: T-025
 phase: 2
 agent: pipeline-agent
 depends_on: [T-010]
-status: available
+status: in-progress
 folders: ["src/nodes/llm/", "config/agents/", "config/prompts/"]
 outputs: [deep_learning_specialist node, experiment design with Optuna search space]
 size: S
-branch: ~
+branch: feature/T-025-node-deep-learning-specialist
 pr: ~
 ---
 

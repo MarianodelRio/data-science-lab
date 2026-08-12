@@ -364,6 +364,21 @@ def test_invalid_json_raises_value_error(
         node(_build_state())
 
 
+def test_model_family_alias_is_normalized_before_writing(
+    patched_llm_factory, patched_settings, mock_workspace_manager, mock_llm: MagicMock
+) -> None:
+    """`coder` (T-029) dispatches on the written `model_family`, so an alias the
+    LLM used must be canonicalized against the node's own `_MODEL_FAMILIES`
+    table, not passed through."""
+    mock_llm.invoke.return_value = AIMessage(content=_design(model_family="XGB"))
+    _, workspace_instance = mock_workspace_manager
+    node = ClassicalMlSpecialistNode()
+
+    node(_build_state())
+
+    assert _written_design(workspace_instance)["model_family"] == "xgboost"
+
+
 def test_unsupported_model_family_raises(
     patched_llm_factory, patched_settings, mock_workspace_manager, mock_llm: MagicMock
 ) -> None:

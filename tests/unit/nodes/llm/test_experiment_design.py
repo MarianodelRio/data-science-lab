@@ -24,19 +24,18 @@ from src.nodes.llm._experiment_design import (
     normalize_model_family,
     read_fold_summary,
     resolve_feature_spec_ref,
-    strip_outer_fence,
     validate_experiment_design,
 )
+from src.nodes.llm.classical_ml_specialist import _MODEL_FAMILIES as FAMILIES
 from src.state import LabState, new_state
 from src.workspace.workspace_manager import WorkspaceManager
 
 SPECIALIST = "classical_ml_specialist"
-FAMILIES: dict[str, tuple[str, ...]] = {
-    "xgboost": ("xgboost", "xgb"),
-    "lightgbm": ("lightgbm", "lgbm", "lgb", "light gbm"),
-    "catboost": ("catboost", "cat boost"),
-    "extra_trees": ("extra trees", "extratrees", "extremely randomized trees"),
-}
+# `FAMILIES` is the *production* table imported from the node, never a copy:
+# a hand-copied table let a mutation of the real one (gutted families, typo'd
+# aliases, substring instead of word-boundary matching) leave the whole suite
+# green.
+_ALIAS_CASES = [(alias, family) for family, aliases in FAMILIES.items() for alias in aliases]
 FEATURE_SPEC_REF = "design/iteration_0/feature_spec.json"
 _NOT_AVAILABLE = "(frozen fold config not yet available)"
 
@@ -73,25 +72,25 @@ def _validate_param(spec: Any) -> dict[str, Any]:
     return _validate(_design(search_space={"p": spec}))
 
 
-# -- strip_outer_fence / extract_json_object --
+# -- extract_json_object (fence handling is exercised through it, not directly) --
 
 
-def test_strip_outer_fence_passes_through_unfenced() -> None:
-    assert strip_outer_fence('{"a": 1}', SPECIALIST) == '{"a": 1}'
+def test_extract_json_object_parses_unfenced() -> None:
+    assert extract_json_object('{"a": 1}', SPECIALIST) == {"a": 1}
 
 
-def test_strip_outer_fence_strips_json_fence() -> None:
-    assert strip_outer_fence('```json\n{"a": 1}\n```', SPECIALIST) == '{"a": 1}'
+def test_extract_json_object_strips_json_fence() -> None:
+    assert extract_json_object('```json\n{"a": 1}\n```', SPECIALIST) == {"a": 1}
 
 
-def test_strip_outer_fence_unclosed_raises() -> None:
-    with pytest.raises(ValueError, match=SPECIALIST):
-        strip_outer_fence('```json\n{"a": 1}', SPECIALIST)
+def test_extract_json_object_unclosed_fence_raises() -> None:
+    with pytest.raises(ValueError, match="never closes it"):
+        extract_json_object('```json\n{"a": 1}', SPECIALIST)
 
 
-def test_strip_outer_fence_single_line_fence_raises() -> None:
+def test_extract_json_object_single_line_fence_raises() -> None:
     with pytest.raises(ValueError, match="fence has no content"):
-        strip_outer_fence("``````", SPECIALIST)
+        extract_json_object("``````", SPECIALIST)
 
 
 def test_extract_json_object_rejects_array() -> None:
@@ -102,6 +101,42 @@ def test_extract_json_object_rejects_array() -> None:
 def test_extract_json_object_rejects_invalid_json() -> None:
     with pytest.raises(ValueError, match=SPECIALIST):
         extract_json_object("not json at all {", SPECIALIST)
+
+
+def test_extract_json_object_salvages_preamble_before_fence() -> None:
+    """One sentence of prose before the JSON must not abort a node that has no
+    retry wrapper."""
+    content = 'Here is the design you asked for:\n\n```json\n{"a": 1}\n```'
+
+    assert extract_json_object(content, SPECIALIST) == {"a": 1}
+
+
+def test_extract_json_object_salvages_trailing_sentence() -> None:
+    content = '{"a": 1}\n\nLet me know if you want a wider search space.'
+
+    assert extract_json_object(content, SPECIALIST) == {"a": 1}
+
+
+def test_extract_json_object_prose_only_refusal_still_raises() -> None:
+    with pytest.raises(ValueError, match="is not valid JSON"):
+        extract_json_object("I cannot design this experiment without a dataset.", SPECIALIST)
+
+
+def test_extract_json_object_reports_the_original_parse_error() -> None:
+    """When the salvage attempt also fails, the message describes the response as
+    a whole, not the salvaged slice."""
+    with pytest.raises(ValueError, match="is not valid JSON"):
+        extract_json_object('prose { "a": 1, } more prose', SPECIALIST)
+
+
+def test_extract_json_object_rejects_oversized_integer_literal() -> None:
+    """CPython's 4300-digit int conversion limit makes `json.loads` raise a bare
+    `ValueError`, not a `JSONDecodeError` — it must still be wrapped and
+    attributed to the specialist."""
+    content = '{"a": ' + "9" * 5000 + "}"
+
+    with pytest.raises(ValueError, match=SPECIALIST):
+        extract_json_object(content, SPECIALIST)
 
 
 # -- whitelist rebuild --
@@ -149,21 +184,39 @@ def test_unknown_top_level_keys_dropped() -> None:
 # -- model_family normalization --
 
 
+@pytest.mark.parametrize(("alias", "expected"), _ALIAS_CASES)
+def test_every_production_alias_resolves_to_its_family(alias: str, expected: str) -> None:
+    """Parametrized over the real `_MODEL_FAMILIES` table, so shrinking, typo'ing
+    or deleting an entry fails a test instead of passing silently."""
+    assert normalize_model_family(alias, FAMILIES, SPECIALIST) == expected
+
+
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
-        ("xgb", "xgboost"),
         ("XGBoost", "xgboost"),
         ("LGBM", "lightgbm"),
         ("light-gbm", "lightgbm"),
         ("CatBoost", "catboost"),
         ("extra-trees", "extra_trees"),
         ("ExtraTrees", "extra_trees"),
-        ("extremely randomized trees", "extra_trees"),
     ],
 )
-def test_model_family_alias_normalizes(raw: str, expected: str) -> None:
+def test_model_family_casing_and_separator_variants_normalize(raw: str, expected: str) -> None:
     assert normalize_model_family(raw, FAMILIES, SPECIALIST) == expected
+
+
+@pytest.mark.parametrize("raw", ["LGBMClassifier", "xgboostiness", "precatboost"])
+def test_model_family_substring_without_word_boundary_is_rejected(raw: str) -> None:
+    """Matching is whole-phrase: a class name that merely *contains* an alias is
+    not a family declaration. Swapping the word-boundary regex for a substring
+    check would silently accept all of these."""
+    with pytest.raises(ValueError, match="not a supported model family"):
+        normalize_model_family(raw, FAMILIES, SPECIALIST)
+
+
+def test_all_four_supported_families_are_present() -> None:
+    assert set(FAMILIES) == {"xgboost", "lightgbm", "catboost", "extra_trees"}
 
 
 @pytest.mark.parametrize("raw", ["random_forest", "neural_network"])
@@ -344,6 +397,38 @@ def test_int_step_must_be_int() -> None:
         _validate_param({"type": "int", "low": 1, "high": 10, "step": 0.5})
 
 
+@pytest.mark.parametrize(
+    "spec",
+    [
+        {"type": "int", "low": 1, "high": 2, "step": 5},
+        {"type": "float", "low": 0.1, "high": 0.2, "step": 1.0},
+    ],
+)
+def test_step_larger_than_range_raises(spec: dict[str, Any]) -> None:
+    """Optuna does not reject this — `suggest_int(low=1, high=2, step=5)` returns
+    the same value on every trial, silently burning the whole budget without
+    tuning the parameter."""
+    with pytest.raises(ValueError, match="collapse to a constant"):
+        _validate_param(spec)
+
+
+def test_step_exactly_equal_to_range_accepted() -> None:
+    result = _validate_param({"type": "int", "low": 1, "high": 3, "step": 2})
+
+    assert result["search_space"]["p"]["step"] == 2
+
+
+@pytest.mark.parametrize("bound", ["low", "high"])
+def test_oversized_int_bound_raises_value_error_not_overflow_error(bound: str) -> None:
+    """`math.isfinite(10**400)` raises `OverflowError`, which would escape the
+    module's "always ValueError" contract that a critic-retry wrapper depends on."""
+    spec: dict[str, Any] = {"type": "int", "low": 1, "high": 10}
+    spec[bound] = 10**400
+
+    with pytest.raises(ValueError, match="too large"):
+        _validate_param(spec)
+
+
 def test_unknown_inner_param_keys_dropped() -> None:
     result = _validate_param(
         {"type": "int", "low": 1, "high": 10, "distribution": "uniform", "q": 2}
@@ -366,12 +451,25 @@ def test_categorical_choices_duplicate_raises() -> None:
         _validate_param({"type": "categorical", "choices": ["gbdt", "dart", "gbdt"]})
 
 
-def test_categorical_choices_int_and_bool_are_not_conflated() -> None:
-    """Python treats `1 == True` and hashes them identically — the dedupe key
-    includes the type name so a legitimate `[1, true]` choice list survives."""
-    result = _validate_param({"type": "categorical", "choices": [1, True]})
+@pytest.mark.parametrize("choices", [[1, True], [1, 1.0], [1.0, True], [1, 1.0, True]])
+def test_categorical_choices_equal_values_are_duplicates(choices: list[Any]) -> None:
+    """Optuna's `CategoricalDistribution` maps `1`, `1.0` and `True` to the same
+    internal index, so a trial that trained on `True` is recorded as `1` and the
+    winning configuration is no longer reproducible by `coder`. They are one
+    choice, not several."""
+    with pytest.raises(ValueError, match="must not repeat"):
+        _validate_param({"type": "categorical", "choices": choices})
 
-    assert result["search_space"]["p"]["choices"] == [1, True]
+
+@pytest.mark.parametrize("token", ["Infinity", "-Infinity", "NaN"])
+def test_categorical_choices_reject_non_finite(token: str) -> None:
+    """`json.dump`'s default `allow_nan=True` would emit these tokens verbatim,
+    producing a `design.json` that is not valid RFC-8259 JSON."""
+    raw = json.dumps(_design(search_space={"p": {"type": "categorical", "choices": [1]}}))
+    raw = raw.replace('"choices": [1]', f'"choices": [{token}]')
+
+    with pytest.raises(ValueError, match="finite"):
+        _validate(extract_json_object(raw, SPECIALIST))
 
 
 @pytest.mark.parametrize("choice", [{"nested": 1}, ["nested"]])
@@ -419,6 +517,53 @@ def test_fixed_params_flat_list_value_accepted() -> None:
     assert result["fixed_params"] == {"metric": ["auc", "binary_logloss"]}
 
 
+@pytest.mark.parametrize("token", ["Infinity", "-Infinity", "NaN"])
+def test_fixed_params_reject_non_finite(token: str) -> None:
+    raw = json.dumps(_design(fixed_params={"scale_pos_weight": 1}))
+    raw = raw.replace('"scale_pos_weight": 1', f'"scale_pos_weight": {token}')
+
+    with pytest.raises(ValueError, match="finite"):
+        _validate(extract_json_object(raw, SPECIALIST))
+
+
+# -- parameter names (they become Python keyword arguments in generated code) --
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        'x", exec("import os"), "y',
+        "max_depth\nimport os",
+        "max depth",
+        "max-depth",
+        "2fast",
+        "",
+        "n" * 65,
+        "learning_rate(0.1)",
+        "path\\to\\param",
+    ],
+)
+@pytest.mark.parametrize("field", ["search_space", "fixed_params"])
+def test_invalid_parameter_name_raises(field: str, name: str) -> None:
+    """`coder` (T-029) turns these keys into keyword arguments in a script
+    `code_executor` runs, so anything that is not a plain identifier is refused
+    before it can reach disk."""
+    if field == "search_space":
+        data = _design(search_space={name: {"type": "int", "low": 1, "high": 10}})
+    else:
+        data = _design(fixed_params={name: 1})
+
+    with pytest.raises(ValueError, match="not a usable parameter name"):
+        _validate(data)
+
+
+@pytest.mark.parametrize("name", ["max_depth", "_private", "L2", "n" * 64, "colsample_bytree"])
+def test_valid_parameter_names_accepted(name: str) -> None:
+    result = _validate(_design(fixed_params={name: 1}))
+
+    assert result["fixed_params"] == {name: 1}
+
+
 # -- preprocessing --
 
 
@@ -442,6 +587,40 @@ def test_preprocessing_not_a_list_raises(value: Any) -> None:
 def test_preprocessing_non_string_item_raises(item: Any) -> None:
     with pytest.raises(ValueError, match=r"preprocessing\[0\]"):
         _validate(_design(preprocessing=[item]))
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        "StratifiedKFold(n_splits=3, shuffle=True)",
+        "train_test_split(X, y, test_size=0.2)",
+        "Scale the numeric columns with a StandardScaler.",
+        "NativeCategoricalHandling",
+        "no-scaling-required",
+        "s" * 65,
+    ],
+)
+def test_preprocessing_code_shaped_entry_raises(item: str) -> None:
+    """A `preprocessing` entry names a step, it never expresses one. Free-form
+    strings let a call-shaped CV redefinition (`StratifiedKFold(n_splits=3, ...)`)
+    slip past the forbidden-*key* guard by hiding in a list value."""
+    with pytest.raises(ValueError, match=r"preprocessing\[0\]"):
+        _validate(_design(preprocessing=[item]))
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        "native_categorical_handling",
+        "no_scaling_required",
+        "label_encode_for_xgboost",
+        "missing_values_handled_natively",
+    ],
+)
+def test_preprocessing_token_entries_accepted(item: str) -> None:
+    result = _validate(_design(preprocessing=[item]))
+
+    assert result["preprocessing"] == [item]
 
 
 # -- rationale --
@@ -551,6 +730,42 @@ def test_read_fold_summary_degrades_on_non_dict_json(tmp_path: Path) -> None:
     assert read_fold_summary(state, workspace) == _NOT_AVAILABLE
 
 
+@pytest.mark.parametrize("content", ['{"strategy": "kfold", "n_fol', "", "   \n"])
+def test_read_fold_summary_degrades_on_malformed_json(tmp_path: Path, content: str) -> None:
+    """A truncated or empty fold config raises `json.JSONDecodeError` out of
+    `read_json`; it must degrade, not abort the whole graph run."""
+    workspace, state = _workspace_state(tmp_path)
+    workspace.write_text("validation/fold_config.json", content)
+    state["validation_config_path"] = "validation/fold_config.json"
+
+    assert read_fold_summary(state, workspace).startswith("(unable to read")
+
+
+def test_read_fold_summary_degrades_on_invalid_utf8(tmp_path: Path) -> None:
+    workspace, state = _workspace_state(tmp_path)
+    (tmp_path / "validation").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "validation" / "fold_config.json").write_bytes(b'{"strategy": "\xff\xfe"}')
+    state["validation_config_path"] = "validation/fold_config.json"
+
+    assert read_fold_summary(state, workspace).startswith("(unable to read")
+
+
+def test_read_fold_summary_degrades_on_path_outside_the_workspace(tmp_path: Path) -> None:
+    """A resumed run can carry an absolute path recorded against a workspace root
+    that has since moved — `relative_to_workspace` raises `ValueError` there."""
+    workspace, state = _workspace_state(tmp_path)
+    state["validation_config_path"] = "/elsewhere/validation/fold_config.json"
+
+    assert read_fold_summary(state, workspace).startswith("(unable to read")
+
+
+def test_read_fold_summary_degrades_on_traversal_path(tmp_path: Path) -> None:
+    workspace, state = _workspace_state(tmp_path)
+    state["validation_config_path"] = "../../etc/passwd"
+
+    assert read_fold_summary(state, workspace).startswith("(unable to read")
+
+
 # -- resolve_feature_spec_ref --
 
 
@@ -581,3 +796,27 @@ def test_resolve_feature_spec_ref_falls_back_to_iteration_pattern(tmp_path: Path
     ref = resolve_feature_spec_ref(state, workspace)
 
     assert ref == "design/iteration_3/feature_spec.json"
+
+
+def test_resolve_feature_spec_ref_falls_back_on_foreign_absolute_path(tmp_path: Path) -> None:
+    """Resuming a checkpointed run after the workspace has been moved, renamed or
+    bind-mounted elsewhere leaves an absolute path that is not under the current
+    root — `relative_to_workspace` raises there, and the fallback must absorb it
+    rather than aborting the node."""
+    workspace, state = _workspace_state(tmp_path)
+    state["current_iteration"] = 2
+    state["feature_spec_path"] = "/some/other/workspace/design/iteration_2/feature_spec.json"
+
+    assert resolve_feature_spec_ref(state, workspace) == "design/iteration_2/feature_spec.json"
+
+
+@pytest.mark.parametrize(
+    "stored", ["../../etc/passwd", "design/../../../etc/passwd", "../feature_spec.json"]
+)
+def test_resolve_feature_spec_ref_falls_back_on_traversal_path(tmp_path: Path, stored: str) -> None:
+    """A `..` component must never be written into `design.json`: `coder` resolves
+    this pointer relative to the workspace root."""
+    workspace, state = _workspace_state(tmp_path)
+    state["feature_spec_path"] = stored
+
+    assert resolve_feature_spec_ref(state, workspace) == "design/iteration_0/feature_spec.json"

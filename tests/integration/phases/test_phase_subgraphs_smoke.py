@@ -328,6 +328,17 @@ def test_phase_subgraph_compiles_and_runs(stem: str, tmp_path) -> None:
 
     assert result["competition_name"] == "comp"
 
+    if stem == "phase5_implementation":
+        # `classical_ml_specialist` (T-024) is the first real node in this phase
+        # to produce a file — assert the artifact actually landed, not just that
+        # the subgraph ran without raising.
+        design_path = tmp_path / "experiments" / "exp_0" / "design.json"
+        assert design_path.is_file()
+        design = json.loads(design_path.read_text(encoding="utf-8"))
+        assert design["specialist"] == "classical_ml_specialist"
+        assert design["cv_strategy_ref"] == "validation/fold_config.json"
+        assert design["search_space"]
+
 
 def test_phase2_fan_in_join_node_runs_exactly_once() -> None:
     """`literature_researcher`/`web_researcher` fan out in parallel and fan

@@ -36,7 +36,7 @@ plus `config/agents/classical_ml_specialist.yaml` (`model_role: reasoning`, `out
 
 The bulk of the task is the new shared module `src/nodes/llm/_experiment_design.py` — the
 `design.json` contract for all five Phase-5 specialists (T-024–T-028) and their consumer `coder`
-(T-029). It exposes `strip_outer_fence`, `extract_json_object`, `normalize_model_family`,
+(T-029). It exposes `extract_json_object`, `normalize_model_family`,
 `validate_experiment_design`, `read_fold_summary` and `resolve_feature_spec_ref`, all parameterized
 by the calling `specialist` name (the `_research_common.py` convention), and declares no class
 matching its own filename stem so `node_resolver._find_node_class` never mistakes it for a node.
@@ -141,3 +141,48 @@ tripwire rather than a proof, with the escape hatch flagged for T-029/T-031.
 
 Final: 234 unit tests across the two new test modules (205 + 29), 785 passing suite-wide,
 coverage 96.7%.
+
+## Re-review round (2026-08-12)
+
+Security CLEAN (all 5 findings verified closed); adversarial WARNING, no blockers, 5 new findings.
+Four shared one pattern: the previous round closed each hole exactly at its published reproduction
+and left the same defect reachable one field over or one code path earlier. All six are closed
+completely rather than at the reproduction.
+
+1. **`_read_solution_plan` still aborted the run.** The previous round hardened `read_fold_summary`
+   but not the reader called one line later in the same `_build_messages`; a truncated
+   `solution_plan.json` or a moved workspace still killed the run through it. Both readers — and
+   `resolve_feature_spec_ref` — now share one module-level
+   `DEGRADE_ERRORS = (OSError, ValueError, RecursionError)` tuple, so consistency is a property of
+   the module rather than of whoever last edited a `try` block. The sibling node modules share the
+   same under-catching bug and are logged as an OPEN discovery for the `base.py` hoist, not fixed
+   here.
+2. **`RecursionError` escaped `read_fold_summary`.** It is a `RuntimeError`, so neither `OSError`
+   nor `ValueError` caught a ~993-level nested payload. Added to the tuple; the `json.dumps` on the
+   way out is now inside the guard too, since it recurses exactly as the parse does. Non-`str`
+   state values are handled by an `isinstance` guard rather than by weakening the docstring.
+3. **Huge ints still reached disk via `choices`/`fixed_params`.** The ±2**53 limit had gone into
+   `_validate_numeric` (bounds) only, so `2**53 + 1` was written and read back as `2**53`, and
+   `10**400` read back as `null` — falsifying `_is_json_scalar`'s own "survives a round trip
+   unchanged" docstring. The limit now lives in `_is_json_scalar`, covering both call sites, with
+   boundary tests that `±2**53` exactly is still accepted.
+4. **`step > high - low` falsely rejected valid designs.** `0.3 - 0.1` is `0.19999999999999998`, so
+   the exact comparison rejected `low=0.1/high=0.3/step=0.2` while `0.1/0.7/0.6` passed — Optuna
+   accepts both. An input-dependent false rejection on a node with no retry wrapper is worse than
+   the bug the check was added for, so the comparison now carries a relative tolerance
+   (`1 + 1e-9`), far too small to readmit a step several times its range. Four float grids added as
+   regression guards; the genuine over-range rejections still fail.
+5. **The salvage never fired when a fence was present.** `_strip_outer_fence` raises before the
+   salvage was reachable, so the two most common postamble shapes — a sentence after a closed
+   fence, and a fence the model never closed — still aborted the run, i.e. the previous round's
+   tolerance fix did not cover the case it was written for. Both steps are now inside the same
+   `try`, and the salvage slices the raw response. It stays fail-closed: `json.loads` only ever
+   sees one contiguous substring.
+6. **Doc/comment accuracy.** `_PREPROCESSING_STEP_RE`'s comment claimed it stops a CV redefinition;
+   it stops the *call-shaped* form only (`["stratified_kfold"]` still passes), so it now carries
+   the same tripwire framing as `FORBIDDEN_CV_KEYS`. Stale references to `strip_outer_fence` and
+   `_validate_step` corrected. The smoke test's `assert design["search_space"]` could not fail
+   independently (the validator already forbids an empty one) and now asserts the mock's
+   `n_estimators` actually round-tripped.
+
+Final: 254 unit tests across the two new modules, 855 passing suite-wide, coverage 96.7%.

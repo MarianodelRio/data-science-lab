@@ -924,7 +924,7 @@ the design was accepted. Validating the grammar declaratively (types, bounds, fi
 `low < high`, positive `step`, `low > 0` under `log`) also keeps validation completely eval-free —
 no expression strings are ever parsed or executed.
 Affects: `src/nodes/llm/_experiment_design.py` (`_validate_search_space`, `_validate_numeric_param`,
-`_validate_log`, `_validate_step`), `config/prompts/classical_ml_specialist/v1.md`.
+`_validate_log`, `_validate_numeric`), `config/prompts/classical_ml_specialist/v1.md`.
 Discarded: accepting Optuna expression strings / distribution-call strings / bare 2-tuples — all
 would require either `eval` or a bespoke mini-parser to interpret downstream.
 
@@ -1052,3 +1052,51 @@ attributed to the specialist. Non-finite floats are also rejected in `_is_json_s
 a `design.json` that fails `JSON.parse` in the frontend.
 Affects: `src/nodes/llm/_experiment_design.py` (`read_fold_summary`, `resolve_feature_spec_ref`,
 `_validate_numeric`, `_parse_json`, `_is_json_scalar`).
+
+## 2026-08-12 — T-024 [pipeline-agent] (re-review round)
+Decided: a single module-level `DEGRADE_ERRORS = (OSError, ValueError, RecursionError)` tuple,
+used by every upstream-artifact reader this PR owns (`read_fold_summary`,
+`resolve_feature_spec_ref`, `classical_ml_specialist._read_solution_plan`), plus an
+`isinstance(path, str)` guard in front of each.
+Why: the previous round hardened `read_fold_summary` and left `_read_solution_plan` — called one
+line later in the same `_build_messages` — still catching `OSError` alone, so a truncated
+`solution_plan.json` or a moved workspace still aborted the run through the other reader. Naming
+the set once makes "all three readers degrade on the same inputs" a property of the module rather
+than of whoever last edited a `try` block. `RecursionError` earns its place separately: it is a
+`RuntimeError`, so neither `OSError` nor `ValueError` catches a ~993-level nested payload, and the
+serialization on the way *out* recurses just as the parse on the way in does — so both sit inside
+the guard now, not just the read.
+Affects: `src/nodes/llm/_experiment_design.py` (`DEGRADE_ERRORS`, `read_fold_summary`,
+`resolve_feature_spec_ref`), `src/nodes/llm/classical_ml_specialist.py` (`_read_solution_plan`).
+Discarded: narrowing the "never raises" docstrings to match the code instead — these readers exist
+precisely so Phase 5 survives a missing or malformed upstream artifact; a reader that aborts the
+graph on a corrupt file is not doing its job.
+
+## 2026-08-12 — T-024 [pipeline-agent] (re-review round)
+Decided: `step` is compared against `high - low` with a relative tolerance
+(`_STEP_RANGE_TOLERANCE = 1 + 1e-9`), not exactly.
+Why: the exact comparison added in the previous round falsely rejected legitimate two-value grids
+because binary floating point makes the subtraction lossy — `0.3 - 0.1` is `0.19999999999999998`,
+so `low=0.1/high=0.3/step=0.2` was rejected while `low=0.1/high=0.7/step=0.6` passed. Optuna 3.5.0
+accepts both. An input-dependent false rejection on a node with no retry wrapper is a self-inflicted
+outage on valid input, which is strictly worse than the silent collapse-to-a-constant bug the check
+was added for; the tolerance is nine orders of magnitude too small to readmit that bug (a step
+several times its range).
+Affects: `src/nodes/llm/_experiment_design.py` (`_STEP_RANGE_TOLERANCE`, `_validate_numeric_param`).
+Discarded: dropping the check (loses the real bug); `math.isclose` (same intent, but an extra
+import and a less obvious asymmetry — the check only ever needs slack in one direction).
+
+## 2026-08-12 — T-024 [pipeline-agent] (re-review round)
+Decided: `_is_json_scalar` rejects ints beyond ±2**53, and the salvage in `extract_json_object`
+covers fence failures as well as parse failures.
+Why: both were fixed at the published reproduction and left reachable one field over. The ±2**53
+limit went into `_validate_numeric` (bounds) only, so `fixed_params: {"x": 2**53 + 1}` and
+`choices: [10**400]` still reached disk, where `JSON.parse` silently reads them back as
+`9007199254740992` and `null` — falsifying `_is_json_scalar`'s own "survives a round trip
+unchanged" docstring, the exact defect the non-finite-float rejection was raised for. And the
+salvage sat *after* `_strip_outer_fence`, which raises first, so the two most common postamble
+shapes (a sentence after a closed fence, a fence the model never closed) still aborted the run —
+i.e. the tolerance fix did not cover the case it was written for. The salvage now wraps both steps
+and slices the raw response; it stays fail-closed, since it only ever hands `json.loads` one
+contiguous substring.
+Affects: `src/nodes/llm/_experiment_design.py` (`_is_json_scalar`, `extract_json_object`).

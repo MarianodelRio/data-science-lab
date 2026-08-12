@@ -347,3 +347,30 @@ parameters are honored, translated to use the frozen fold's validation split, or
 make the choice visible in the experiment results so a score computed under early stopping is not
 silently compared against one that was not.
 Status: open
+
+## OPEN — 2026-08-12 [pipeline-agent (T-024) → pipeline-agent (whoever does the `src/nodes/llm/base.py` reader/extractor hoist)]
+**The `_read_*` upstream-artifact helpers across `src/nodes/llm/` all under-catch.** Every copy —
+`feature_engineer._read_solution_plan`/`_read_eda_report`, `baseline_designer._read_problem_definition`/
+`_read_eda_report`, `solution_architect`'s and `analysis_critic`'s readers, and
+`_research_common.read_problem_type` — catches `OSError` alone while documenting (or plainly
+implying) that it degrades rather than raises. Three inputs escape all of them:
+1. a truncated/empty JSON artifact — `json.JSONDecodeError` (a `ValueError`),
+2. an artifact that is not valid UTF-8 — `UnicodeDecodeError` (also a `ValueError`),
+3. an absolute path recorded before the workspace was moved, renamed or bind-mounted elsewhere, or
+   one containing `..` — `ValueError` out of `Path.relative_to`/`WorkspaceManager._resolve`.
+Additionally, a pathologically nested payload (~993 levels) raises `RecursionError`, which is a
+`RuntimeError` and so is caught by none of the above — and it recurses again inside `json.dumps`
+when the reader pretty-prints the artifact back out, so the guard has to cover the serialization
+too, not just the read.
+Each one aborts the whole graph run from a code path whose entire purpose is to survive a missing
+or malformed upstream artifact. Reproduced through the real phase-5 subgraph for T-024's own
+readers.
+Fixed **only** inside T-024's own modules (`src/nodes/llm/_experiment_design.py`,
+`src/nodes/llm/classical_ml_specialist.py`), which now share a
+`DEGRADE_ERRORS = (OSError, ValueError, RecursionError)` tuple plus an `isinstance(path, str)`
+guard. The sibling modules are outside this task's scope and were deliberately left alone rather
+than touched from a node task.
+Whoever picks up the `base.py` hoist proposed in the entry above should fix these at the same time
+— the same PR is already migrating all seven call sites, and `DEGRADE_ERRORS` is the natural thing
+to hoist alongside the extractor trio.
+Status: open

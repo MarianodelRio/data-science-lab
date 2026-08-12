@@ -3,12 +3,12 @@ id: T-025
 phase: 2
 agent: pipeline-agent
 depends_on: [T-010]
-status: in-progress
+status: pr-open
 folders: ["src/nodes/llm/", "config/agents/", "config/prompts/"]
 outputs: [deep_learning_specialist node, experiment design with Optuna search space]
 size: S
 branch: feature/T-025-node-deep-learning-specialist
-pr: ~
+pr: "https://github.com/MarianodelRio/data-science-lab/pull/28"
 ---
 
 ## Node: deep_learning_specialist (Pipeline Phase 5)

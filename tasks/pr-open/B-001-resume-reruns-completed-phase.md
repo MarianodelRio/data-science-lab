@@ -95,15 +95,101 @@ entire fixture.
   `src/` — if taken, it needs its own justification in `context/decisions.md`.
 
 **Done when:**
-- [ ] Regression test reproduces the bug: `pytest tests/unit/graph/test_checkpointer.py` alone and
+- [x] Regression test reproduces the bug: `pytest tests/unit/graph/test_checkpointer.py` alone and
       `pytest tests/unit` produce the same result (no import-order dependence)
-- [ ] Fix applied
-- [ ] `test_resume_after_restart_does_not_rerun_completed_phase` passes, asserting phase 1 node
+- [x] Fix applied
+- [x] `test_resume_after_restart_does_not_rerun_completed_phase` passes, asserting phase 1 node
       counts stay at 1 across the resume and phase 2 executed exactly once
-- [ ] No live network call from any unit test (verified for `competition_analyst`'s
+- [x] No live network call from any unit test (verified for `competition_analyst`'s
       `list_top_kernels` and every `RagStore`)
-- [ ] Full suite green: `pytest tests/` with 0 failures
-- [ ] `ruff check . && ruff format --check .` and `mypy src/` pass
-- [ ] `context/discoveries.md`'s 2026-08-10 entry marked `resolved in B-001`, correcting the
+- [x] Full suite green: `pytest tests/` with 0 failures
+- [x] `ruff check . && ruff format --check .` and `mypy src/` pass
+- [x] `context/discoveries.md`'s 2026-08-10 entry marked `resolved in B-001`, correcting the
       "resume re-runs the completed phase" claim
-- [ ] `docs/pipeline.md` untouched unless the fix changes public behavior (it should not)
+- [x] `docs/pipeline.md` untouched unless the fix changes public behavior (it should not)
+
+## Completed
+
+**Scope held: `src/` unmodified.** The bug's own diagnosis established the checkpointer/resume path
+is correct; both defects were in the test. `git diff --stat` contains no `src/` path.
+
+### What was implemented
+
+**`tests/fixtures/graph_mocks.py` (new)** — the shared network-free mock set, extracted verbatim
+from `tests/integration/phases/test_phase_subgraphs_smoke.py` (its sole owner until now):
+- All eleven `_MOCK_*` payload constants plus `_FAKE_KERNELS`, with their original explanatory
+  comments intact.
+- `_DISPATCH`, an ordered `(node_name, response)` table replacing the original if-chain. Order is
+  load-bearing and preserved exactly — matching is on the `# System prompt — {name}` header line
+  because `leakage_auditor`'s own prompt prose mentions "problem_framer".
+- `make_llm_side_effect(*, analysis_critic_pass=False)` — the dispatcher factory. The flag is the
+  explicit opt-in for a mocked `pass` verdict; `analysis_critic` is deliberately absent from
+  `_DISPATCH` so the default keeps the smoke test's pre-existing iterate/forced-pass behavior.
+- `graph_llm_mocks(*, analysis_critic_pass=False)` — context manager entering the same ten patches
+  with the same ten `return_value` assignments, yielding the mocked LLM. Carries the smoke fixture's
+  long explanatory docstring, which is the only record of why each patch exists.
+- `set_fake_provider_env(monkeypatch, value)` and `seed_raw_train_csv(workspace_path)` helpers.
+- `_MOCK_ANALYSIS_CRITIC_PASS` (new): one payload serves both critic invocations — `data_analyst`
+  is in phase 1's `critic.targets`, and in phase 4 `_parse_verdict` normalizes the target to
+  `allowed_targets[0]`. The `pass` verdict is honored either way, so no target is re-invoked.
+
+**`tests/fixtures/__init__.py` (new)** — module docstring only; makes `tests.fixtures` a regular
+package rather than an implicit namespace package.
+
+**`tests/unit/graph/test_checkpointer.py`** — local constants, `_llm_side_effect` and the
+incomplete five-patch stack deleted in favour of `graph_llm_mocks(analysis_critic_pass=True)`.
+`_install_counting_resolver` now patches `resolve_node` at **two** locations
+(`src.graph.node_resolver` and `src.nodes.llm.analysis_critic`), removing the import-order
+dependence. The test seeds `data/raw/train.csv` before the first invoke and asserts the full
+phase-1→4 node-count picture plus `next` at both halts.
+
+**`tests/integration/phases/test_phase_subgraphs_smoke.py`** — the moved definitions deleted;
+`_mock_llm` shrinks to `set_fake_provider_env(...)` + `with graph_llm_mocks(): yield`, passing no
+argument, so its behavior is unchanged. `_seed_phase3_baseline_fixtures` now calls
+`seed_raw_train_csv` for the CSV half and keeps its own `fold_config.json` write.
+
+### Decisions and why
+
+1. **`tests/fixtures/` gained a Python module.** design.md sketches that directory as data, but the
+   mock set's two consumers live in different trees so neither can own it, and a `tests/`-root
+   `conftest.py` would widen the autouse blast radius to ~880 unrelated tests.
+2. **The critic opt-in defaults to `False`.** The smoke test's exercise of the iterate → forced-pass
+   path (invariant #5) is incidental rather than asserted, but it is real executed coverage;
+   defaulting to `pass` would have deleted it silently with every test still green.
+3. **`_MOCK_LLM_CONTENT`'s fold split changed to `[0,1,2]`/`[3,4]`.** That constant is dual-purpose
+   — generic fallback *and* `validation_strategist`'s fold source, frozen verbatim into
+   `validation/fold_config.json` (invariant #1). The checkpointer test's resume reaches phase 3,
+   where the real `baseline_runner` trains a real sklearn `LogisticRegression` subprocess against
+   those indices; the old single-row, single-class training split crashes there. Verified inert for
+   the smoke test (fresh `tmp_path` per case; phase 3 seeds its own folds).
+4. **Folds are not pre-seeded in the checkpointer test.** Phase 1 runs for real and freezes them;
+   pre-seeding would be overwritten or raise `FoldsAlreadyFrozenError`. Only the dataset is seeded.
+5. **`analysis_critic`'s import-time `resolve_node` binding was handled test-side.** The optional
+   `src/` change listed in this bug was declined: `src/` needs no fix, and that node's module
+   docstring documents the `src.nodes.llm.analysis_critic.resolve_node` patch point as the contract
+   its own unit tests depend on.
+
+All five are logged in `context/decisions.md`.
+
+### Verification
+
+| Gate | Result |
+|---|---|
+| `pytest tests/unit/graph/test_checkpointer.py` (alone) | 2 passed |
+| `pytest tests/integration/phases/test_phase_subgraphs_smoke.py` | 9 passed |
+| `pytest tests/unit/nodes/llm/test_analysis_critic.py tests/unit/graph/test_checkpointer.py` | 20 passed (was `1 failed, 19 passed` + live 401) |
+| `pytest tests/unit` | 883 passed; grep for `kaggle.com`/`HTTPError`/`401` → empty |
+| `pytest tests/` | 1019 passed, 0 failed (was `1 failed, 1018 passed`) |
+| `ruff check . && ruff format --check .` | clean, 111 files |
+| `mypy src/` | Success: no issues found in 63 source files |
+
+### Notes for later
+
+- `context/discoveries.md`: the 2026-08-10 T-019 entry and the 2026-08-13 B-001 entry are both
+  marked `RESOLVED`; the T-019 entry keeps its original (wrong) "real bug in the checkpointer"
+  claim with an in-place correction appended, so the record shows what was believed and why it was
+  wrong.
+- A new discovery is addressed to **T-047**: its done-when item at
+  `tasks/available/T-047-feature-spec-v2-fit-scope.md:130` points at `_MOCK_FEATURE_SPEC` in the
+  smoke test, which now lives in `tests/fixtures/graph_mocks.py` and is seen by both consumers.
+- `docs/pipeline.md` untouched — no public behavior changed.

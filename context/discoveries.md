@@ -233,10 +233,12 @@ list_top_kernels here, should stay a small additive kaggle_client.py function ra
 triggering a dedicated infra-agent task.
 Status: open
 
-## OPEN — 2026-08-10 [Orchestrator (/orchestrate T-019) → pipeline-agent/infra-agent (whoever owns src/graph/ checkpointing)]
+## RESOLVED — 2026-08-10 [Orchestrator (/orchestrate T-019) → pipeline-agent/infra-agent (whoever owns src/graph/ checkpointing)]
 While verifying T-019 (`memory_manager`), `tests/unit/graph/test_checkpointer.py::test_resume_after_restart_does_not_rerun_completed_phase` failed on a clean checkout of `origin/main` (verified via a separate clone, independent of any T-019 change): `assert call_counts.get("data_analyst", 0) == 1` fails with `data_analyst` actually called 4 times. This means resuming a run from a checkpoint after a restart currently re-runs `data_analyst` (and likely the rest of phase1) multiple times instead of skipping the already-completed phase — a real bug in the checkpointer/resume path, not a flaky test.
 Not fixed here: `src/graph/` is outside T-019's `folders:` (`src/nodes/llm/`, `config/agents/`, `config/prompts/`), and the fix likely requires understanding `src/graph/checkpointer.py`'s interrupt/resume wiring, not a one-line change.
-Status: open
+**Correction (B-001, 2026-08-13) — the claim above that this is "a real bug in the checkpointer/resume path" is wrong.** The original observation (`data_analyst` called 4 times) was real; the diagnosis was not. `src/graph/` was never touched by the fix. The two real defects were both test-side: (1) the test's mocked LLM had no `analysis_critic` branch, so the fallback response was normalized to `iterate` by `_parse_verdict` and the critic legitimately re-invoked `data_analyst` `max_retries: 3` times before forcing a pass (CLAUDE.md invariant #5) — 1 graph call + 3 critic retries = the observed 4; (2) whether those retries were counted at all depended on module import order, because `analysis_critic` binds `resolve_node` at import time (`src/nodes/llm/analysis_critic.py:31`) while `src/graph/builder.py:70-73` deliberately goes through the module attribute — so run alone the test failed `assert 4 == 1`, and run after anything importing `analysis_critic` it instead made a live Kaggle API call through `competition_analyst`'s default `list_top_kernels`.
+Observed evidence after the fix: across a simulated restart every phase-1 node count stays at 1, the first `invoke` halts at `next == ('phase2_research',)`, and `invoke(None)` runs straight through phases 2-4 to halt at `next == ('phase5_implementation',)` — i.e. no completed phase re-executes.
+Status: resolved in B-001
 
 ## OPEN — 2026-08-11 [pipeline-agent (T-023) → whoever next tunes specialist_selector / builds T-025 (deep_learning_specialist), T-026 (nlp_specialist), T-027 (timeseries_specialist)]
 `specialist_selector` (`src/nodes/compute/specialist_selector.py`) selects a specialist via a deterministic keyword-precedence match against a normalized text blob (`problem_type` + `model_families` + `order` + `rationale`) — approved v1 scope is plain keyword matching, not NLP-level negation/sentiment parsing. This means it has no awareness of negation or the semantic role a keyword plays in the sentence, so a keyword's mere presence can misroute a plan even when the surrounding text clearly means the opposite or means something unrelated to model choice. Two concrete repro examples, confirmed by adversarial review: (1) `rationale: "No BERT/transformer approach needed here, sticking with gradient boosting."` still matches the NLP keywords "bert"/"transformer" and selects `nlp_specialist`, despite the rationale explicitly rejecting that approach. (2) `model_families: ["Prophet-inspired feature engineering for XGBoost"]` still matches the timeseries keyword "prophet" and selects `timeseries_specialist`, even though "Prophet" there qualifies a feature-engineering idea for an XGBoost model, not the model family itself.
@@ -544,7 +546,7 @@ once, rather than each specialist re-solving it locally with its own alias-table
 T-026 did.
 Status: open
 
-## OPEN — 2026-08-13 [Orchestrator (/bug B-001) → pipeline-agent]
+## RESOLVED — 2026-08-13 [Orchestrator (/bug B-001) → pipeline-agent]
 **Correction to the 2026-08-10 T-019 entry above: the resume path is not broken.** That entry
 concluded from `test_resume_after_restart_does_not_rerun_completed_phase` that resuming a run
 re-executes phase 1 four times. Verified false by driving `GraphBuilder().build()` directly with
@@ -563,4 +565,16 @@ instead makes a **live Kaggle API call** through `competition_analyst`'s default
 `list_top_kernels`, violating the "no network calls in unit tests" gate.
 Filed as B-001 (test-only scope; `src/` needs no change). Full diagnosis, including the phase-3/4
 mocks the resume actually needs, is in `tasks/available/B-001-resume-reruns-completed-phase.md`.
-Status: open — B-001 available
+Status: resolved in B-001
+
+## OPEN — 2026-08-13 [pipeline-agent (B-001) → whoever picks up T-047 (feature_spec v2 fit scope)]
+`tasks/available/T-047-feature-spec-v2-fit-scope.md:130` has a done-when item referencing
+`_MOCK_FEATURE_SPEC` in `tests/integration/phases/test_phase_subgraphs_smoke.py`. After B-001 that
+constant — and the entire network-free mock set the smoke test used to own — lives in
+`tests/fixtures/graph_mocks.py`, shared with `tests/unit/graph/test_checkpointer.py`. Update
+`_MOCK_FEATURE_SPEC` there, and note that both consumers now see the change: the checkpointer test
+drives `feature_engineer` for real through phase 4, so a payload that `_validate_feature_spec`
+rejects will fail that test too, not only the smoke test.
+Not fixed here: `tasks/available/` is outside B-001's `folders:`, so the task file itself was left
+untouched.
+Status: open

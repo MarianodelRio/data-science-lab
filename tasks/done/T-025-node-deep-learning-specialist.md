@@ -3,7 +3,7 @@ id: T-025
 phase: 2
 agent: pipeline-agent
 depends_on: [T-010]
-status: pr-open
+status: done
 folders: ["src/nodes/llm/", "config/agents/", "config/prompts/"]
 outputs: [deep_learning_specialist node, experiment design with Optuna search space]
 size: S

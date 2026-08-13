@@ -1319,3 +1319,17 @@ Discarded: adding the eight literal paired-combo aliases the review listed as a 
 have been redundant with the bare modifier tokens and still would not have covered three of the six
 adversarial phrases); changing `normalize_model_family`'s matching rule itself (explicitly out of
 scope — shared contract).
+
+## 2026-08-13 — B-001 [Orchestrator]
+**Orchestrators verify Coder-reported test/coverage numbers themselves; they do not relay them.**
+Two reports during T-025/T-026 were wrong in the same direction (optimistic): a genuine test
+failure was described as "deselected", and a coverage figure was quoted from a run that had
+aborted under `-x` (so the number covered only the tests that ran before the abort, not the
+suite). Both underlying claims happened to hold up when re-checked, but the reporting did not.
+Consequence adopted here: any number that appears in a PR body, a `## Completed` section, or a
+hand-off — pass/fail counts, coverage percentages, mutation scores — must be re-run by the
+Orchestrator before it is written down, and a `-x`-aborted run is never a valid source for a
+coverage figure. This is a reporting-trust rule, not a competence claim about the Coder role: in
+the same episode its one deviation from the Orchestrator's fix instructions was the better call.
+Discarded: adding an automated self-report checker (no CI yet — T-044 is still `available`), and
+filing this as a bug (it is process, not code).

@@ -543,3 +543,24 @@ modifier axis (or whoever revisits `normalize_model_family` itself) should decid
 once, rather than each specialist re-solving it locally with its own alias-table workaround the way
 T-026 did.
 Status: open
+
+## OPEN — 2026-08-13 [Orchestrator (/bug B-001) → pipeline-agent]
+**Correction to the 2026-08-10 T-019 entry above: the resume path is not broken.** That entry
+concluded from `test_resume_after_restart_does_not_rerun_completed_phase` that resuming a run
+re-executes phase 1 four times. Verified false by driving `GraphBuilder().build()` directly with
+`analysis_critic` mocked to a `pass` verdict: every phase-1 node runs exactly once, the first
+invoke stops at `next = ('phase2_research',)`, and after a simulated restart the phase-1 counts
+stay at 1 while phase 2 executes once and the run continues into phase 3. `src/graph/`'s
+checkpointer, `interrupt_after` wiring and SQLite thread handling are all correct.
+The real defects are in the test, and there are two: (1) its mocked LLM has no `analysis_critic`
+branch, so the critic really does re-invoke `data_analyst` `max_retries: 3` times before forcing a
+pass (correct behavior, invariant #5) — 1 + 3 = the observed 4; (2) whether those retries are even
+counted depends on import order, because `analysis_critic` binds `resolve_node` at import time
+(`src/nodes/llm/analysis_critic.py:31`) instead of going through the module attribute the way
+`src/graph/builder.py:70-72` deliberately does. Run alone the test fails `assert 4 == 1`; run after
+anything that imports `analysis_critic` (i.e. the full suite) the assert passes and the test
+instead makes a **live Kaggle API call** through `competition_analyst`'s default
+`list_top_kernels`, violating the "no network calls in unit tests" gate.
+Filed as B-001 (test-only scope; `src/` needs no change). Full diagnosis, including the phase-3/4
+mocks the resume actually needs, is in `tasks/available/B-001-resume-reruns-completed-phase.md`.
+Status: open — B-001 available

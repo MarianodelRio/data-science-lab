@@ -3,7 +3,7 @@ id: T-026
 phase: 2
 agent: pipeline-agent
 depends_on: [T-010]
-status: pr-open
+status: done
 folders: ["src/nodes/llm/", "config/agents/", "config/prompts/"]
 outputs: [nlp_specialist node, experiment design with Optuna search space]
 size: S

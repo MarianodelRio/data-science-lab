@@ -401,9 +401,10 @@ agent, step 3).
   `resolve_node(chosen_name)` (`src/graph/node_resolver.py`) and returns that specialist's own
   delta, defensively coerced to `{}` if it isn't a `dict` — the same single-call/merge shape as
   `analysis_critic`'s own `resolve_node(target_node)(...)` retry-target call, minus the
-  retry loop. All 5 specialist names currently fall back to `NoOpNode` (T-024–T-028 haven't
-  landed yet, beyond `classical_ml_specialist` below) — this is `resolve_node`'s documented
-  "not implemented yet" behavior, not a bug.
+  retry loop. `classical_ml_specialist` (T-024) and `deep_learning_specialist` (T-025) have landed
+  and resolve to their real nodes; the remaining three (`nlp_specialist`, `timeseries_specialist`,
+  `ensemble_specialist` — T-026–T-028) still fall back to `NoOpNode`, which is `resolve_node`'s
+  documented "not implemented yet" behavior, not a bug.
 
 - **`classical_ml_specialist`** (`src/nodes/llm/classical_ml_specialist.py`, `LLMNode` subclass,
   `model_role: reasoning`) — `specialist_selector`'s *default* route, for tabular problems.
@@ -425,6 +426,34 @@ agent, step 3).
   `_build_output_state` — `coder` reads `design.json` back from its well-known workspace path, the
   same convention `baseline_designer`/`fold_config.json` use, so there is no new `LabState` field.
 
+- **`deep_learning_specialist`** (`src/nodes/llm/deep_learning_specialist.py`, `LLMNode` subclass,
+  `model_role: reasoning`) — reached when the plan's signal is neural (`neural`, `cnn`, `rnn`,
+  `deep learning`, `pytorch`, `lstm`). Structurally identical to `classical_ml_specialist` above:
+  the same three injected sections, the same instance-stash mechanism for the feature-spec
+  reference, the same shared validator, the same output path, and no `_build_output_state` override.
+  It differs in carrying **its own** family table — `tabnet`, `node` (Neural Oblivious Decision
+  Ensembles) and `mlp` — which is possible without touching the shared module because
+  `normalize_model_family` takes the table as a *parameter*; each specialist contributes its own
+  rather than extending a common one.
+
+  Two neural-specific requirements live in its prompt rather than in the validator, because neither
+  is expressible in the current schema, and **neither is validator-enforced**:
+  1. *Fit scope.* Neural nets need fitted preprocessing (scalers, imputers), but `preprocessing` is
+     a flat token list with no fit-scope notion, and `FORBIDDEN_CV_KEYS` matches dict *keys*, not
+     list *values* — so a scaler fitted before the CV split is silent feature-statistic leakage
+     across the frozen folds. The prompt requires fitting inside each fold and recommends making it
+     visible in the token itself (`standard_scaler_fitted_per_fold`). See `context/discoveries.md`
+     for the hand-off to `coder` (T-029).
+  2. *Scalar-only architecture parameters.* `choices` accepts only JSON scalars, so tuning over
+     layer-width tuples (`[[64,32],[128,64]]`) is rejected. The prompt decomposes the architecture
+     into `n_layers`/`layer_width`/`width_decay`/`embedding_dim_multiplier`. Note the asymmetry:
+     `fixed_params` *does* accept a flat list of scalars, so one fixed `hidden_dims` is legal.
+
+  The task's "activated only when the dataset is large enough" condition is likewise prompt-level:
+  `LabState` carries no row count or shape, and `specialist_selector` has already routed the
+  iteration here by the time the node runs, so the prompt degrades capacity (a modest MLP rather
+  than TabNet) and records the concern in `rationale` instead of refusing.
+
 #### The `design.json` contract (shared by all Phase 5 specialists)
 
 `src/nodes/llm/_experiment_design.py` is the single source of truth for the shape of
@@ -443,7 +472,7 @@ eight keys, in this order, and the LLM's own object is never written through.
 | `model_family` | LLM (normalized) | one canonical family token |
 | `search_space` | LLM (validated) | non-empty map of Optuna parameter specs |
 | `fixed_params` | LLM (validated) | scalars / flat lists of scalars; required even when `{}` |
-| `preprocessing` | LLM (validated) | list of non-empty strings; required even when `[]` |
+| `preprocessing` | LLM (validated) | list of lower_snake tokens matching `^[a-z][a-z0-9_]{0,63}$`; required even when `[]` |
 | `rationale` | LLM (validated) | non-empty string |
 | `feature_spec_ref` | **node-injected** | workspace-relative path of the feature spec |
 | `cv_strategy_ref` | **node-injected** | always `validation/fold_config.json` |
@@ -451,6 +480,13 @@ eight keys, in this order, and the LLM's own object is never written through.
 Any other top-level key the LLM sends — including `n_trials` and `early_stopping_patience` — is
 dropped by the rebuild: the trial budget is a pipeline-wide setting (`config/settings.yaml`'s
 `optuna:` block), never per-experiment.
+
+The output path is per-**iteration**, not per-**specialist**: all five specialists write the same
+`experiments/exp_{iteration}/design.json`. That is sound because `specialist_selector` activates
+exactly one specialist per iteration (design.md invariant #7) and dispatches to it exactly once, and
+it keeps `coder`'s read at a fixed well-known path with no directory globbing and no new `LabState`
+field. If a future task ever runs two specialists in one iteration, it changes the pattern for all
+five at once — see the T-025 entry in `context/decisions.md`.
 
 **Cross-validation may not be redefined.** Before anything else, the validator rejects — loudly,
 naming the key and where it appeared — any of `cv`, `cv_strategy`, `folds`, `fold_indices`,
@@ -485,6 +521,7 @@ parameter name may not appear in both `search_space` and `fixed_params`.
 | `baseline_runner` | Compute (`ComputeNode`) | 3 — Baseline | Landed (T-020) |
 | `specialist_selector` | Compute (`ComputeNode`) | 5 — Implementation | Landed (T-023) |
 | `classical_ml_specialist` | LLM (`LLMNode`) | 5 — Implementation | Landed (T-024) |
+| `deep_learning_specialist` | LLM (`LLMNode`) | 5 — Implementation | Landed (T-025) |
 
 ### ComputeNode base class
 

@@ -325,7 +325,10 @@ per iteration" gets written down as an invariant, or the pattern grows a special
 (`experiments/exp_{iteration}/{specialist}/design.json`) and `coder` (T-029) is told how to find
 it. Not decided in T-024: it is a design decision affecting four unstarted tasks and their
 consumer.
-Status: open
+Status: resolved in T-025 — the pattern stays `experiments/exp_{iteration}/design.json` for all five
+specialists, and the "one specialist per iteration" constraint is now written down in
+`docs/pipeline.md` § The design.json contract, with the escape hatch recorded in the 2026-08-12
+T-025 entry in `context/decisions.md`. Human-confirmed at T-025's Phase-1 checkpoint.
 
 ## OPEN — 2026-08-12 [pipeline-agent (T-024) → pipeline-agent (T-029 coder / T-031 score_evaluator)]
 **`FORBIDDEN_CV_KEYS` is a tripwire, not a proof.** T-024's validator rejects a design that names
@@ -373,4 +376,128 @@ than touched from a node task.
 Whoever picks up the `base.py` hoist proposed in the entry above should fix these at the same time
 — the same PR is already migrating all seven call sites, and `DEGRADE_ERRORS` is the natural thing
 to hoist alongside the extractor trio.
+Status: open
+
+## OPEN — 2026-08-12 [pipeline-agent (T-025) → pipeline-agent (T-029 coder, T-031 score_evaluator), cross-ref T-047]
+**Fit scope is unrepresentable in `design.json`, and the leak it allows is invisible to every
+existing guard.** `preprocessing` is a flat list of lower_snake tokens with no notion of *when* a
+step is fitted, and `FORBIDDEN_CV_KEYS` matches dict **keys**, never list **values** — so a design
+naming `standard_scaling` or `median_imputation` says nothing about whether the scaler/imputer is
+fitted over the full training set or inside each fold. Fitted over the full set, it leaks feature
+statistics from every validation fold into training: the CV score against the frozen folds is
+inflated and is no longer comparable to any other experiment in the run, which is a silent violation
+of the comparability guarantee `validation/fold_config.json` exists to provide. Nothing in the
+validator can catch it, because the design is textually identical either way.
+This matters much more for neural designs than for trees: `classical_ml_specialist`'s families are
+scale-invariant and consume categoricals natively (its example tokens are literally
+`no_scaling_required`/`native_categorical_handling`), whereas TabNet/NODE/MLP all *require* fitted
+scaling and imputation.
+T-025 addresses it in prompt wording only (§ Preprocessing scope requires fitting inside each fold
+and recommends encoding the scope in the token itself, e.g. `standard_scaler_fitted_per_fold`) —
+deliberately not in the validator, since extending the schema means editing the shared contract that
+T-026–T-028 inherit. Action needed: `coder` (T-029) must fit every fitted preprocessing step inside
+the fold when it generates the training script, regardless of what the token says, and must not trust
+the token to be well-named.
+Cross-reference: T-047 introduces `fit_scope: global | per_fold` on `feature_spec.json` entries and
+classifies scalers/normalizers as mandatorily `per_fold`. These are two schemas describing the same
+property — whoever lands T-047 or T-029 should converge them on one fit-scope vocabulary rather than
+letting `feature_spec.json` and `design.json` grow separate ones.
+Two concrete holes verified by T-025's security review, both worth pinning down at T-029 time
+(neither is a T-025 defect — both are properties of the shared T-024 contract, but neural designs are
+what make them reachable, since they are the designs that actually want a validation split):
+(1) `FORBIDDEN_CV_KEYS` is **case-sensitive** — `fixed_params: {"Shuffle": true}` is accepted and
+reaches `design.json` while `"shuffle"` is rejected;
+(2) the non-CV-key holdout escape hatch has concrete names: `validation_split` (the Keras kwarg) and
+`val_size` both pass every guard, because only `validation` and `test_size` are banned. T-025
+mitigates in prompt prose ("Never carve your own holdout") but nothing enforces it.
+Status: open
+
+## OPEN — 2026-08-12 [pipeline-agent (T-025) → pipeline-agent (T-029 coder), infra-agent (`pyproject.toml`)]
+**PyTorch is not a dependency, so `coder` will generate a neural script that cannot run.**
+`pyproject.toml` lists `optuna`, `xgboost`, `lightgbm` and `catboost`, but no `torch` and no
+`pytorch-tabnet`; `design.md` marks PyTorch as "Optional ML (deep_learning_specialist only)".
+Harmless for T-025 itself — the node only *designs* an experiment, imports nothing neural, and its
+tests mock the LLM — but the moment `specialist_selector` routes a real run to
+`deep_learning_specialist` and `coder` (T-029) turns the resulting `design.json` into a training
+script, `code_executor` will run it and it will `ImportError` on the first line.
+Not added here: `pyproject.toml` is infra-agent's, and which of `torch`/`pytorch-tabnet` is needed
+depends on how `coder` implements the three families (an `mlp` needs only `torch`; `tabnet` and
+`node` pull in more). Whoever lands T-029 should decide the dependency set and coordinate the
+`pyproject.toml` change — and note that adding `torch` materially changes image size and CI time, so
+the docker/CI config (a protected contract) is affected too.
+Status: open
+
+## OPEN — 2026-08-12 [pipeline-agent (T-025) → pipeline-agent (T-026 nlp_specialist)]
+**T-025 and T-026 are in flight simultaneously and will conflict in four files.**
+`origin/feature/T-026-node-nlp-specialist` was claimed while T-025 was being implemented (T-025's
+own Phase-1 analysis saw an empty `tasks/in-progress/`). Both are Phase-5 specialists built from the
+same T-024 template, so both PRs touch: `tests/unit/nodes/compute/test_specialist_selector.py`,
+`docs/agents.md` (the agent table), `docs/pipeline.md` (the Phase-5 section and the node
+classification table), and both context files.
+The sharp edge is the selector test. T-025 re-pointed the two "unlanded specialist" tests from
+`deep_learning_specialist` to **`nlp_specialist`**, because that was the next unlanded specialist —
+which is precisely the node T-026 is landing. Whichever PR merges second must re-point them again,
+to `timeseries_specialist` (T-027), and add a landed-case test for its own node. Merging T-026
+without doing so reintroduces exactly the defect this hand-off exists to prevent: a unit test that
+dispatches into a real `LLMNode` and attempts a live API call on any machine with API keys set.
+The remaining conflicts are ordinary append/table merges — keep both rows, keep both entries.
+Note for future task selection: this pattern repeats for T-027 and T-028. Landing the five
+specialists in parallel guarantees this conflict every time; sequencing them, or moving the
+NoOp-fallback test to a specialist that will never land, would remove it permanently.
+Update (T-025's adversarial review, verified): T-026 is PR #27 and is **already open**, so T-025
+merges second and re-pointed the two tests to `timeseries_specialist` (T-027) within its own PR
+rather than leaving it to whoever merges after. Two things the original note got wrong or missed:
+(1) the sharp part merges **without a conflict marker** — a real `git merge` of the two branches
+conflicts only on the prose comment and the two *added* landed-case tests, while the two edited test
+*bodies* merge silently as one side's version. Resolving the visible hunks and keeping both tests
+ships a stale route; with fake API keys set, the merged tree produced a real `401` from a live
+provider call inside a unit test. Whoever lands T-027 must therefore diff the test bodies explicitly,
+not just resolve markers.
+(2) T-026 **does** modify `src/nodes/llm/_experiment_design.py` — it hoists `read_solution_plan` into
+the shared module. No functional conflict with T-025 (which only imports from that module), but once
+T-026 lands there will be four copies of that reader on main, and `deep_learning_specialist`'s own
+copy becomes the redundant one: it should switch to the shared `read_solution_plan`, and
+`classical_ml_specialist`/`feature_engineer` should follow. That belongs to the `base.py`/reader hoist
+task already logged above, not to a node task.
+Status: open
+
+## OPEN — 2026-08-12 [pipeline-agent (T-025) → pipeline-agent (T-029 coder), whoever adds a critic-retry wrapper]
+**`_experiment_design.py`'s "every failure is a `ValueError`" contract does not hold on the
+LLM-response path.** `_parse_json` catches only `ValueError`, but `json.loads` raises
+`RecursionError` (a `RuntimeError`) on a sufficiently nested payload — measured threshold **994
+levels, ~6 KB**, well within any model's output budget. Driven through the real
+`deep_learning_specialist` with a 5000-deep response: the exception escapes as `RecursionError`, does
+**not** name the specialist, and nothing is written.
+This is an asymmetry rather than an oversight: the module already guards `RecursionError` on the
+*upstream-read* path through `DEGRADE_ERRORS` (tested at depth 100 000), with a comment explaining the
+~993-level threshold. The response path never got the same treatment. Identical for
+`classical_ml_specialist`, so it is a property of the T-024 contract, not a T-025 defect — but it
+matters specifically because these nodes have no retry wrapper today, and a future wrapper written to
+catch `ValueError` (exactly what the module docstring promises is sufficient) will not catch this.
+Fix when `_experiment_design.py` is next legitimately opened: add `RecursionError` to `_parse_json`'s
+catch, or wrap `extract_json_object`'s body. Not done here — that module is frozen for T-025, and
+T-026 is concurrently modifying it.
+Status: open
+
+## OPEN — 2026-08-12 [pipeline-agent (T-025) → pipeline-agent (T-026, T-027, T-028, T-029)]
+**The selector's routing vocabulary and the specialists' `model_family` vocabularies are disjoint, and
+a specialist that echoes the plan's own wording aborts the phase.** `specialist_selector` routes to
+`deep_learning_specialist` on `_DEEP_LEARNING_KEYWORDS` = `neural`, `cnn`, `rnn`, `deep learning`,
+`pytorch`, `lstm`. But T-025's `_MODEL_FAMILIES` only accepts `tabnet`/`node`/`mlp` and their aliases,
+so **none** of `neural network`, `neural net`, `dnn`, `deep neural network`, `fully connected network`
+resolves — each is a hard `ValueError`. The same asymmetry exists for `classical_ml_specialist`
+(routed by `gradient boosting`, which is not an accepted family either), so this is template-inherited,
+not new.
+Why it matters more than it looks: these nodes have **no retry wrapper** — Phase 5's `code_critic`
+targets `coder`, not the specialists (`extract_json_object`'s docstring says so explicitly). So an LLM
+that answers with the plan's own phrasing (`"model_family": "neural network"`) aborts the phase with no
+artifact at all, which is precisely the outcome each specialist prompt's "never refuse / design
+something defensible, always" section exists to prevent. Prompt wording is the only thing standing
+between the two vocabularies.
+Not changed in T-025: adding generic aliases means deciding what a generic answer *maps to* (mapping
+`"neural network"` → `mlp` is coherent with this prompt's own "prefer the lowest-capacity family"
+guidance, but it is a modeling decision), and the fix should be uniform across all five specialists
+rather than invented per node. Options for whoever takes it: (a) add generic aliases per specialist,
+(b) give the specialists a retry wrapper, or (c) have `coder`/a critic treat an unresolvable
+`model_family` as recoverable. Worth deciding once, for all five.
 Status: open

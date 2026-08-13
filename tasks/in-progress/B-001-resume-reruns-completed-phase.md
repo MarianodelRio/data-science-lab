@@ -3,11 +3,11 @@ id: B-001
 type: bug
 agent: pipeline-agent
 depends_on: []
-status: available
+status: in-progress
 folders: ["tests/unit/graph/", "tests/integration/phases/", "tests/fixtures/"]
 outputs: [tests/unit/graph/test_checkpointer.py, shared network-free graph mock fixture]
 size: M
-branch: ~
+branch: fix/B-001-resume-reruns-completed-phase
 pr: ~
 ---
 

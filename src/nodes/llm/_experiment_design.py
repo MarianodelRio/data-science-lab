@@ -1,8 +1,8 @@
 """Shared `design.json` contract for the Pipeline Phase 5 specialist nodes —
-`classical_ml_specialist` (T-024) and, as they land, `deep_learning_specialist`
-(T-025), `nlp_specialist` (T-026), `timeseries_specialist` (T-027),
-`ensemble_specialist` (T-028) — plus their downstream consumer `coder` (T-029),
-which reads the file this module shapes.
+`classical_ml_specialist` (T-024) and `nlp_specialist` (T-026) landed; as they
+land, `deep_learning_specialist` (T-025), `timeseries_specialist` (T-027) and
+`ensemble_specialist` (T-028) — plus their downstream consumer `coder`
+(T-029), which reads the file this module shapes.
 
 This module declares no class matching its own filename stem
 (`_experiment_design`), so `src/graph/node_resolver.py`'s `_find_node_class`
@@ -609,6 +609,28 @@ def read_fold_summary(state: LabState, workspace: WorkspaceManager) -> str:
         return json.dumps({key: data.get(key) for key in _FOLD_SUMMARY_KEYS}, indent=2)
     except DEGRADE_ERRORS:
         return f"(unable to read frozen fold config at {path})"
+
+
+def read_solution_plan(state: LabState, workspace: WorkspaceManager) -> str:
+    """Read `state['solution_plan_path']` as pretty-printed JSON text. Degrades to
+    a placeholder, never raises — see `DEGRADE_ERRORS` for the caught set.
+
+    Hoisted from `classical_ml_specialist._read_solution_plan` (T-024) now that
+    `nlp_specialist` (T-026) needs the identical reader — see the 2026-08-11
+    T-024 entry in `context/decisions.md`, which sanctions this hoist once a
+    third copy exists (`feature_engineer`'s divergent `OSError`-only copy is the
+    first; `classical_ml_specialist`'s `DEGRADE_ERRORS` copy is the second).
+    `classical_ml_specialist`'s private copy is deliberately left in place —
+    already shipped and tested, not retroactively migrated by this hoist.
+    """
+    path = state.get("solution_plan_path") or ""
+    if not isinstance(path, str) or not path:
+        return "(solution plan not yet available)"
+    try:
+        data = workspace.read_json(relative_to_workspace(path, workspace))
+        return json.dumps(data, indent=2)
+    except DEGRADE_ERRORS:
+        return f"(unable to read solution plan at {path})"
 
 
 def resolve_feature_spec_ref(state: LabState, workspace: WorkspaceManager) -> str:

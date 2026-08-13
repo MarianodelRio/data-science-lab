@@ -401,10 +401,10 @@ agent, step 3).
   `resolve_node(chosen_name)` (`src/graph/node_resolver.py`) and returns that specialist's own
   delta, defensively coerced to `{}` if it isn't a `dict` — the same single-call/merge shape as
   `analysis_critic`'s own `resolve_node(target_node)(...)` retry-target call, minus the
-  retry loop. `classical_ml_specialist` (T-024) and `deep_learning_specialist` (T-025) have landed
-  and resolve to their real nodes; the remaining three (`nlp_specialist`, `timeseries_specialist`,
-  `ensemble_specialist` — T-026–T-028) still fall back to `NoOpNode`, which is `resolve_node`'s
-  documented "not implemented yet" behavior, not a bug.
+  retry loop. `classical_ml_specialist` (T-024), `deep_learning_specialist` (T-025) and
+  `nlp_specialist` (T-026) have landed and resolve to their real nodes; the remaining two
+  (`timeseries_specialist`, `ensemble_specialist` — T-027–T-028) still fall back to `NoOpNode`,
+  which is `resolve_node`'s documented "not implemented yet" behavior, not a bug.
 
 - **`classical_ml_specialist`** (`src/nodes/llm/classical_ml_specialist.py`, `LLMNode` subclass,
   `model_role: reasoning`) — `specialist_selector`'s *default* route, for tabular problems.
@@ -454,13 +454,29 @@ agent, step 3).
   iteration here by the time the node runs, so the prompt degrades capacity (a modest MLP rather
   than TabNet) and records the concern in `rationale` instead of refusing.
 
+- **`nlp_specialist`** (`src/nodes/llm/nlp_specialist.py`, `LLMNode` subclass, `model_role:
+  reasoning`) — `specialist_selector`'s route for text-heavy problems (routed via `_NLP_KEYWORDS`,
+  T-023). Structurally a mirror of `classical_ml_specialist`: `_build_messages` injects the same
+  three sections (`## Solution plan`, `## Frozen CV folds`, `## Feature spec reference`) as an extra
+  `HumanMessage`, each degrading to a placeholder rather than raising. Unlike
+  `classical_ml_specialist`, which keeps its own node-local `_read_solution_plan` copy, this node
+  uses the shared `read_solution_plan` now hoisted into `_experiment_design.py` (T-026 is the third
+  copy of that reader, meeting the hoist threshold the T-024 decision log pre-approved). It also
+  stashes the resolved feature-spec reference on the instance for `_write_output`, and
+  `_write_output` extracts and validates the JSON payload the same way before writing
+  `experiments/exp_{iteration}/design.json` via `workspace.write_json`. It picks one `model_family`
+  out of `tfidf_linear`/`sentence_embeddings`/`transformer_finetune` — normalized to the canonical
+  token by word-boundary alias matching (`TF-IDF`, `SBERT`, `DistilBERT fine-tuning`, ...), with an
+  **ambiguous** response naming two families rejected rather than resolved by precedence. It does
+  **not** override `_build_output_state`, for the same reason `classical_ml_specialist` does not.
+
 #### The `design.json` contract (shared by all Phase 5 specialists)
 
 `src/nodes/llm/_experiment_design.py` is the single source of truth for the shape of
-`experiments/exp_{iteration}/design.json` — imported by `classical_ml_specialist` (T-024) and, as
-they land, by `deep_learning_specialist` (T-025), `nlp_specialist` (T-026), `timeseries_specialist`
-(T-027) and `ensemble_specialist` (T-028), and read by `coder` (T-029). Like
-`_research_common.py`, it declares no class whose `name` equals its own module stem, so
+`experiments/exp_{iteration}/design.json` — imported by `classical_ml_specialist` (T-024) and
+`nlp_specialist` (T-026), landed, and as they land, by `deep_learning_specialist` (T-025),
+`timeseries_specialist` (T-027) and `ensemble_specialist` (T-028), and read by `coder` (T-029).
+Like `_research_common.py`, it declares no class whose `name` equals its own module stem, so
 `resolve_node` never mistakes it for a node module.
 
 `validate_experiment_design` is a **whitelist rebuild**: it returns a fresh dict with exactly these
@@ -522,6 +538,7 @@ parameter name may not appear in both `search_space` and `fixed_params`.
 | `specialist_selector` | Compute (`ComputeNode`) | 5 — Implementation | Landed (T-023) |
 | `classical_ml_specialist` | LLM (`LLMNode`) | 5 — Implementation | Landed (T-024) |
 | `deep_learning_specialist` | LLM (`LLMNode`) | 5 — Implementation | Landed (T-025) |
+| `nlp_specialist` | LLM (`LLMNode`) | 5 — Implementation | Landed (T-026) |
 
 ### ComputeNode base class
 

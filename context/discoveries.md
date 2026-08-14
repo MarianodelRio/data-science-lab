@@ -578,3 +578,48 @@ rejects will fail that test too, not only the smoke test.
 Not fixed here: `tasks/available/` is outside B-001's `folders:`, so the task file itself was left
 untouched.
 Status: open
+
+## OPEN — 2026-08-13 [pipeline-agent (B-001 review) → whoever next touches src/graph/]
+**Subgraph resume granularity is finer than the code comments claim: resume is node-granular
+*inside* a phase, not phase-atomic.** LangGraph propagates the parent checkpointer into
+subgraphs, so a crash mid-phase resumes at the next un-executed node within that phase rather
+than restarting the phase. Demonstrated by crashing mid-phase-1 immediately after
+`validation_strategist` had frozen `validation/fold_config.json`: on resume
+`validation_strategist` did **not** re-run, every phase-1 node count stayed at 1, and CLAUDE.md
+invariant #1 (write-once folds) held with no `FoldsAlreadyFrozenError`.
+Why this matters: `src/graph/phases/generic.py:31-32` ("Subgraph-level `compile()` takes no
+checkpointer/interrupts — those apply only once, at the top level") and the checkpointer test's
+own docstring both describe resume in phase-boundary terms. The real behavior is finer *and*
+safer — a phase-atomic resume would re-run `validation_strategist` and trip invariant #1. Recorded
+so nobody "fixes" the comment's version of the behavior into existence.
+Not fixed here: `src/graph/` is outside B-001's `folders:` (tests only), and this is a
+documentation/comment accuracy issue, not a defect.
+Status: open
+
+## OPEN — 2026-08-13 [pipeline-agent (B-001 review) → infra-agent (owns src/memory/) / whoever picks up CI (T-044)]
+**Pre-existing live network egress in `tests/tools/test_rag.py` — 13 tests reach
+`huggingface.co:443`.** `RagStore.__init__` calls `build_embedding_function()`
+(`src/memory/store.py:87`), which constructs a `SentenceTransformerEmbeddingFunction` and resolves
+the model over the network. The tests pass only because the model happens to be cached locally;
+on a cold CI runner they hit the network, and with egress blocked they would fail.
+**Not a B-001 regression** — confirmed identical on a clean `main`, and `tests/tools/` is arguably
+outside the literal "no network calls in unit tests" gate, since `design.md:703` designates
+`src/tools/rag` for a real Chroma test instance in the Integration column.
+The larger point: **there is currently no automated guard enforcing that gate at all** — which is
+precisely how B-001's live Kaggle `401` survived on `main`. A pytest plugin that raises on any
+non-loopback `socket.connect`/`socket.create_connection`/`socket.getaddrinfo` during `tests/unit`
+would make the rule structural instead of reviewer-dependent. Flagged as a candidate follow-up
+task; it belongs with CI (T-044) rather than in a test-only bug fix.
+Status: open
+
+## OPEN — 2026-08-13 [pipeline-agent (B-001 review) → whoever next curates the test layout]
+**`tests/unit/graph/test_checkpointer.py` is filed as a unit test but runs real subprocesses.**
+It drives phases 1-4 of the real graph, spawns real `code_executor` subprocesses and genuinely
+trains a `LogisticRegression` (~6.4s for the single resume test). `design.md`'s testing-strategy
+table gives `src/graph/` no Unit column at all — Integration + Smoke only.
+Largely pre-existing: main's version already invoked the real graph. B-001 deepened it, because
+fixing the mock set turned phase 3 from a silently-degrading no-op into a real training run.
+Candidate follow-up: relocate the file to `tests/integration/`. **Deliberately not done in B-001** —
+the bug is a test-correctness fix, a move would obscure the diff, and `tests/unit/graph/` is the
+path named in the bug's `folders:`.
+Status: open

@@ -10,9 +10,14 @@ retries (CLAUDE.md invariant #5) from being miscounted as phase re-execution.
 
 `node_resolver.resolve_node` is separately monkeypatched to wrap each resolved
 node in a call counter — this makes "did this node actually re-execute"
-observable without needing a real node. It is patched at *two* locations (see
+observable without needing a real node. It is patched at *three* locations (see
 `_install_counting_resolver`) so the counts do not depend on module import
 order.
+
+Call counts alone are not a sufficient resume assertion: they cannot tell a
+correct resume apart from one that re-ran the right nodes in the right order
+against a wiped state. The resume test therefore also asserts that phase 1's
+outputs survived the restart boundary.
 """
 
 from pathlib import Path
@@ -49,13 +54,20 @@ def _install_counting_resolver(monkeypatch: pytest.MonkeyPatch, call_counts: dic
 
         return _counting
 
-    # `builder.py` resolves through the module attribute (src/graph/builder.py:70-73),
-    # but `analysis_critic` binds `resolve_node` into its own namespace at import time
-    # (src/nodes/llm/analysis_critic.py:31) — its module docstring (lines 16-20) requires
-    # unit tests to patch it there, so B-001 does NOT change src/. Patching BOTH makes the
-    # count identical whether or not `analysis_critic` was already imported earlier in the session.
+    # `builder.py` resolves through the module attribute (src/graph/builder.py:70-73), so
+    # patching `node_resolver` alone covers every graph-driven node. But two nodes re-invoke
+    # other nodes themselves, and BOTH bind `resolve_node` into their own namespace at import
+    # time, where a `node_resolver` patch cannot reach them once they have been imported:
+    #   - `analysis_critic`   (src/nodes/llm/analysis_critic.py:31, called at :313)
+    #   - `specialist_selector` (src/nodes/compute/specialist_selector.py:79, called at :233)
+    # Both are patched here as well, so the counter total is identical whether or not either
+    # module happened to be imported earlier in the session — which is exactly the import-order
+    # dependence B-001 fixed. `analysis_critic`'s module docstring (lines 16-20) documents its
+    # own patch point as the contract its unit tests rely on, so B-001 does NOT change src/.
+    # If a third such import-time binder is ever added, it must be added here too.
     monkeypatch.setattr(node_resolver, "resolve_node", counting_resolve_node)
     monkeypatch.setattr("src.nodes.llm.analysis_critic.resolve_node", counting_resolve_node)
+    monkeypatch.setattr("src.nodes.compute.specialist_selector.resolve_node", counting_resolve_node)
 
 
 def test_resume_after_restart_does_not_rerun_completed_phase(
@@ -106,7 +118,21 @@ def test_resume_after_restart_does_not_rerun_completed_phase(
     assert call_counts.get("analysis_critic", 0) == 2
     # Halted at phase 4's interrupt; phase 5 never runs, which is why no specialist
     # node needs a mock.
-    assert second_graph.get_state(config).next == ("phase5_implementation",)
+    resumed = second_graph.get_state(config)
+    assert resumed.next == ("phase5_implementation",)
+
+    # Call counts and `next` alone cannot distinguish "resume worked" from "resume
+    # re-ran the right nodes in the right order against a wiped state" — blanking every
+    # phase-1 output before the post-restart phases leaves all of the assertions above
+    # green. These assert the phase-1 outputs actually survived the restart boundary and
+    # still point at the phase-1 artifacts the later phases consume.
+    assert resumed.values["eda_report_path"] == str(workspace_path / "reports" / "eda_report.md")
+    assert resumed.values["problem_definition_path"] == str(
+        workspace_path / "reports" / "problem_definition.json"
+    )
+    assert resumed.values["validation_config_path"] == str(
+        workspace_path / "validation" / "fold_config.json"
+    )
 
 
 def test_checkpoint_db_created_at_expected_path(tmp_path: Path) -> None:

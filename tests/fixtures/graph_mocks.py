@@ -46,7 +46,7 @@ from langchain_core.messages import AIMessage, BaseMessage
 # `{"train": [0], "val": [1]}` is a single-row, single-class training split
 # and dies inside `sklearn/linear_model/_logistic.py`.
 _MOCK_LLM_CONTENT = (
-    "## Smoke test narrative\n\nMocked LLM response for the phase-subgraph smoke test.\n\n"
+    "## Analysis narrative\n\nMocked fallback LLM response for graph-driven tests.\n\n"
     "```python\n"
     "import json\n"
     'print(json.dumps({"strategy": "stratified", "n_folds": 1, "seed": 0, '
@@ -58,7 +58,7 @@ _MOCK_LLM_CONTENT = (
 # fenced-python nodes — `_MOCK_LLM_CONTENT` above would fail their JSON
 # parsing, so the mock LLM dispatches on which node is calling (identified by
 # the `# System prompt — {name}` header text every node's system prompt
-# starts with, see the `make_llm_side_effect` docstring below).
+# starts with, see the `_make_llm_side_effect` docstring below).
 _MOCK_PROBLEM_DEFINITION = json.dumps(
     {
         "problem_type": "binary_classification",
@@ -215,7 +215,7 @@ _FAKE_KERNELS = [
 # header line. Order is load-bearing: it is preserved exactly from the
 # if-chain this table replaced, because `leakage_auditor`'s own prompt prose
 # mentions "problem_framer". `analysis_critic` is deliberately absent — it is
-# the opt-in branch handled in `make_llm_side_effect`.
+# the opt-in branch handled in `_make_llm_side_effect`.
 _DISPATCH: tuple[tuple[str, str], ...] = (
     ("problem_framer", _MOCK_PROBLEM_DEFINITION),
     ("leakage_auditor", _MOCK_LEAKAGE_AUDIT),
@@ -231,7 +231,7 @@ _DISPATCH: tuple[tuple[str, str], ...] = (
 )
 
 
-def make_llm_side_effect(
+def _make_llm_side_effect(
     *, analysis_critic_pass: bool = False
 ) -> Callable[[list[BaseMessage]], AIMessage]:
     """Build the mocked LLM's `invoke` side effect.
@@ -279,8 +279,19 @@ def graph_llm_mocks(*, analysis_critic_pass: bool = False) -> Iterator[MagicMock
     Everything else (config/prompt loading, `WorkspaceManager` file writes,
     `code_executor` subprocess execution) runs for real.
 
-    `analysis_critic_pass` is forwarded to `make_llm_side_effect` — see its
+    `analysis_critic_pass` is forwarded to `_make_llm_side_effect` — see its
     docstring for why the default is `False`.
+
+    **Enter this before *building* the graph or phase subgraph, not just
+    before invoking it.** `LLMNode.__init__` calls `LLMFactory.get()` at
+    construction time (`src/nodes/llm/base.py:78`), so a node constructed
+    outside this context holds a real provider client and will attempt a live
+    connection when invoked, even if the invocation itself happens inside.
+
+    Resetting the `LLMFactory._settings` class-level cache is the **caller's**
+    responsibility — this helper deliberately does not touch it. The
+    checkpointer fixture resets it on both sides of its `with`; the smoke
+    fixture does not. That asymmetry predates B-001 and is left as-is.
 
     Mock only the LLM network call for every real `LLMNode` a phase might
     resolve to, so consumers never make a real network call or depend on
@@ -330,7 +341,7 @@ def graph_llm_mocks(*, analysis_critic_pass: bool = False) -> Iterator[MagicMock
     the same reason.
     """
     mock_llm = MagicMock()
-    mock_llm.invoke.side_effect = make_llm_side_effect(analysis_critic_pass=analysis_critic_pass)
+    mock_llm.invoke.side_effect = _make_llm_side_effect(analysis_critic_pass=analysis_critic_pass)
 
     with (
         patch("src.nodes.llm.base.LLMFactory") as mock_factory,
@@ -382,9 +393,19 @@ def seed_raw_train_csv(workspace_path: Path) -> None:
     """Write the 5-row `data/raw/train.csv` that phase 3's real
     `baseline_runner` subprocess trains on.
 
-    Row count and class balance are matched to `_MOCK_LLM_CONTENT`'s
-    `[0, 1, 2]` / `[3, 4]` fold split: both splits contain both classes, which
-    `LogisticRegression.fit` requires.
+    Row count and class balance are matched to a `[0, 1, 2]` / `[3, 4]` fold
+    split: both splits contain both classes, which `LogisticRegression.fit`
+    requires.
+
+    There are TWO copies of that split and this CSV is coupled to both — change
+    one and you must change the others:
+      1. `_MOCK_LLM_CONTENT` above, which `validation_strategist` freezes into
+         `validation/fold_config.json` (the checkpointer test's path, where
+         phase 1 runs for real).
+      2. The literal seeded by `_seed_phase3_baseline_fixtures` in
+         `tests/integration/phases/test_phase_subgraphs_smoke.py`, which
+         exercises phase 3 standalone with no phase-1 run ahead of it and so
+         never sees `_MOCK_LLM_CONTENT`'s folds at all.
     """
     raw_dir = workspace_path / "data" / "raw"
     raw_dir.mkdir(parents=True, exist_ok=True)

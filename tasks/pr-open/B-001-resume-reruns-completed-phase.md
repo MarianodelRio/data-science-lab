@@ -193,3 +193,55 @@ All five are logged in `context/decisions.md`.
   `tasks/available/T-047-feature-spec-v2-fit-scope.md:130` points at `_MOCK_FEATURE_SPEC` in the
   smoke test, which now lives in `tests/fixtures/graph_mocks.py` and is seen by both consumers.
 - `docs/pipeline.md` untouched — no public behavior changed.
+
+### Review round (2026-08-13)
+
+Verdicts: code-quality CLEAN (3 warnings, 3 nits), security CLEAN (3 INFO), smoke-tester 9/9 PASS,
+adversarial WARNING (2 MEDIUM, 1 LOW). No blockers. Nine follow-ups applied in a second commit;
+`src/` still untouched, nothing relocated.
+
+- **Third import-time `resolve_node` binder** (MEDIUM). `src/nodes/compute/specialist_selector.py:79`
+  binds `resolve_node` at module level and calls it at :233 — the same bug class B-001 fixed for
+  `analysis_critic`. No failure today (the run halts at phase 4's interrupt, so phase 5 never
+  executes), but the previous comment's claim that patching two locations made counts import-order
+  independent was false for the resolver set as a whole. `_install_counting_resolver` now patches all
+  three, and the comment enumerates them with a note to extend it if a fourth appears.
+- **State-continuity assertions** (MEDIUM). Every assertion was a call count or a `.next` tuple, so
+  the test could not distinguish "resume worked" from "resume re-ran the right nodes in the right
+  order against a wiped state". Added three assertions that phase 1's `eda_report_path`,
+  `problem_definition_path` and `validation_config_path` survived the restart and still point at the
+  phase-1 artifacts. **Mutation-verified** — see below.
+- **`graph_llm_mocks` construction-time precondition** (INFO). `LLMNode.__init__` calls
+  `LLMFactory.get()` at construction (`src/nodes/llm/base.py:78`), so the context manager must wrap
+  graph/subgraph *construction*, not only invocation. Documented in the docstring.
+- **`LLMFactory._settings` cache reset** (nit). Documented as the caller's responsibility, so the
+  asymmetry between the two fixtures (inherited from main, left alone) is explained rather than
+  mysterious.
+- **`tests/fixtures/__init__.py` docstring** (WARNING) overstated its effect. Softened to match
+  `context/decisions.md`: `tests/` has no `__init__.py`, so the import resolves via the root
+  `conftest.py` putting rootdir on `sys.path` under pytest's default prepend import mode.
+- **`make_llm_side_effect` → `_make_llm_side_effect`** (WARNING). No external consumer; the module
+  applies the `_`-prefix convention rigorously elsewhere. Docstring kept intact.
+- **`seed_raw_train_csv` docstring** (LOW) named only one of two couplings. The smoke test's phase-3
+  case seeds its own literal fold split and never sees `_MOCK_LLM_CONTENT`'s; both copies are now
+  named so an editor cannot desynchronize them.
+- **`_MOCK_LLM_CONTENT` narrative text** (nit) still self-described as smoke-test-only despite now
+  being the checkpointer test's fallback too. Reworded.
+- **Three new `context/discoveries.md` entries**: subgraph resume is node-granular inside a phase
+  (finer than the code comments claim, and it is what keeps invariant #1 safe); pre-existing live
+  `huggingface.co` egress from `tests/tools/test_rag.py` plus the absence of any automated guard for
+  the no-network gate; and this file being a "unit" test that runs real subprocesses (candidate
+  relocation to `tests/integration/`, deliberately not done here).
+
+**Mutation evidence for the state-continuity fix.** Blanking the three phase-1 path fields via
+`second_graph.update_state(...)` between the rebuild and `invoke(None)` left **all 13 count
+assertions and the `next` assertion green**, and failed only at the new assertion:
+
+```
+>       assert resumed.values["eda_report_path"] == str(workspace_path / "reports" / "eda_report.md")
+E       AssertionError: assert '' == '/tmp/pytest-...eda_report.md'
+E         - /tmp/pytest-of-mariano/pytest-7/test_resume_after_restart_does0/workspace/reports/eda_report.md
+1 failed, 1 passed
+```
+
+That is exactly the hole the reviewer described, and it is now closed. Mutation reverted.

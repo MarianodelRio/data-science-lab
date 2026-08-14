@@ -3,11 +3,11 @@ id: T-027
 phase: 2
 agent: pipeline-agent
 depends_on: [T-010]
-status: available
+status: in-progress
 folders: ["src/nodes/llm/", "config/agents/", "config/prompts/"]
 outputs: [timeseries_specialist node, experiment design with Optuna search space]
 size: S
-branch: ~
+branch: feature/T-027-node-timeseries-specialist
 pr: ~
 ---
 

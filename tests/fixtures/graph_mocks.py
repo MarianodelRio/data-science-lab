@@ -181,6 +181,25 @@ _MOCK_DEEP_LEARNING_DESIGN = json.dumps(
     }
 )
 
+# timeseries_specialist (T-027) shares that schema but carries its own model
+# family table (`arima`/`prophet`/`exponential_smoothing`/`gradient_boosting_lags`/
+# `linear_lags`), so neither sibling payload's family would be accepted — it needs
+# its own dispatch entry too. The ARIMA `order` is a hyphenated string token, not a
+# JSON array, because `choices` accepts only JSON scalars (see
+# config/prompts/timeseries_specialist/v1.md § Tuple-shaped hyperparameters).
+_MOCK_TIMESERIES_DESIGN = json.dumps(
+    {
+        "model_family": "arima",
+        "search_space": {
+            "order": {"type": "categorical", "choices": ["1-0-0", "1-1-1"]},
+            "n_lags": {"type": "int", "low": 1, "high": 14},
+        },
+        "fixed_params": {},
+        "preprocessing": ["differencing"],
+        "rationale": "Smoke-test placeholder temporal experiment design.",
+    }
+)
+
 # One payload serves both `analysis_critic` invocations. In
 # `config/phases/phase1_understanding.yaml` `data_analyst` is listed in
 # `critic.targets`, so the target below is honored as-is; in
@@ -224,6 +243,7 @@ _DISPATCH: tuple[tuple[str, str], ...] = (
     ("feature_engineer", _MOCK_FEATURE_SPEC),
     ("classical_ml_specialist", _MOCK_CLASSICAL_ML_DESIGN),
     ("deep_learning_specialist", _MOCK_DEEP_LEARNING_DESIGN),
+    ("timeseries_specialist", _MOCK_TIMESERIES_DESIGN),
     ("literature_researcher", _MOCK_EMPTY_EXTRACTION),
     ("web_researcher", _MOCK_EMPTY_EXTRACTION),
     ("competition_analyst", _MOCK_COMPETITION_ANALYSIS),

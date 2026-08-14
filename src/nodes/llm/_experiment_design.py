@@ -1,7 +1,7 @@
 """Shared `design.json` contract for the Pipeline Phase 5 specialist nodes —
-`classical_ml_specialist` (T-024) and `nlp_specialist` (T-026) landed; as they
-land, `deep_learning_specialist` (T-025), `timeseries_specialist` (T-027) and
-`ensemble_specialist` (T-028) — plus their downstream consumer `coder`
+`classical_ml_specialist` (T-024), `deep_learning_specialist` (T-025),
+`nlp_specialist` (T-026) and `timeseries_specialist` (T-027) landed; plus
+`ensemble_specialist` (T-028) as it lands, and their downstream consumer `coder`
 (T-029), which reads the file this module shapes.
 
 This module declares no class matching its own filename stem

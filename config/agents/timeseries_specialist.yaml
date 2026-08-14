@@ -1,0 +1,6 @@
+name: timeseries_specialist
+model_role: reasoning
+prompt_version: v1
+tools: []
+output_file_pattern: "experiments/exp_{iteration}/design.json"
+max_tokens: 4096

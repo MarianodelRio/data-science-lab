@@ -623,3 +623,34 @@ Candidate follow-up: relocate the file to `tests/integration/`. **Deliberately n
 the bug is a test-correctness fix, a move would obscure the diff, and `tests/unit/graph/` is the
 path named in the bug's `folders:`.
 Status: open
+
+## OPEN — 2026-08-14 [pipeline-agent (T-027) → pipeline-agent (T-028 ensemble_specialist, T-029 coder)]
+**The NoOp-test re-pointing chain in `tests/unit/nodes/compute/test_specialist_selector.py` is
+terminated — T-028 must NOT re-point anything there.** With `timeseries_specialist` landed, all five
+real specialist names resolve to real `LLMNode` subclasses, so routing the *real* `resolve_node` to
+any of them from a unit test constructs a chat model and attempts a live API call (T-025's review
+caught a real `401` this way). T-027 rewrote that block: the NoOp path now runs through a sentinel
+`NEVER_LANDING_SPECIALIST = "never_landing_specialist"` that no module will ever implement, and the
+selector-level NoOp test patches the module-private `_select_by_signal` so the real `resolve_node`
+still runs but can never be handed a real specialist name. Neither test needs re-pointing again.
+**T-028 should add only a `test_real_resolve_node_resolves_landed_ensemble_specialist` case.**
+Carrying forward the T-025 warning: these test *bodies* merge without conflict markers, so a
+concurrent branch must diff the bodies, not merely resolve markers. Verified both ways — with the
+provider env vars unset and set to fake values, under a socket-blocking pytest plugin, the file makes
+zero network calls; the pre-rewrite version fails under the same guard.
+Status: open (advisory for T-028)
+
+## OPEN — 2026-08-14 [pipeline-agent (T-027) → pipeline-agent (T-028, T-029 coder)]
+**The T-025 "disjoint vocabularies" hazard is mitigated here, not fixed.** `specialist_selector`
+routes on "time series forecasting"/"forecast"/"arima"/"prophet", and its timeseries branch is
+checked *first*, so an LSTM or RNN forecasting plan lands on `timeseries_specialist` — whose family
+table does not accept `lstm`/`rnn`. That asymmetry is pinned by
+`test_unsupported_model_family_raises` rather than papered over: adding neural families here would
+duplicate `deep_learning_specialist`'s table and make the routing boundary meaningless. Likewise, a
+generic answer ("forecasting", "lag features") still hard-aborts the phase with zero artifacts,
+because these nodes have no retry wrapper (Phase 5's `code_critic` targets `coder`, not the
+specialists). Generous aliasing plus an explicit prompt is the only mitigation, consistent with all
+three landed siblings. The structural fix — a retry/repair wrapper around specialist responses, or a
+`normalize_model_family` longest-match rule — remains unowned; it touches the shared contract and
+belongs in its own task.
+Status: open

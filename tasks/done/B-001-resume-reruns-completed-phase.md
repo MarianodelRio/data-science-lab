@@ -3,7 +3,7 @@ id: B-001
 type: bug
 agent: pipeline-agent
 depends_on: []
-status: pr-open
+status: done
 folders: ["tests/unit/graph/", "tests/integration/phases/", "tests/fixtures/"]
 outputs: [tests/unit/graph/test_checkpointer.py, shared network-free graph mock fixture]
 size: M

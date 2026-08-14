@@ -91,6 +91,13 @@ def test_phase_subgraph_compiles_and_runs(stem: str, tmp_path) -> None:
         assert design["cv_strategy_ref"] == "validation/fold_config.json"
         assert "n_estimators" in design["search_space"]
 
+        # `code_critic` (T-030) is a real node now, not a `NoOpNode` — its
+        # verdict record landing proves the live edge. Like `analysis_critic`,
+        # it is deliberately left undispatched in `graph_mocks._DISPATCH`, so
+        # the fallback mock response normalizes to `iterate` and this is the
+        # only place the real forced-pass path runs through a real graph.
+        assert (tmp_path / "reports" / "code_critic_verdicts_iter0.json").is_file()
+
 
 def test_phase5_subgraph_routes_neural_plan_to_deep_learning_specialist(tmp_path) -> None:
     """The parametrized phase-5 case above runs on an unseeded workspace, so

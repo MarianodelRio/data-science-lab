@@ -716,4 +716,37 @@ to a boosting family (see the T-027 decisions entry). The docstring documents a 
 table, so the claim was always illustrative rather than normative, and it is **deliberately not
 edited here**: `_experiment_design.py` is shared by four landed specialists and this task's only
 sanctioned touch to it is its module docstring. Flagged so nobody reads it as a guarantee.
+## OPEN — 2026-08-14 [pipeline-agent (T-030) → pipeline-agent (whoever owns the `src/nodes/llm/base.py` refactor)]
+**The critic retry-guard + verdict-normalization block is now duplicated twice.**
+`analysis_critic.py:232-374` and `code_critic.py` carry structurally identical implementations of:
+the per-target `retry_counts` guard, the `(max_retries + 1) * max(len(targets), 1)` global cap with
+its pigeonhole comment, the forced-pass attempt record, the `target_delta`/`target_messages` merge,
+and a `_parse_verdict` that normalizes verdict/target/feedback and never raises. Separately, the
+JSON-extraction count is now at **eight** call sites (see the 2026-08-12 T-024 entry above at
+`context/discoveries.md:296-312`, which proposes hoisting the extractor trio into `base.py`).
+Proposal: extend that same task to also hoist `run_critic_retry_loop(...)` / `parse_verdict(...)`
+alongside the extractor trio, and migrate both critics.
+Preserve the deliberate differences when merging — they are not accidents:
+- `analysis_critic` catches `FoldsAlreadyFrozenError` (scoped to `validation_strategist`);
+  `code_critic` deliberately has **no** `try/except` around the target call, because `coder` has no
+  write-once guard and a real crash must surface.
+- `analysis_critic` overrides `_resolve_output_path` for a `{phase}` placeholder (it runs in two
+  phases at the same iteration); `code_critic` runs in one phase and uses the base implementation.
+- `code_critic`'s attempt records carry an extra `code_available` flag.
+- `code_critic` binds `resolve_node` through the `node_resolver` *module attribute* (B-001);
+  `analysis_critic` still uses the import-time form, and its module docstring documents that as its
+  unit tests' patch point. A hoist must not silently flip one of them.
+Not done in T-030: `src/nodes/llm/base.py` is reserved for that separate refactor task, and
+touching it from a node-scoped task means migrating landed modules in a PR scoped to one node.
+Status: open
+
+## OPEN — 2026-08-14 [pipeline-agent (T-030) → pipeline-agent (T-027, T-028)]
+**Merge-conflict heads-up, same shape as the resolved T-024/T-023 one.** T-030 appends to
+`docs/agents.md`'s agent table, `docs/pipeline.md` § Implementation (Phase 5) (a `code_critic`
+bullet placed after the last specialist bullet, immediately before `#### The design.json contract`)
+and its § Node classification table, and to the tails of `context/decisions.md` and
+`context/discoveries.md`. T-027 (`timeseries_specialist`, in progress) and T-028
+(`ensemble_specialist`) touch exactly the same five tails. Resolve **keep-both**: the specialist
+bullets and the `code_critic` bullet are independent additions, and `code_critic` belongs last in
+the § Implementation section because it is the phase's last node.
 Status: open

@@ -1,0 +1,6 @@
+name: code_critic
+model_role: implementation
+prompt_version: v1
+tools: []
+output_file_pattern: "reports/code_critic_verdicts_iter{iteration}.json"
+max_tokens: 2048

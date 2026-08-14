@@ -525,6 +525,62 @@ agent, step 3).
   it there is a **pipeline convention stated in the prompt**, not a schema rejection, so that `coder`
   (T-029) has one encoding to parse rather than two; the string convention itself is unvalidated
   (see `context/discoveries.md`).
+- **`code_critic`** (`src/nodes/llm/code_critic.py`, `LLMNode` subclass, `model_role:
+  implementation`, T-030) — the phase's **last** node, and its critic (`critic: {node: code_critic,
+  targets: [coder], max_retries: 3}` in `config/phases/phase5_implementation.yaml`). Like
+  `analysis_critic` it overrides `LLMNode.__call__` **wholesale** rather than composing via the
+  `_build_messages`/`_write_output`/`_build_output_state` hooks, because it owns its own retry
+  control flow (T-009's "a critic's own node function re-invokes its target node(s) directly …
+  entirely inside its own `__call__`"). It does **not** override `_resolve_output_path`: unlike
+  `analysis_critic` it runs in exactly one phase, so `{iteration}` alone disambiguates and the base
+  implementation suffices.
+
+  **Review sections.** Each cycle it injects one `HumanMessage` with four labeled sections, all read
+  through `WorkspaceManager` and all degrading to a placeholder rather than raising (the readers
+  catch `_experiment_design.DEGRADE_ERRORS` — `(OSError, ValueError, RecursionError)` — not a bare
+  `OSError`, so a non-UTF-8 artifact or an out-of-workspace path degrades too):
+  `## Generated training code (train.py)` (fenced as ```python; `(unable to read … — there is
+  nothing to review)` when absent, which the prompt treats as a hard `iterate`, and truncated at
+  20 000 characters with an in-band `... (truncated at N characters of generated code)` marker),
+  `## Experiment design (design.json)` and `## Experiment results (results.json)` (`({filename} not
+  available for this experiment)`, read as *text*, never `read_json`), and `## Frozen CV folds` (the
+  shared `read_fold_summary`). The candidate experiment directory is resolved **once per cycle** and
+  shared by all three file readers, so code, design and results always come from the same directory:
+  `state["experiments"][-1]["path"]` when usable (re-relativized; a value with a suffix is treated
+  as a file pointer and its parent taken, since `coder` (T-029) has not fixed which it records),
+  otherwise the well-known `experiments/exp_{current_iteration}/`.
+
+  **Retry contract.** The budget is read from `load_phase_config("phase5_implementation").critic
+  .max_retries` — *not* `Settings.execution.max_critic_retries` (both are `3` today; the phase YAML
+  is the contract that also names the critic and its targets, and it allows a per-phase budget).
+  Counts are kept **per target**; on the `max_retries + 1`-th `iterate` for a target the node
+  appends a `forced_pass: True` record and breaks (CLAUDE.md invariant #5). A global
+  `(max_retries + 1) * max(len(targets), 1)` cycle cap wraps the loop as defense-in-depth (with one
+  target it is provably unreachable — same pigeonhole argument as `analysis_critic`). The target is
+  re-invoked as `node_resolver.resolve_node(target)(working_state)` — bound through the **module
+  attribute**, matching `src/graph/builder.py` and deliberately not `analysis_critic`'s import-time
+  form, which B-001 showed to be import-order fragile. There is **no** `try/except` around that
+  call: `coder` has no write-once exception (`FoldsAlreadyFrozenError` is
+  `validation_strategist`-specific), so a real crash in the target must surface. A malformed
+  response, an unknown `verdict` value or a blank `feedback` all normalize to `iterate` with
+  non-empty synthesized feedback, via `_experiment_design.extract_json_object` (fence stripping plus
+  first-`{`-to-last-`}` salvage) rather than another private fence-stripper copy.
+
+  **State delta.** `{"messages": [...]}` **only** — no new `LabState` field. `src/state.py` is a
+  protected contract and `experiments` has no writer in `src/` yet, so the generated code is located
+  at a well-known workspace path (the `design.json` precedent) instead. The retried target's
+  non-`messages` delta *is* merged into the node-local `working_state` — that is what lets the next
+  review cycle re-read the regenerated `train.py` when `coder` moves the recorded path — but it is
+  never returned.
+
+  **Output.** `workspace.write_json(self._resolve_output_path(state), {...})` (the *original*
+  `state`, so a target delta cannot move the record path mid-loop) writes
+  `reports/code_critic_verdicts_iter{iteration}.json` with `phase`, `targets`, `attempts` (one
+  record per cycle: `verdict`, `feedback`, `target_node`, `code_available`, plus `forced_pass` on a
+  forced record) and `final_verdict` (the last attempt). Caveat: nothing in `src/` increments
+  `state["current_iteration"]` yet (see `context/discoveries.md`), so today every iteration of a run
+  writes `…_iter0.json` and the later write wins. Documented, not fixed here — a `current_iteration`
+  writer is a `src/graph/` change owned by the evaluation-phase tasks.
 
 #### The `design.json` contract (shared by all Phase 5 specialists)
 
@@ -596,6 +652,7 @@ parameter name may not appear in both `search_space` and `fixed_params`.
 | `deep_learning_specialist` | LLM (`LLMNode`) | 5 — Implementation | Landed (T-025) |
 | `nlp_specialist` | LLM (`LLMNode`) | 5 — Implementation | Landed (T-026) |
 | `timeseries_specialist` | LLM (`LLMNode`) | 5 — Implementation | Landed (T-027) |
+| `code_critic` | LLM (`LLMNode`) | 5 — Implementation | Landed (T-030) |
 
 ### ComputeNode base class
 

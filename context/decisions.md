@@ -1502,3 +1502,63 @@ convention itself is entirely unvalidated (`"1,1,1"`, `"(1,1,1)"`, `"1-1"`, `"ba
 `coder` (T-029) must parse defensively; recorded in `context/discoveries.md`. The identical
 incorrect claim is inherited from `nlp_specialist`'s `ngram_range` section — flagged in discoveries,
 deliberately not edited in that landed sibling.
+## 2026-08-14 — T-030 [pipeline-agent]
+**`code_critic` locates the generated code by well-known workspace path, not by a new `LabState`
+field.** `src/state.py` is a protected contract and `experiments: list[dict]` — the only field that
+could carry a generated-code pointer — has no writer anywhere in `src/` yet, so adding one would
+have meant a protected-contract change plus a writer in a node this task does not own. The node
+therefore reads `experiments/exp_{current_iteration}/train.py` (plus `design.json`/`results.json`
+from the same directory), exactly the precedent the Phase 5 specialists set for `design.json`. When
+`state["experiments"][-1]["path"]` *is* usable it is preferred, so the node keeps working unchanged
+once `coder` (T-029) starts recording it; because T-029 has not fixed whether that value is the
+directory or `results.json` inside it, a value carrying a suffix is treated as a file pointer and
+its parent is used. Absolute values are re-relativized; `..`, out-of-workspace and non-string values
+fall back to the well-known directory rather than raising.
+
+**Retry budget from the phase YAML, not `Settings`.** `max_retries` comes from
+`load_phase_config("phase5_implementation").critic.max_retries`, not
+`Settings.execution.max_critic_retries`. Both are `3` today, but the phase YAML is the contract that
+*also* names `code_critic` as the phase's critic and `[coder]` as its targets — reading the budget
+from anywhere else would let the two drift — and it allows a per-phase budget. The unit test reads
+the same value from the same loader rather than hardcoding `3`.
+
+**`resolve_node` bound through the `node_resolver` module attribute.** `from src.graph import
+node_resolver` + `node_resolver.resolve_node(target)` at call time, matching
+`src/graph/builder.py:70-73` — deliberately *not* `analysis_critic`'s import-time
+`from src.graph.node_resolver import resolve_node`, which B-001 proved import-order fragile
+(a `monkeypatch.setattr` on the resolver module silently fails to reach it once the node module is
+imported). Consequence recorded in the module docstring: unit tests patch
+`src.graph.node_resolver.resolve_node`, and `src.nodes.llm.code_critic.resolve_node` deliberately
+does not exist, so `tests/unit/graph/test_checkpointer.py::_install_counting_resolver` needs no
+third binder for this node.
+
+**JSON extraction and degrade errors reused from `_experiment_design.py`, not re-copied.**
+`extract_json_object`, `DEGRADE_ERRORS` and `read_fold_summary` are imported rather than
+reimplemented — an eighth private fence-stripper copy was explicitly rejected by the Orchestrator
+(see the open T-024 entry in `context/discoveries.md`). `extract_json_object` subsumes both cases
+`analysis_critic._fence_candidates` was built for: its `rfind("```")` anchor parses a ```python
+fence quoted *inside* the `feedback` value, and its first-`{`-to-last-`}` salvage recovers the
+verdict from prose or a stray trailing fenced block. `extract_json_object`'s `specialist` parameter
+is an error-attribution label only, so passing `"code_critic"` is correct usage.
+
+**Generated code truncated at 20 000 characters with an in-band marker.** The prompt window has to
+stay bounded (same spirit as `read_fold_summary` refusing to inline `fold_indices`); the marker
+tells the critic its view is partial so it says so in the feedback instead of passing silently.
+`design.json`/`results.json` are *not* truncated — they are small structured artifacts, and
+truncating JSON mid-object would be worse than showing it whole.
+
+**No `try/except` around the target re-invocation.** `analysis_critic` catches
+`FoldsAlreadyFrozenError` because `validation_strategist` has a documented write-once guard;
+`coder` has no equivalent, so a real crash in the target must surface rather than be laundered into
+a forced pass.
+
+**`tests/fixtures/graph_mocks.py` left un-dispatched for `code_critic`.** With no entry in
+`_DISPATCH`, the fallback `_MOCK_LLM_CONTENT` fails JSON parsing, normalizes to `iterate`,
+re-invokes the (still `NoOpNode`) `coder` three times and then forces a pass — which is real
+executed coverage of the forced-pass path through a real graph, and the only such coverage there
+is. Same reasoning B-001 used to keep `analysis_critic_pass=False` as the default.
+
+**Discarded alternatives:** a new `LabState` field for the generated-code path (protected contract,
+no writer); hoisting the critic retry loop into `src/nodes/llm/base.py` (reserved for a separate
+refactor task — logged in `context/discoveries.md` instead); a `{phase}` placeholder in
+`output_file_pattern` (this node runs in exactly one phase, so `{iteration}` alone disambiguates).

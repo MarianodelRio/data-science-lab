@@ -3,12 +3,12 @@ id: B-001
 type: bug
 agent: pipeline-agent
 depends_on: []
-status: in-progress
+status: pr-open
 folders: ["tests/unit/graph/", "tests/integration/phases/", "tests/fixtures/"]
 outputs: [tests/unit/graph/test_checkpointer.py, shared network-free graph mock fixture]
 size: M
 branch: fix/B-001-resume-reruns-completed-phase
-pr: ~
+pr: "https://github.com/MarianodelRio/data-science-lab/pull/29"
 ---
 
 ## `test_resume_after_restart_does_not_rerun_completed_phase` fails on clean `main`

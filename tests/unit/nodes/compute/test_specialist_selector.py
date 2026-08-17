@@ -559,50 +559,72 @@ def test_non_dict_specialist_return_value_becomes_empty_dict(tmp_path) -> None:
         assert delta == {}
 
 
-# -- real, un-mocked resolve_node: NoOpNode for specialists that have not landed yet --
+# -- real, un-mocked resolve_node: NoOpNode for a name no module implements --
 #
-# `classical_ml_specialist` (T-024), `deep_learning_specialist` (T-025) and `nlp_specialist` (T-026)
-# have landed, so none of them is a NoOpNode any more and none may be routed to here: dispatching
-# to a real LLMNode would construct a chat model and attempt a live API call, which unit tests may
-# never do. These two tests therefore route to a specialist that is still unimplemented
-# (`timeseries_specialist`, T-027), which the 4-branch precedence in `_select_by_signal` reaches
-# first of all. See the three `..._resolves_landed_..._specialist` tests below for the landed cases.
+# THE RE-POINTING CHAIN IS TERMINATED. All five real specialist names —
+# `classical_ml_specialist` (T-024), `deep_learning_specialist` (T-025), `nlp_specialist` (T-026),
+# `timeseries_specialist` (T-027) and, once it lands, `ensemble_specialist` (T-028) — resolve to
+# real `LLMNode` subclasses. Routing the real `resolve_node` to any of them from a unit test
+# constructs a chat model and attempts a live API call, which unit tests may never do (T-025's
+# review caught a real `401` here). The three earlier re-pointings (T-024 -> deep_learning,
+# T-025 -> nlp, T-025/T-026 -> timeseries) exhausted the supply of unlanded names.
 #
-# NOTE for whoever lands T-027 and T-028: this re-pointing has now happened three times (T-024 ->
-# deep_learning, T-025 -> nlp, T-025/T-026 -> timeseries) and there is no unlanded specialist left
-# after T-027. The chain must end there: `test_real_resolve_node_resolves_unlanded_...` can use a
-# name that will never exist (it only exercises `resolve_node`'s not-implemented path), and the
-# selector test below needs either a mocked `resolve_node` or deletion, since the real selector can
-# only ever choose one of the five real names. Do not simply re-point again -- and note that the two
-# test *bodies* merge without a conflict marker, so a silent stale route is easy to ship.
+# So the NoOp path is exercised through `NEVER_LANDING_SPECIALIST` only, and the selector test
+# below patches the module-private `_select_by_signal` so the *real* `resolve_node` still runs but
+# can never be handed a real specialist name. Neither needs re-pointing again, ever.
+#
+# NOTE for whoever lands T-028: add only a `..._resolves_landed_ensemble_specialist` test below.
+# Do NOT re-point anything in this block — there is nothing left to re-point to, and doing so
+# reintroduces the live-network bug. Note also that these test *bodies* merge without a conflict
+# marker (verified in T-025), so a concurrent branch must diff the bodies, not merely resolve
+# markers.
+
+# Deliberately not one of the five real specialist names, and no module will ever exist at
+# `src/nodes/{llm,compute}/never_landing_specialist.py` — that is the whole point: it pins
+# `resolve_node`'s documented "not implemented yet" fallback without depending on which
+# specialists happen to have landed.
+NEVER_LANDING_SPECIALIST = "never_landing_specialist"
 
 
-def test_real_resolve_node_falls_back_to_noop_and_returns_empty_dict(tmp_path) -> None:
+def test_real_resolve_node_noop_fallback_makes_run_return_empty_dict(tmp_path) -> None:
+    """The real `resolve_node` -> real `NoOpNode` -> `run` returns `{}` rather than raising.
+
+    `_select_by_signal` is patched (not `resolve_node`) so everything downstream of the choice
+    stays real; the seeded plan is neutral tabular with `ensembling_strategy: ""`, so
+    `_should_ensemble` is `False` and the patched function is genuinely reached.
+    """
     _seed_workspace(
         tmp_path,
-        {"problem_type": "time_series_forecasting"},
+        {"problem_type": "binary_classification"},
         {
-            "model_families": ["prophet"],
-            "order": ["prophet"],
+            "model_families": ["lightgbm"],
+            "order": ["lightgbm"],
             "ensembling_strategy": "",
-            "rationale": "forecast baseline",
+            "rationale": "tabular baseline",
         },
     )
     state = _build_state(tmp_path)
 
-    node = SpecialistSelectorNode()
-    delta = node.run(state)
+    with patch(
+        "src.nodes.compute.specialist_selector._select_by_signal",
+        return_value=NEVER_LANDING_SPECIALIST,
+    ) as mock_select_by_signal:
+        node = SpecialistSelectorNode()
+        delta = node.run(state)
 
+    # Fails loudly if a future refactor stops routing through `_select_by_signal`, which would
+    # otherwise silently hand the real `resolve_node` a real specialist name again.
+    assert mock_select_by_signal.called
     assert delta == {}
 
 
-def test_real_resolve_node_resolves_unlanded_specialist_to_noopnode(tmp_path) -> None:
+def test_real_resolve_node_resolves_unknown_name_to_noopnode(tmp_path) -> None:
     from src.graph.node_resolver import resolve_node
 
     _seed_workspace(tmp_path, {"problem_type": "time_series_forecasting"}, {})
-    resolved = resolve_node("timeseries_specialist")
+    resolved = resolve_node(NEVER_LANDING_SPECIALIST)
     assert isinstance(resolved, NoOpNode)
-    assert resolved.name == "timeseries_specialist"
+    assert resolved.name == NEVER_LANDING_SPECIALIST
 
 
 def test_real_resolve_node_resolves_landed_classical_ml_specialist(tmp_path, monkeypatch) -> None:
@@ -670,6 +692,28 @@ def test_real_resolve_node_resolves_landed_nlp_specialist(tmp_path, monkeypatch)
     assert isinstance(resolved, NlpSpecialistNode)
     assert not isinstance(resolved, NoOpNode)
     assert resolved.name == "nlp_specialist"
+
+
+def test_real_resolve_node_resolves_landed_timeseries_specialist(tmp_path, monkeypatch) -> None:
+    from src.graph.node_resolver import resolve_node
+    from src.nodes.llm.timeseries_specialist import TimeseriesSpecialistNode
+
+    # Same fake-env rationale as the classical case above: resolution constructs the node (which
+    # loads `Settings`), it never invokes it, so no client is built and no request is made.
+    for var in (
+        "ANTHROPIC_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "GROQ_API_KEY",
+        "KAGGLE_USERNAME",
+        "KAGGLE_KEY",
+    ):
+        monkeypatch.setenv(var, "unit-test-fake-value")
+
+    _seed_workspace(tmp_path, {"problem_type": "time_series_forecasting"}, {})
+    resolved = resolve_node("timeseries_specialist")
+    assert isinstance(resolved, TimeseriesSpecialistNode)
+    assert not isinstance(resolved, NoOpNode)
+    assert resolved.name == "timeseries_specialist"
 
 
 # -- ComputeNode.__call__ delegates to run --

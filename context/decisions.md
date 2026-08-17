@@ -1394,3 +1394,111 @@ it as optional). It touches `src/`, which the bug's own diagnosis established ne
 resolve_node` patch point as the contract its own unit tests rely on — flipping it would break those
 tests for no behavioral gain. If it is ever revisited, it should be its own task with its own
 justification, per the bug file.
+
+## 2026-08-14 — T-027 [pipeline-agent]
+**`timeseries_specialist` accepts exactly five canonical model families:** `arima`, `prophet`,
+`exponential_smoothing`, `gradient_boosting_lags`, `linear_lags` (human-checkpoint decision, pinned
+by `test_model_family_table_is_exactly_the_five_families`). Three classical univariate forecasters
+plus the two "model over lag features" shapes covers what `coder` (T-029) can plausibly build from a
+`design.json`; anything narrower would leave the selector's forecasting route with no defensible
+fallback when the temporal signal is thin.
+
+**Alias table: brand tokens discriminate; routing words and the bare lag modifier are not aliased.**
+`normalize_model_family` has no longest-match-wins rule (2026-08-12 T-026 discovery) and this task
+does not change it, so two modifier axes are handled in the table instead. (1) Seasonal/exogenous
+ARIMA spellings — `\barima\b` cannot match inside "sarimax"/"autoarima" (no word break at the seam),
+so each variant is listed explicitly; without them "SARIMAX" is a hard abort. (2) The lag-feature
+modifier is aliased to **neither** lag family: `gradient_boosting_lags` and `linear_lags` are both
+models over lag features, so listing "lag features" under one would make "ridge over lag features"
+match two families and raise *ambiguous* on a perfectly clear answer, and listing it under both would
+do the same for every phrase. The model brand alone discriminates ("lag features for XGBoost" and
+"XGBoost" both resolve via `xgboost`). Generic routing words ("forecast", "time series") are likewise
+not aliased: mapping them to a family is an arbitrary modeling decision, and they co-occur with real
+family names constantly ("ARIMA for time series forecasting"), which would turn a clear answer into
+an ambiguous rejection. The prompt pins the five bare literal tokens instead. Residual risk accepted
+and logged: `\bar\b` in the `arima` aliases can make "ridge with ar terms" raise *ambiguous* — a hard
+raise is the T-026-sanctioned outcome, strictly better than a silent misclassification.
+
+**CORRECTION (same day, T-027 review) — the claim above that the table had "no cross-family
+collisions" was false, and the table has been fixed in three ways.** The blind spot was structural:
+the alias tests parametrized over one alias at a time, and a collision by construction needs two
+families' vocabulary in one string, so 39 green tests could not see it.
+1. *The bare `"linear"` alias is removed.* It is a **trend** word far more often than a family word
+   in this domain, and it co-occurs with every other family: "Holt's linear trend method" (the
+   textbook name for an `exponential_smoothing` model), "damped linear trend exponential smoothing",
+   "ETS with linear trend and additive seasonality", "Prophet (growth=linear)" (Prophet's own
+   default) , "Prophet with piecewise linear trend", "ARIMA with linear trend", "SARIMAX with a
+   linear time trend", "LightGBM linear_tree", "gradient boosting with linear base learners" — all
+   nine raised `ValueError("ambiguous")` and aborted the phase with zero artifacts. Only the
+   qualified forms are aliased now: `linear lags`, `linear lag`, `linear regression`, `linear model`.
+   The canonical key still round-trips via `"linear lags"`.
+2. *The bagging aliases are removed* (`random forest`, `extra trees`, `decision tree`,
+   `tree ensemble`, previously pointing at `gradient_boosting_lags`). Demonstrated end to end: a
+   coherent RandomForest design (`bootstrap: true`, `oob_score: false`, a bagging `rationale`)
+   validated and was written as `model_family: "gradient_boosting_lags"` with its RF
+   hyperparameters intact — so `coder` (T-029) would dispatch to a boosting model, receive
+   `bootstrap=`/`oob_score=` and die on a constructor `TypeError`, from a `design.json`
+   contradicting its own `rationale`. Unaliased, the answer raises "not a supported model family":
+   loud, attributable, recoverable. This makes the node consistent with the principle
+   `deep_learning_specialist.py:60-73` already states verbatim — rejecting is the safe direction to
+   fail. Accepted cost: a genuinely-intended bagged-tree design now aborts instead of degrading.
+   That is the correct trade for a value `coder` dispatches on.
+3. *Concatenated/CamelCase spellings are listed alongside their spaced twins.* Normalization
+   collapses `-`/`_` to a space but never splits CamelCase, so a one-word spelling is unreachable
+   from a spaced alias. `ExponentialSmoothing` — statsmodels' **own class name for one of these five
+   families** — was a hard abort, as were `HoltWinters`, `GradientBoostingRegressor`,
+   `HistGradientBoostingRegressor`, `XGBRegressor`, `LGBMRegressor` and the CamelCase rendering of
+   this table's own pinned tokens (`GradientBoostingLags`, `LinearLags`). Follows the convention the
+   table already used for `auto arima`/`autoarima`, `fb prophet`/`fbprophet`, `light gbm`/`lightgbm`,
+   `elastic net`/`elasticnet`. Note that `"gradientboosting"` alone does **not** fix
+   `GradientBoostingRegressor` (`\bgradientboosting\b` has no word break before "regressor"), so the
+   `...regressor` forms are listed explicitly rather than relying on the base token.
+
+Guarding the fix: `test_realistic_multiword_phrasings_resolve_to_exactly_one_family` parametrizes
+over whole realistic answers rather than bare aliases, which is the only shape that can catch a
+collision; `test_bagged_tree_answers_are_rejected_rather_than_resolved_to_boosting` and
+`test_bagged_tree_design_does_not_write_a_boosting_family` pin the safe-fail direction. The
+docstring on `test_every_production_alias_resolves_to_its_family` now states its real (narrower)
+scope instead of claiming collision coverage it structurally cannot have.
+
+**Column identity comes from `feature_spec_ref`; `_FOLD_SUMMARY_KEYS` was deliberately not widened.**
+The obvious alternative — carrying a `time_column` through `read_fold_summary` — would change a
+shared helper whose output shape three landed sibling prompts (T-024/T-025/T-026) already document,
+staling all three. There is also no node-local fold reader here (the redundant copies in
+`classical_ml_specialist`/`deep_learning_specialist` are explicitly not replicated). So the node
+passes the feature-spec **path** through unchanged and the prompt forbids inventing a
+time/date/target column name; `coder` resolves column identity from `feature_spec.json`.
+
+**No self-gate on temporal structure.** The task's "activated only when temporal structure exists" is
+satisfied *upstream*: `specialist_selector` (T-023) is the sole gate, and nothing is queued behind
+this node for the iteration, so a refusal branch would leave the iteration with zero artifacts. Weak
+evidence degrades the design (short-lag `linear_lags`/`gradient_boosting_lags`) and is recorded in
+`rationale`. Asserted by `test_node_never_self_gates_on_temporal_signal`, not merely documented.
+
+**"Respect temporal CV / no future leakage" was split into an enforced half and a prompt-level half**
+(user-approved reinterpretation). Enforced and tested: `cv_strategy_ref` is pipeline-injected and
+never read from the response, and `FORBIDDEN_CV_KEYS` rejects CV redefinition anywhere — including
+the `TimeSeriesSplit` argument names (`n_splits`/`test_size`/`shuffle`/`validation`) a temporal
+design reaches for most naturally, which is now its own parametrized test. Prompt-level only:
+"never uses future data". Leakage is not machine-checkable from `design.json` — `preprocessing` is a
+flat token list with no fit-scope notion and `FORBIDDEN_CV_KEYS` matches dict keys, not list values —
+so detecting it would mean editing the shared contract T-024–T-028 all inherit. No leakage detection
+was added to the validator or the node. Related: the frozen strategy may legitimately not be
+time-aware (`stratified_kfold` on a forecasting problem); the folds are write-once, so the prompt
+tells the node to design against them and note the mismatch in `rationale` rather than change them.
+
+**Tuple-shaped ARIMA `order`/`seasonal_order` use hyphenated string tokens** (`"1-1-1"`,
+`"1-1-1-12"`), either as `categorical` `choices` or pinned in `fixed_params` — never JSON arrays.
+Follows T-026's `ngram_range` precedent, and the format is stated in the prompt so it is a public
+encoding rather than a private one `coder` has to reverse-engineer.
+
+*Correction (T-027 review) — the enforcement is `choices`-scoped only.* `_validate_choices` does
+reject an array inside `search_space` (scalars only), but `_validate_fixed_params` explicitly
+permits a **flat list of scalars**, so `fixed_params: {"order": [1, 1, 1]}` is accepted and written
+through (verified). The prompt originally justified the ban as a validator rejection, which is false
+for the `fixed_params` path; it now states the array ban there as a **pipeline convention** — one
+encoding for `coder` to parse instead of two — and `docs/pipeline.md` says the same. The string
+convention itself is entirely unvalidated (`"1,1,1"`, `"(1,1,1)"`, `"1-1"`, `"banana"` all pass), so
+`coder` (T-029) must parse defensively; recorded in `context/discoveries.md`. The identical
+incorrect claim is inherited from `nlp_specialist`'s `ngram_range` section — flagged in discoveries,
+deliberately not edited in that landed sibling.

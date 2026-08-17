@@ -98,8 +98,8 @@ def test_phase5_subgraph_routes_neural_plan_to_deep_learning_specialist(tmp_path
     (`classical_ml_specialist`). This seeds a plan whose signal is neural, so the
     real selector takes its deep-learning branch — covering keyword branch ->
     `resolve_node` -> real node -> file on disk, which nothing else exercises now
-    that `test_specialist_selector.py`'s NoOp test routes to `nlp_specialist`
-    instead.
+    that `test_specialist_selector.py`'s NoOp test routes through a sentinel name
+    no module implements.
     """
     reports_dir = tmp_path / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
@@ -134,6 +134,52 @@ def test_phase5_subgraph_routes_neural_plan_to_deep_learning_specialist(tmp_path
     assert design["specialist"] == "deep_learning_specialist"
     assert design["cv_strategy_ref"] == "validation/fold_config.json"
     assert "n_layers" in design["search_space"]
+
+
+def test_phase5_subgraph_routes_forecasting_plan_to_timeseries_specialist(tmp_path) -> None:
+    """The timeseries branch of `specialist_selector`'s keyword precedence — the
+    first of its four, so nothing else can shadow it — through `resolve_node` to
+    the real `timeseries_specialist` node and a design file on disk.
+
+    This is the coverage `test_specialist_selector.py` used to provide by routing a
+    forecasting plan through the real `resolve_node`; once T-027 landed, doing that
+    in a unit test would construct a real chat model, so the real-path coverage
+    moved here where the LLM is mocked module-wide.
+    """
+    reports_dir = tmp_path / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    (reports_dir / "problem_definition.json").write_text(
+        json.dumps({"problem_type": "time_series_forecasting"}), encoding="utf-8"
+    )
+    design_dir = tmp_path / "design" / "iteration_0"
+    design_dir.mkdir(parents=True, exist_ok=True)
+    (design_dir / "solution_plan.json").write_text(
+        json.dumps(
+            {
+                "model_families": ["prophet"],
+                "order": ["prophet"],
+                "ensembling_strategy": "",
+                "rationale": "Daily demand forecast with weekly seasonality.",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    module = importlib.import_module("src.graph.phases.phase5_implementation")
+    compiled = module.build(resolve_node)
+
+    state = new_state("comp", str(tmp_path))
+    state["problem_definition_path"] = "reports/problem_definition.json"
+    state["solution_plan_path"] = "design/iteration_0/solution_plan.json"
+    compiled.invoke(state)
+
+    design_path = tmp_path / "experiments" / "exp_0" / "design.json"
+    assert design_path.is_file()
+    design = json.loads(design_path.read_text(encoding="utf-8"))
+    assert design["specialist"] == "timeseries_specialist"
+    assert design["cv_strategy_ref"] == "validation/fold_config.json"
+    assert design["model_family"] == "arima"
+    assert "order" in design["search_space"]
 
 
 def test_phase2_fan_in_join_node_runs_exactly_once() -> None:

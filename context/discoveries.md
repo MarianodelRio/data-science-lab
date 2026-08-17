@@ -623,3 +623,97 @@ Candidate follow-up: relocate the file to `tests/integration/`. **Deliberately n
 the bug is a test-correctness fix, a move would obscure the diff, and `tests/unit/graph/` is the
 path named in the bug's `folders:`.
 Status: open
+
+## OPEN — 2026-08-14 [pipeline-agent (T-027) → pipeline-agent (T-028 ensemble_specialist, T-029 coder)]
+**The NoOp-test re-pointing chain in `tests/unit/nodes/compute/test_specialist_selector.py` is
+terminated — T-028 must NOT re-point anything there.** With `timeseries_specialist` landed, all five
+real specialist names resolve to real `LLMNode` subclasses, so routing the *real* `resolve_node` to
+any of them from a unit test constructs a chat model and attempts a live API call (T-025's review
+caught a real `401` this way). T-027 rewrote that block: the NoOp path now runs through a sentinel
+`NEVER_LANDING_SPECIALIST = "never_landing_specialist"` that no module will ever implement, and the
+selector-level NoOp test patches the module-private `_select_by_signal` so the real `resolve_node`
+still runs but can never be handed a real specialist name. Neither test needs re-pointing again.
+**T-028 should add only a `test_real_resolve_node_resolves_landed_ensemble_specialist` case.**
+Carrying forward the T-025 warning: these test *bodies* merge without conflict markers, so a
+concurrent branch must diff the bodies, not merely resolve markers. Verified both ways — with the
+provider env vars unset and set to fake values, under a socket-blocking pytest plugin, the file makes
+zero network calls; the pre-rewrite version fails under the same guard.
+Status: open (advisory for T-028)
+
+## OPEN — 2026-08-14 [pipeline-agent (T-027) → pipeline-agent (T-028, T-029 coder)]
+**The T-025 "disjoint vocabularies" hazard is mitigated here, not fixed.** `specialist_selector`
+routes on "time series forecasting"/"forecast"/"arima"/"prophet", and its timeseries branch is
+checked *first*, so an LSTM or RNN forecasting plan lands on `timeseries_specialist` — whose family
+table does not accept `lstm`/`rnn`. That asymmetry is pinned by
+`test_unsupported_model_family_raises` rather than papered over: adding neural families here would
+duplicate `deep_learning_specialist`'s table and make the routing boundary meaningless. Likewise, a
+generic answer ("forecasting", "lag features") still hard-aborts the phase with zero artifacts,
+because these nodes have no retry wrapper (Phase 5's `code_critic` targets `coder`, not the
+specialists). Generous aliasing plus an explicit prompt is the only mitigation, consistent with all
+three landed siblings. The structural fix — a retry/repair wrapper around specialist responses, or a
+`normalize_model_family` longest-match rule — remains unowned; it touches the shared contract and
+belongs in its own task.
+Status: open
+
+## OPEN — 2026-08-14 [pipeline-agent (T-027 review) → pipeline-agent (T-029 coder)]
+**The `p-d-q` / `P-D-Q-s` order convention is entirely unvalidated — `coder` must parse it
+defensively.** `config/prompts/timeseries_specialist/v1.md` tells the LLM to encode an ARIMA `order`
+as `"1-1-1"` and a `seasonal_order` as `"1-1-1-12"`, but nothing checks the shape: `"1,1,1"`,
+`"(1,1,1)"`, `"1-1"` (wrong arity), `"1-1-x"` and `"banana"` are all accepted as
+`fixed_params["order"]` and written straight through to `design.json`, because
+`_validate_fixed_params` only checks that the value is a JSON scalar. T-029 must parse with an
+explicit failure path (a clear, attributable error), never `int(part)` on unvalidated input.
+Status: open
+
+## OPEN — 2026-08-14 [pipeline-agent (T-027 review) → pipeline-agent (T-029 coder)]
+**Two different encodings of a tuple hyperparameter can legitimately reach `design.json`, and the
+prompt's stated reason for banning one of them is wrong.** Inside `search_space`, `choices` accepts
+JSON scalars only, so an array order genuinely is rejected. Inside `fixed_params`,
+`_validate_fixed_params` explicitly permits a *flat list of scalars*, so
+`fixed_params: {"order": [1, 1, 1]}` and `{"seasonal_order": [1, 1, 1, 12]}` are ACCEPTED and
+written through unchanged (verified). The prompt now states the array ban in `fixed_params` as a
+pipeline convention rather than a validator rejection, but **T-029 must handle both encodings**
+(hyphenated string and flat list) rather than trusting the convention.
+Inherited-wording note: `config/prompts/nlp_specialist/v1.md`'s `ngram_range` section carries the
+identical incorrect claim ("`"ngram_range": [1, 2]` is rejected") for the same reason — a flat list
+in `fixed_params` is accepted there too. **Not edited here** (landed sibling, outside this task's
+change set); recorded so whoever revisits `nlp_specialist` or writes `coder` knows the claim is
+false in both prompts.
+Status: open
+
+## OPEN — 2026-08-14 [pipeline-agent (T-027 review) → pipeline-agent (T-029 coder) / whoever owns fold integrity]
+**The prompt forbids six fold-shaping keys that `FORBIDDEN_CV_KEYS` does not reject — the gap is
+prompt-only, and honoring one silently breaks score comparability.** `gap`, `max_train_size`,
+`initial`, `horizon`, `period` and `cutoffs` are none of them in `FORBIDDEN_CV_KEYS`, so an LLM that
+emits `fixed_params: {"gap": 7}` or `{"max_train_size": 500}` gets a valid `design.json`. If `coder`
+(T-029) passes those through to a splitter, that experiment is scored against a **different
+effective split** than its siblings while still being written to the same `experiments/` tree — so
+`best_score`/`best_experiment_path` comparisons silently stop meaning anything (CLAUDE.md invariants
+#1 and #3). Deliberate carve-out T-029 must preserve: `forecast_horizon` as a genuine *model*
+parameter (used at fit time by a direct multi-step model) IS permitted — the distinction is whether
+the horizon carves a holdout or parameterizes the model, which no schema check can make.
+Status: open
+
+## OPEN — 2026-08-14 [pipeline-agent (T-027) → pipeline-agent (T-029 coder)]
+**`gradient_boosting_lags` is coarser than `classical_ml_specialist`'s families — `coder` gets
+strictly less library information from a timeseries design.** `classical_ml_specialist` keeps
+`xgboost`, `lightgbm` and `catboost` as separate canonical families; `timeseries_specialist`
+collapses all three (plus the sklearn boosting estimators) into the single
+`gradient_boosting_lags` token, because the meaningful distinction for a temporal design is
+"boosting over lag features" rather than which boosting library implements it. Consequence: given
+`model_family: "gradient_boosting_lags"`, `coder` cannot recover which library the specialist had in
+mind and must pick a default (the `rationale` may name one, but it is free text). Recorded rather
+than "fixed": splitting the family would multiply the table without changing the design semantics,
+and is a decision for whoever specifies `coder`'s dispatch.
+Status: open
+
+## OPEN — 2026-08-14 [pipeline-agent (T-027) → whoever next edits `_experiment_design.py`]
+**`_experiment_design.normalize_model_family`'s docstring names an example that is no longer true
+for every caller.** Its lines 233-236 say `xgb`, `XGBoost`, `light-gbm`, `ExtraTrees` "all resolve".
+That holds under `classical_ml_specialist`'s table (T-024), but `ExtraTrees` is deliberately NOT an
+alias in `timeseries_specialist`'s table — bagged-tree answers there must raise rather than resolve
+to a boosting family (see the T-027 decisions entry). The docstring documents a *caller-supplied*
+table, so the claim was always illustrative rather than normative, and it is **deliberately not
+edited here**: `_experiment_design.py` is shared by four landed specialists and this task's only
+sanctioned touch to it is its module docstring. Flagged so nobody reads it as a guarantee.
+Status: open

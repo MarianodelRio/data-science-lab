@@ -401,10 +401,10 @@ agent, step 3).
   `resolve_node(chosen_name)` (`src/graph/node_resolver.py`) and returns that specialist's own
   delta, defensively coerced to `{}` if it isn't a `dict` — the same single-call/merge shape as
   `analysis_critic`'s own `resolve_node(target_node)(...)` retry-target call, minus the
-  retry loop. `classical_ml_specialist` (T-024), `deep_learning_specialist` (T-025) and
-  `nlp_specialist` (T-026) have landed and resolve to their real nodes; the remaining two
-  (`timeseries_specialist`, `ensemble_specialist` — T-027–T-028) still fall back to `NoOpNode`,
-  which is `resolve_node`'s documented "not implemented yet" behavior, not a bug.
+  retry loop. `classical_ml_specialist` (T-024), `deep_learning_specialist` (T-025),
+  `nlp_specialist` (T-026) and `timeseries_specialist` (T-027) have landed and resolve to their
+  real nodes; only `ensemble_specialist` (T-028) still falls back to `NoOpNode`, which is
+  `resolve_node`'s documented "not implemented yet" behavior, not a bug.
 
 - **`classical_ml_specialist`** (`src/nodes/llm/classical_ml_specialist.py`, `LLMNode` subclass,
   `model_role: reasoning`) — `specialist_selector`'s *default* route, for tabular problems.
@@ -469,6 +469,62 @@ agent, step 3).
   token by word-boundary alias matching (`TF-IDF`, `SBERT`, `DistilBERT fine-tuning`, ...), with an
   **ambiguous** response naming two families rejected rather than resolved by precedence. It does
   **not** override `_build_output_state`, for the same reason `classical_ml_specialist` does not.
+
+- **`timeseries_specialist`** (`src/nodes/llm/timeseries_specialist.py`, `LLMNode` subclass,
+  `model_role: reasoning`) — `specialist_selector`'s route for temporal/forecasting problems (routed
+  via `_TIMESERIES_KEYWORDS`, the *first* of its four keyword branches, T-023). Structurally a
+  mirror of `nlp_specialist`: the same three injected sections, the shared `read_solution_plan`/
+  `read_fold_summary`/`resolve_feature_spec_ref` helpers, the same instance stash for the
+  feature-spec reference, the same shared validator, the same `experiments/exp_{iteration}/design.json`
+  output path, and no `_build_output_state` override. It picks one `model_family` out of `arima`,
+  `prophet`, `exponential_smoothing`, `gradient_boosting_lags` and `linear_lags` (its own five-family
+  table, again passed to `normalize_model_family` as a parameter). Its aliasing is generous where
+  that is safe and deliberately absent where it is not — `specialist_selector`'s routing vocabulary
+  is almost disjoint from these tokens, and an unresolvable `model_family` is a hard `ValueError`
+  that aborts the phase with no artifacts, but a *wrong* resolution is worse than a loud one:
+
+  - *Concatenated spellings are listed explicitly*, because normalization collapses `-`/`_` to a
+    space but never splits CamelCase: `\barima\b` cannot reach inside `sarimax`/`autoarima`, and
+    `ExponentialSmoothing` (statsmodels' own class name for one of these families),
+    `GradientBoostingRegressor`, `XGBRegressor` and the CamelCase rendering of the canonical tokens
+    are all unreachable from their spaced twins.
+  - *A bare "linear" is not aliased.* It is a trend word far more often than a family word here, and
+    it co-occurs with every other family — "Holt's linear trend method", "Prophet (growth=linear)",
+    "ARIMA with linear trend", "LightGBM linear_tree" — so aliasing it made all of those ambiguous.
+    Only the qualified forms (`linear lags`, `linear regression`, `linear model`) are aliased.
+  - *Bagged trees are not aliased to boosting.* `random forest`/`extra trees`/`decision tree` raise
+    "not a supported model family" rather than silently resolving to `gradient_boosting_lags`, which
+    would hand `coder` a boosting model with `bootstrap`/`oob_score` hyperparameters and a
+    contradicting `rationale`. Rejecting is the safe direction to fail — the same principle
+    `deep_learning_specialist` documents.
+  - *A bare "lag features" is aliased to neither lag family*, since both are models over lag
+    features — the model brand alone discriminates.
+
+  Three rules live in its prompt rather than in the validator, and **none is validator-enforced**:
+  1. *No self-gate on temporal structure.* The task's "activated only when temporal structure exists"
+     is satisfied upstream: `specialist_selector` is the sole gate and nothing is queued behind this
+     node, so thin or absent temporal evidence degrades the design (a short-lag `linear_lags`/
+     `gradient_boosting_lags` fallback) and is recorded in `rationale` — never a refusal.
+  2. *Never uses future data.* Fit scope is not expressible in `design.json` — `preprocessing` is a
+     flat token list and `FORBIDDEN_CV_KEYS` matches dict *keys*, not list *values* — so centered
+     windows, negative shifts and pre-split statistics cannot be detected. The prompt requires
+     past-only features and makes the requirement visible in the token itself
+     (`rolling_mean_past_only`). Note also that the frozen strategy may legitimately *not* be
+     time-aware (`stratified_kfold` on a forecasting problem): the folds are write-once, so the node
+     designs against them and notes the mismatch in `rationale` rather than changing them.
+  3. *Column identity comes from `feature_spec_ref`.* The node is given the feature spec's path, never
+     its contents, so the prompt forbids inventing a time/date/target column name.
+     `_FOLD_SUMMARY_KEYS`/`read_fold_summary` are deliberately **not** widened to carry one — that
+     would stale the three landed sibling prompts — and there is no node-local fold reader here.
+
+  Tuple-shaped hyperparameters (ARIMA `order` `(p, d, q)`, `seasonal_order` `(P, D, Q, s)`) follow
+  `nlp_specialist`'s `ngram_range` precedent: hyphenated string tokens (`"1-1-1"`) either as
+  `categorical` `choices` or pinned in `fixed_params`. The array form is *enforced* only in
+  `search_space` — `choices` accepts scalars only — whereas `_validate_fixed_params` explicitly
+  permits a flat list of scalars, so `fixed_params: {"order": [1, 1, 1]}` passes validation. Banning
+  it there is a **pipeline convention stated in the prompt**, not a schema rejection, so that `coder`
+  (T-029) has one encoding to parse rather than two; the string convention itself is unvalidated
+  (see `context/discoveries.md`).
 
 #### The `design.json` contract (shared by all Phase 5 specialists)
 
@@ -539,6 +595,7 @@ parameter name may not appear in both `search_space` and `fixed_params`.
 | `classical_ml_specialist` | LLM (`LLMNode`) | 5 — Implementation | Landed (T-024) |
 | `deep_learning_specialist` | LLM (`LLMNode`) | 5 — Implementation | Landed (T-025) |
 | `nlp_specialist` | LLM (`LLMNode`) | 5 — Implementation | Landed (T-026) |
+| `timeseries_specialist` | LLM (`LLMNode`) | 5 — Implementation | Landed (T-027) |
 
 ### ComputeNode base class
 

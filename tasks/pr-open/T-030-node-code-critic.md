@@ -3,12 +3,12 @@ id: T-030
 phase: 2
 agent: pipeline-agent
 depends_on: [T-010]
-status: in-progress
+status: pr-open
 folders: ["src/nodes/llm/", "config/agents/", "config/prompts/"]
 outputs: [code_critic node, pass/iterate verdict on generated code, retry guard]
 size: S
 branch: feature/T-030-node-code-critic
-pr: ~
+pr: "https://github.com/MarianodelRio/data-science-lab/pull/31"
 ---
 
 ## Node: code_critic (Pipeline Phase 5)

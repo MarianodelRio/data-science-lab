@@ -750,3 +750,71 @@ and its § Node classification table, and to the tails of `context/decisions.md`
 bullets and the `code_critic` bullet are independent additions, and `code_critic` belongs last in
 the § Implementation section because it is the phase's last node.
 Status: open
+
+## OPEN — 2026-08-17 [pipeline-agent (T-030) → pipeline-agent (T-029 `coder`, T-031 evaluation)]
+**`code_critic` reviews the *last* regenerated experiment but `LabState["experiments"]` keeps
+pointing at the *first* one.** The retried target's non-`messages` delta is merged into the node's
+local `working_state` (so the next review cycle re-reads the regenerated `train.py`) but the node's
+returned delta is `{"messages": ...}` only, by contract. Measured with a `coder` stub that appends a
+new experiment path per call: the node reviewed `exp_0 → exp_1 → exp_2 → exp_3`, returned a delta
+whose only key was `messages`, and left `LabState["experiments"] == [{"path": "experiments/exp_0"}]`.
+`experiments` is a plain `list[dict]` LastValue channel, so nothing downstream repairs it: Phase 6 /
+`best_experiment_path` (CLAUDE.md invariant #3) would index the *first* script while the workspace
+holds the *last*.
+State the contradiction plainly, because only one of the two can be true: either the recorded
+experiment path is stable across retries (in which case the local merge in `code_critic.__call__` is
+unnecessary) or it moves (in which case the messages-only return delta is lossy). Whoever lands
+`coder` should decide which, and say so in `docs/pipeline.md`.
+**Deliberately not fixed in T-030**: it is latent while `coder` is a `NoOpNode`, and widening a
+node's return delta is a scope change (and would need a `LabState`/reducer discussion, since
+`experiments` is LastValue rather than an append reducer).
+Status: open
+
+## OPEN — 2026-08-17 [pipeline-agent (T-030) → infra-agent (owns `src/config/`)]
+**`config/phases/*.yaml` `max_retries` is unvalidated**, so a negative value silently disables the
+critic entirely. `_build_critic_config` in `src/config/loaders.py` does not range-check it; with
+`max_retries: -1` a critic's `(max_retries + 1) * len(targets)` cycle budget is `<= 0`, the retry
+loop body never executes, and the critic emits a forced `pass` having made **zero** LLM calls and
+reviewed nothing. Affects `analysis_critic` equally — both critics derive their budget from this
+field. Suggested fix where the config is parsed, not in each critic: reject `max_retries < 0` at load
+time with a `ConfigError` naming the phase file.
+T-030 hardened the consequence rather than the cause (its `for...else` forced-pass record is now
+loop-variable-free and covered by `test_nonpositive_max_retries_forces_pass_without_calling_the_llm`),
+and scoped its own unreachability comment to "any input the LLM can currently produce".
+Status: open
+
+## OPEN — 2026-08-17 [pipeline-agent (T-030) → pipeline-agent (T-029 `coder`)]
+**`code_critic`'s feedback reaches `coder` only through the appended verdict `AIMessage`.** The
+prompt (`config/prompts/code_critic/v1.md`) tells the critic its `feedback` is delivered to `coder`
+"verbatim", and that is true only insofar as `coder` reads the conversation: the sole channel is the
+verdict message appended to `messages`. If T-029's `coder` overrides `_build_messages` without
+calling `super()` (or trims to a window that drops the verdict), every retry regenerates a
+byte-identical script, the budget burns down, and the forced pass ships the defect **with no test
+failing** — the retry loop, the record and the forced pass all still behave correctly.
+T-029's Done-when checklist does not currently mention consuming critic feedback; it should assert
+that a second `coder` invocation carrying an `iterate` feedback message produces different output.
+Status: open
+
+## NOTE — 2026-08-17 [pipeline-agent (T-030) → architecture]
+**`AgentConfig.max_tokens` is inert across the whole system.** Every agent YAML carries a
+`max_tokens` (it is `_require_field`-enforced by `load_agent_config`), but nothing in `src/` reads
+`AgentConfig.max_tokens`: `LLMFactory` configures the model purely from
+`Settings.models.{role}.max_tokens`, and `config/settings.yaml`'s `models.implementation` declares
+none. So `config/agents/code_critic.yaml`'s `max_tokens: 2048` documents an intent that is not
+applied at runtime. Not a T-030 defect — it is architecture-wide and `config/settings.yaml` plus the
+`AgentConfig` dataclass are protected contracts — but worth resolving deliberately: either wire
+`AgentConfig.max_tokens` through `LLMFactory` or drop the field from the agent-YAML contract. T-030's
+task file no longer claims it as a delivered setting.
+Status: open
+
+## NOTE — 2026-08-17 [pipeline-agent (T-030) → pipeline-agent (critic refactor)]
+**A critic's node-local `messages` list is built by plain concatenation, not by the graph's
+reducer.** Both critics maintain `working_state["messages"] = [*previous, response]` while the
+compiled graph applies LangGraph's `add_messages` reducer to the channel. The two differ: given two
+messages sharing an `id`, `add_messages` yields one (replacement by id) while concatenation yields
+two. So the `trim_context` window a critic sees mid-retry is not necessarily the window the same
+messages would produce once merged through the channel. Low severity today (mocked and real LLM
+responses do not reuse ids, and the window only feeds prompt context), but it is a real divergence
+between node-local and graph-level state semantics, and the `base.py` critic hoist proposed above is
+the natural place to settle it.
+Status: open

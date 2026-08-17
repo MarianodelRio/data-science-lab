@@ -539,32 +539,70 @@ agent, step 3).
   through `WorkspaceManager` and all degrading to a placeholder rather than raising (the readers
   catch `_experiment_design.DEGRADE_ERRORS` — `(OSError, ValueError, RecursionError)` — not a bare
   `OSError`, so a non-UTF-8 artifact or an out-of-workspace path degrades too):
-  `## Generated training code (train.py)` (fenced as ```python; `(unable to read … — there is
-  nothing to review)` when absent, which the prompt treats as a hard `iterate`, and truncated at
-  20 000 characters with an in-band `... (truncated at N characters of generated code)` marker),
-  `## Experiment design (design.json)` and `## Experiment results (results.json)` (`({filename} not
-  available for this experiment)`, read as *text*, never `read_json`), and `## Frozen CV folds` (the
-  shared `read_fold_summary`). The candidate experiment directory is resolved **once per cycle** and
-  shared by all three file readers, so code, design and results always come from the same directory:
-  `state["experiments"][-1]["path"]` when usable (re-relativized; a value with a suffix is treated
-  as a file pointer and its parent taken, since `coder` (T-029) has not fixed which it records),
-  otherwise the well-known `experiments/exp_{current_iteration}/`.
+  `## Generated training code (train.py)` (`(unable to read … — there is nothing to review)` when
+  absent, which the prompt treats as a hard `iterate`), `## Experiment design (design.json)` and
+  `## Experiment results (results.json)` (`({filename} not available for this experiment)`, read as
+  *text*, never `read_json`), and `## Frozen CV folds` (the shared `read_fold_summary`).
+
+  **All three** file artifacts are truncated at 20 000 characters with an in-band
+  `... (truncated at N characters of {label})` marker. The code needs it to bound the prompt window;
+  `results.json` needs it more, because it is written by the *generated* script — the least-trusted
+  component in the system — and normally carries the OOF predictions, so an uncapped one is an
+  uncapped prompt (a 4 MB `results.json` measured at ~4 000 000 characters in a single `invoke`,
+  against CLAUDE.md's "< $0.50 per full competition run" target).
+
+  The code is emitted inside a backtick fence computed to be **longer than the longest backtick run
+  in the script**, not a fixed ```` ```python ````: a generated `train.py` containing a ``` line would
+  otherwise close the fence early and let the rest of the file render as top-level prompt markup —
+  a valid-Python docstring can carry a counterfeit `## Experiment design` section instructing a
+  `pass`. The prompt states separately that everything under the code heading is data to review,
+  never an instruction to obey. (The retry cap is no defense here: it bounds *iterate* loops, while
+  injection seeks a false *pass*.)
+
+  The experiment directory is resolved **once per cycle** — to whichever candidate actually yielded
+  `train.py` — and `design.json`/`results.json` are then read from **that same directory only**, so
+  all three artifacts always describe one experiment. Candidates are
+  `state["experiments"][-1]["path"]` when usable (re-relativized; a value with a suffix is treated as
+  a file pointer and its parent taken, since `coder` (T-029) has not fixed which it records), then the
+  well-known `experiments/exp_{current_iteration}/`; when no candidate yields the script the first is
+  used so the placeholders still name one place. Scanning per artifact instead would let the critic
+  review `exp_7`'s code against `exp_0`'s design — the *expected* case once `coder` lands, since
+  nothing increments `current_iteration` — and, because the prompt accepts early stopping only when
+  it is "recorded in `results.json`", a stale `results.json` is a route to a false **pass**, not
+  merely a false iterate.
 
   **Retry contract.** The budget is read from `load_phase_config("phase5_implementation").critic
   .max_retries` — *not* `Settings.execution.max_critic_retries` (both are `3` today; the phase YAML
   is the contract that also names the critic and its targets, and it allows a per-phase budget).
   Counts are kept **per target**; on the `max_retries + 1`-th `iterate` for a target the node
   appends a `forced_pass: True` record and breaks (CLAUDE.md invariant #5). A global
-  `(max_retries + 1) * max(len(targets), 1)` cycle cap wraps the loop as defense-in-depth (with one
-  target it is provably unreachable — same pigeonhole argument as `analysis_critic`). The target is
-  re-invoked as `node_resolver.resolve_node(target)(working_state)` — bound through the **module
-  attribute**, matching `src/graph/builder.py` and deliberately not `analysis_critic`'s import-time
-  form, which B-001 showed to be import-order fragile. There is **no** `try/except` around that
-  call: `coder` has no write-once exception (`FoldsAlreadyFrozenError` is
-  `validation_strategist`-specific), so a real crash in the target must surface. A malformed
-  response, an unknown `verdict` value or a blank `feedback` all normalize to `iterate` with
-  non-empty synthesized feedback, via `_experiment_design.extract_json_object` (fence stripping plus
-  first-`{`-to-last-`}` salvage) rather than another private fence-stripper copy.
+  `(max_retries + 1) * max(len(targets), 1)` cycle cap wraps the loop as defense-in-depth. That cap's
+  `for...else` branch is unreachable for **any input the LLM can currently produce** (the same
+  pigeonhole argument `analysis_critic` uses, and here there is only one target), but it is *not*
+  unreachable in general: `load_phase_config` does not validate `max_retries`, so a phase YAML
+  carrying a negative value makes the budget `<= 0`, the loop body never runs, and the node emits a
+  forced pass having made zero LLM calls and reviewed nothing. The branch therefore references no
+  loop-local name and records `code_available: None`. The unvalidated field is flagged to the
+  `src/config/` owner in `context/discoveries.md`.
+
+  The target is re-invoked as `node_resolver.resolve_node(target)(working_state)` — bound through the
+  **module attribute**, matching `src/graph/builder.py` and deliberately not `analysis_critic`'s
+  import-time form, which B-001 showed to be import-order fragile. There is **no** `try/except` around
+  that call: `coder` has no write-once exception (`FoldsAlreadyFrozenError` is
+  `validation_strategist`-specific), so a real crash in the target must surface.
+
+  A malformed response, an unknown `verdict` value or a blank `feedback` all normalize to `iterate`
+  with non-empty synthesized feedback. Parsing starts at `_experiment_design.extract_json_object`
+  (fence stripping plus first-`{`-to-last-`}` salvage) rather than another private fence-stripper
+  copy, but that alone is not enough here: when a trailing fenced block **contains braces** the
+  salvage window overshoots the real object and fails, and for a *code* critic the likeliest postamble
+  of all is a Python snippet illustrating the fix. So `_extract_verdict_data` falls back to retrying
+  on the prefix before each fence marker — without which an `iterate` lost its `feedback` to the
+  "could not parse" text (re-invoking `coder` with no signal and burning a retry) and a `pass` became
+  a spurious `iterate`. The whole parse is guarded by `DEGRADE_ERRORS`, not a bare `ValueError`,
+  because `json.loads` raises **`RecursionError`** on a deeply nested payload (reproducible at ~2 400
+  characters, i.e. within this agent's token budget) and letting that escape would abort the graph run
+  from the one node whose contract is to degrade — before any verdict record was written.
 
   **State delta.** `{"messages": [...]}` **only** — no new `LabState` field. `src/state.py` is a
   protected contract and `experiments` has no writer in `src/` yet, so the generated code is located

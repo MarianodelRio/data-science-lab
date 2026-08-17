@@ -62,7 +62,10 @@ from `_experiment_design.py` rather than re-copied: that module already owns
 the fence-stripping/brace-salvage extractor and the degrade-error tuple, and
 this node genuinely reads the same `design.json`/fold-config artifacts. Its
 `specialist` parameter is an error-attribution label only, so passing
-`"code_critic"` is correct usage.
+`"code_critic"` is correct usage. `_extract_verdict_data` wraps rather than
+replaces it, adding a fence-anchored retry for the one response shape the shared
+extractor cannot handle and this node provokes more than any other — see that
+function.
 """
 
 from __future__ import annotations
@@ -125,7 +128,12 @@ def _experiment_dir_from_state(state: dict[str, Any], workspace: WorkspaceManage
         return None
 
     candidate = Path(reference)
-    if candidate.is_absolute() or ".." in candidate.parts:
+    # Only the traversal guard is needed: `relative_to_workspace` either returns
+    # an already-relative path unchanged or `str(Path.relative_to(root))`, both
+    # relative — an absolute input that does not sit under the root raises
+    # `ValueError`, caught above. A `..` component, by contrast, really does
+    # survive both branches, so this is the load-bearing escape check.
+    if ".." in candidate.parts:
         return None
     if candidate.suffix:
         candidate = candidate.parent
@@ -163,29 +171,42 @@ def _read_artifact(workspace: WorkspaceManager, directory: str, filename: str) -
         return None
 
 
-def _truncate(text: str) -> str:
-    """Bound the generated code injected into the prompt.
+def _truncate(text: str, label: str = "generated code") -> str:
+    """Bound one artifact injected into the prompt.
 
-    Trade-off, recorded deliberately: the prompt window has to stay bounded
-    (same spirit as `read_fold_summary` refusing to inline `fold_indices`), so
-    a violation sitting past the cap can be missed. That is acceptable because
-    `train.py` is a single training script — 20 000 characters is far past any
-    plausible one — and the in-band marker tells the critic its view is partial
-    so it can say so in the feedback rather than passing silently.
+    Applied to **all three** file artifacts, not just the code. `train.py` needs
+    it because the prompt window has to stay bounded (same spirit as
+    `read_fold_summary` refusing to inline `fold_indices`); `results.json` needs
+    it more, because it is written by the generated script — the least-trusted
+    component here — and normally carries the OOF predictions, so a multi-megabyte
+    one would otherwise become a multi-megabyte single `invoke`. `design.json` is
+    genuinely small and structured, and is capped only for uniformity.
+
+    Trade-off, recorded deliberately: a violation sitting past the cap can be
+    missed. That is acceptable because 20 000 characters is far past any plausible
+    single training script, and the in-band marker tells the critic its view is
+    partial so it says so in the feedback rather than passing silently.
     """
     if len(text) <= _MAX_CODE_CHARS:
         return text
-    return (
-        text[:_MAX_CODE_CHARS]
-        + f"\n\n... (truncated at {_MAX_CODE_CHARS} characters of generated code)"
-    )
+    marker = f"\n\n... (truncated at {_MAX_CODE_CHARS} characters of {label})"
+    return text[:_MAX_CODE_CHARS] + marker
 
 
-def _read_code(dirs: list[str], workspace: WorkspaceManager) -> tuple[str, bool]:
+def _read_code(dirs: list[str], workspace: WorkspaceManager) -> tuple[str, bool, str]:
     """First readable `train.py` across the candidate directories.
 
-    Returns `(text, True)` on success and `(placeholder, False)` otherwise. The
-    boolean is recorded on each attempt as `code_available`, which makes the
+    Returns `(text, available, directory)`. `directory` is the one that actually
+    yielded the script — the caller reads `design.json`/`results.json` from *that
+    same* directory, so the critic can never review one experiment's code against
+    another experiment's design (a review of exp_7's LightGBM script against
+    exp_0's distilbert design is not hypothetical: nothing in `src/` increments
+    `current_iteration` yet, so the well-known fallback is permanently `exp_0`
+    while `coder` will name later directories `exp_1`, `exp_2`, …). When no
+    directory yields the script, the first candidate is returned so the context
+    reads still come from a single, named place.
+
+    `available` is recorded on each attempt as `code_available`, which makes the
     degrade path assertable without branching the control flow — the *verdict*
     consequence stays prompt-driven (the prompt treats an unreadable code
     section as a hard iterate), exactly as `analysis_critic` handles its own
@@ -194,42 +215,75 @@ def _read_code(dirs: list[str], workspace: WorkspaceManager) -> tuple[str, bool]
     for directory in dirs:
         content = _read_artifact(workspace, directory, _CODE_FILENAME)
         if content is not None:
-            return _truncate(content), True
-    first = dirs[0] if dirs else _EXPERIMENT_DIR_PATTERN.format(iteration=0)
+            return _truncate(content), True, directory
+    first = dirs[0]
     return (
         f"(unable to read the generated training code at {first}/{_CODE_FILENAME} — "
         "there is nothing to review)",
         False,
+        first,
     )
 
 
-def _read_context_artifact(dirs: list[str], workspace: WorkspaceManager, filename: str) -> str:
-    """First readable `filename` across the candidate directories, or a
-    placeholder. Read as text, never `read_json`: the critic only needs to see
-    the artifact, and text reading cannot raise on a non-dict payload."""
-    for directory in dirs:
-        content = _read_artifact(workspace, directory, filename)
-        if content is not None:
-            return content
-    return f"({filename} not available for this experiment)"
+def _read_context_artifact(directory: str, workspace: WorkspaceManager, filename: str) -> str:
+    """Read one context artifact from the single directory that yielded
+    `train.py`, or a placeholder.
+
+    Read as text, never `read_json`: the critic only needs to see the artifact,
+    and text reading cannot raise on a non-dict payload. Truncated like the code
+    is: `results.json` is written by the *generated* script — the least-trusted
+    component in the system — and typically carries the OOF predictions, so an
+    untruncated one is an unbounded prompt (a 4 MB `results.json` produces a
+    ~4 000 000-character review message in a single `invoke`, against CLAUDE.md's
+    "< $0.50 per full competition run" target).
+    """
+    content = _read_artifact(workspace, directory, filename)
+    if content is None:
+        return f"({filename} not available for this experiment)"
+    return _truncate(content, label=filename)
+
+
+def _code_fence(text: str) -> str:
+    """A backtick fence longer than any backtick run inside `text`.
+
+    A generated `train.py` containing a ``` line would otherwise close the fence
+    early and let the remainder of the file render as top-level prompt markup —
+    a `train.py` can trivially carry a valid-Python docstring holding a
+    counterfeit `## Experiment design` section that instructs a pass. Widening
+    the fence keeps the whole script inside one block; the prompt separately
+    states that everything under the code heading is data to review, never an
+    instruction to obey. Note the retry cap does not help here: it bounds
+    *iterate* loops, and injection seeks a false *pass*.
+    """
+    longest = 0
+    run = 0
+    for char in text:
+        if char == "`":
+            run += 1
+            longest = max(longest, run)
+        else:
+            run = 0
+    return "`" * max(3, longest + 1)
 
 
 def _build_review_message(state: dict[str, Any], workspace: WorkspaceManager) -> tuple[str, bool]:
     """Build the four labeled review sections, returning
     `(content, code_available)`.
 
-    The candidate directory list is computed once and shared by all three
-    file readers, so the code, the design and the results always come from the
-    same experiment directory.
+    The experiment directory is resolved **once** — to whichever candidate
+    actually yielded `train.py` — and the design and results are then read from
+    that same directory, so all three artifacts always describe one experiment.
     """
     dirs = _candidate_experiment_dirs(state, workspace)
-    code, code_available = _read_code(dirs, workspace)
-    design = _read_context_artifact(dirs, workspace, _DESIGN_FILENAME)
-    results = _read_context_artifact(dirs, workspace, _RESULTS_FILENAME)
+    code, code_available, directory = _read_code(dirs, workspace)
+    design = _read_context_artifact(directory, workspace, _DESIGN_FILENAME)
+    results = _read_context_artifact(directory, workspace, _RESULTS_FILENAME)
     folds = read_fold_summary(cast(LabState, state), workspace)
 
+    fence = _code_fence(code)
     content = (
-        f"## Generated training code ({_CODE_FILENAME})\n\n```python\n{code}\n```\n\n"
+        f"## Generated training code ({_CODE_FILENAME})\n\n"
+        f"{fence}python\n{code}\n{fence}\n\n"
         f"## Experiment design ({_DESIGN_FILENAME})\n\n{design}\n\n"
         f"## Experiment results ({_RESULTS_FILENAME})\n\n{results}\n\n"
         f"## Frozen CV folds\n\n{folds}"
@@ -237,8 +291,57 @@ def _build_review_message(state: dict[str, Any], workspace: WorkspaceManager) ->
     return content, code_available
 
 
+def _extract_verdict_data(content: str) -> dict[str, Any] | None:
+    """Extract the verdict object, or `None`. Never raises.
+
+    `extract_json_object` alone is not sufficient here, and the reason is
+    specific to a *code* critic. It handles a fenced whole response (its
+    `_strip_outer_fence` anchors the close with `rfind("```")`, so a ```python
+    fence quoted *inside* the `feedback` value still parses) and it salvages the
+    first-`{`-to-last-`}` window when prose or a **brace-free** trailing fenced
+    block follows the JSON. But when the trailing block *contains braces* — and
+    for this node the most likely postamble of all is a Python snippet
+    illustrating the fix, which is full of them — the salvage window runs from
+    the real object's `{` to the *snippet's* `}` and fails to parse. Measured
+    consequence: the whole response is discarded and `feedback` is replaced by
+    the "could not parse" text, so `coder` is re-invoked carrying no signal and
+    one retry of a 3-retry budget is burned for nothing.
+
+    So on failure this retries on the prefix before each fence marker, which
+    recovers exactly that shape. (For the record, `analysis_critic`'s
+    `_fence_candidates` does not handle these shapes either — it returns `None`
+    for both the brace-free and the brace-bearing trailing-fence response,
+    because it only builds extra candidates when the response *starts* with a
+    fence. The two nodes fail differently; neither strictly dominates, which is
+    another argument for the shared-helper hoist proposed in
+    `context/discoveries.md`.)
+    """
+    try:
+        return extract_json_object(content, _NODE)
+    except DEGRADE_ERRORS:
+        pass
+
+    # Fence-anchored fallback: try the prefix before each fence marker, nearest
+    # first. `extract_json_object` is reused (not `json.loads`) so each prefix
+    # still gets fence-stripping and brace salvage.
+    search_from = 0
+    while True:
+        marker = content.find("```", search_from)
+        if marker == -1:
+            return None
+        prefix = content[:marker].strip()
+        search_from = marker + 3
+        if not prefix:
+            continue
+        try:
+            return extract_json_object(prefix, _NODE)
+        except DEGRADE_ERRORS:
+            continue
+
+
 def _parse_verdict(content: str, allowed_targets: tuple[str, ...]) -> tuple[str, str, str]:
-    """Parse the LLM's verdict JSON. Never raises — always returns a
+    """Parse the LLM's verdict JSON. Never raises `ValueError`, `OSError` or
+    `RecursionError` (`_experiment_design.DEGRADE_ERRORS`) — always returns a
     normalized `(verdict, feedback, target_node)` triple:
 
     - `verdict` is always exactly `"pass"` or `"iterate"` (malformed JSON, a
@@ -249,18 +352,16 @@ def _parse_verdict(content: str, allowed_targets: tuple[str, ...]) -> tuple[str,
       correct if a future phase YAML gives this critic more than one target.
     - `feedback` is never empty (a default is synthesized, worded per verdict).
 
-    `extract_json_object` (from `_experiment_design`) subsumes both fence cases
-    `analysis_critic._fence_candidates` was built for: its `_strip_outer_fence`
-    anchors the close with `rfind("```")`, so a ```python fence *inside* the
-    `feedback` string value still parses, and its first-`{`-to-last-`}` salvage
-    recovers the JSON when prose or a stray trailing fenced block surrounds it.
+    The caught set is `DEGRADE_ERRORS`, not a bare `ValueError`: `json.loads`
+    raises **`RecursionError`** (not a `ValueError` subclass) on a deeply nested
+    payload, reproducible at ~2 400 characters and therefore reachable inside
+    this agent's `max_tokens`. Letting it escape would abort the entire graph run
+    from the one node whose whole contract is to degrade, and it would abort
+    *before* any verdict record is written.
     """
     fallback_target = allowed_targets[0] if allowed_targets else ""
 
-    try:
-        data: dict[str, Any] | None = extract_json_object(content, _NODE)
-    except ValueError:
-        data = None
+    data = _extract_verdict_data(content)
 
     if data is None:
         return (
@@ -303,16 +404,22 @@ class CodeCriticNode(LLMNode):
 
         # Global safety cap: bounds the loop even under a pathological LLM
         # response pattern, guarding CLAUDE.md invariant #5 ("no infinite
-        # loops"). Reachability note (carried over from `analysis_critic`):
-        # because `target_node` is always normalized to one of the finite
-        # `allowed_targets`, a pigeonhole argument shows the per-target
-        # `count >= max_retries` guard alone already bounds any target
-        # pattern within this many cycles — with N targets, N * (max_retries
-        # + 1) cycles cannot be filled without some target reaching
-        # `max_retries + 1` visits first. The `for...else` branch below is
-        # therefore unreachable today (and doubly so here, where N == 1); it
-        # is kept as defense-in-depth against a future change to the cap
-        # formula or to the target-normalization guarantee.
+        # loops"). Reachability note (scoped as `analysis_critic` scopes its
+        # own): for **any input the LLM can currently produce**, the `for...else`
+        # branch below is unreachable — because `target_node` is always
+        # normalized to one of the finite `allowed_targets`, a pigeonhole
+        # argument shows the per-target `count >= max_retries` guard alone
+        # bounds any target pattern within this many cycles (with N targets,
+        # N * (max_retries + 1) cycles cannot be filled without some target
+        # reaching `max_retries + 1` visits first), and here N == 1.
+        #
+        # It is *not* unreachable in general: `load_phase_config` does not
+        # validate `max_retries`, so a phase YAML carrying a negative value
+        # makes `max_total_cycles <= 0`, the loop body never runs, and this node
+        # emits a forced pass having made zero LLM calls and reviewed nothing.
+        # That is a misconfiguration rather than an LLM behavior — flagged to the
+        # `src/config/` owner in `context/discoveries.md` — but the branch is
+        # live, so it must not reference any loop-local name.
         max_total_cycles = (max_retries + 1) * max(len(allowed_targets), 1)
 
         retry_counts: dict[str, int] = {}
@@ -399,6 +506,10 @@ class CodeCriticNode(LLMNode):
                 accumulated_messages.extend(target_messages)
                 working_state["messages"] = [*working_state.get("messages", []), *target_messages]
         else:
+            # `code_available` is `None`, not a loop variable: when
+            # `max_total_cycles <= 0` the loop body never ran, so every
+            # loop-local name is unbound here. `None` reads as "no cycle
+            # completed, so availability was never established".
             attempts.append(
                 {
                     "verdict": "pass",
@@ -408,6 +519,7 @@ class CodeCriticNode(LLMNode):
                     ),
                     "target_node": fallback_target,
                     "forced_pass": True,
+                    "code_available": None,
                 }
             )
 

@@ -1535,17 +1535,61 @@ third binder for this node.
 **JSON extraction and degrade errors reused from `_experiment_design.py`, not re-copied.**
 `extract_json_object`, `DEGRADE_ERRORS` and `read_fold_summary` are imported rather than
 reimplemented — an eighth private fence-stripper copy was explicitly rejected by the Orchestrator
-(see the open T-024 entry in `context/discoveries.md`). `extract_json_object` subsumes both cases
-`analysis_critic._fence_candidates` was built for: its `rfind("```")` anchor parses a ```python
-fence quoted *inside* the `feedback` value, and its first-`{`-to-last-`}` salvage recovers the
-verdict from prose or a stray trailing fenced block. `extract_json_object`'s `specialist` parameter
-is an error-attribution label only, so passing `"code_critic"` is correct usage.
+(see the open T-024 entry in `context/discoveries.md`). `extract_json_object`'s `specialist`
+parameter is an error-attribution label only, so passing `"code_critic"` is correct usage.
 
-**Generated code truncated at 20 000 characters with an in-band marker.** The prompt window has to
-stay bounded (same spirit as `read_fold_summary` refusing to inline `fold_indices`); the marker
-tells the critic its view is partial so it says so in the feedback instead of passing silently.
-`design.json`/`results.json` are *not* truncated — they are small structured artifacts, and
-truncating JSON mid-object would be worse than showing it whole.
+**`extract_json_object` is not sufficient on its own, and the reason is specific to a code critic**
+(corrected in review; an earlier version of this entry claimed it "subsumes both cases
+`analysis_critic._fence_candidates` was built for", which measurement disproved). It does handle a
+fenced whole response and it salvages the first-`{`-to-last-`}` window past a **brace-free** trailing
+fenced block. But when the trailing block *contains braces* the salvage window runs from the real
+object's `{` to the snippet's `}` and fails — and for this node the single most likely postamble is a
+Python snippet illustrating the fix, which is full of braces. Measured consequence: the response was
+discarded whole, so an `iterate` lost its `feedback` to the "could not parse" text (re-invoking
+`coder` with no signal and burning one of three retries) and a `pass` became a spurious `iterate`
+(a wasted regeneration cycle). `code_critic._extract_verdict_data` therefore retries on the prefix
+before each fence marker. For the record, `analysis_critic`'s `_fence_candidates` does **not** handle
+these shapes either — measured, it returns `None` for both the brace-free and the brace-bearing
+trailing-fence response, because it only builds extra candidates when the response *starts* with a
+fence. Neither implementation dominates the other, which is a further argument for the shared-helper
+hoist proposed in `context/discoveries.md`.
+
+**`_parse_verdict` catches `DEGRADE_ERRORS`, not a bare `ValueError`** (review fix). `json.loads`
+raises **`RecursionError`** — not a `ValueError` subclass — on a deeply nested payload, reproducible
+at ~2 400 characters and therefore reachable within this agent's `max_tokens`. The bare
+`except ValueError` let it escape, which would have aborted the whole graph run from the one node
+whose entire contract is to degrade, and aborted it *before* any verdict record was written. This was
+the only non-degrading path left in the node.
+
+**All three file artifacts truncated at 20 000 characters with an in-band marker** (review fix; this
+entry previously exempted the two context artifacts as "small structured artifacts"). That holds for
+`design.json`, which a specialist writes to a validated schema — but **not** for `results.json`,
+which is written by the *generated* script, the least-trusted component in the system, and normally
+carries the OOF predictions. Measured: a 4 MB `results.json` produced a 4 000 202-character review
+message (~1M tokens) in a single `invoke`, against CLAUDE.md's "< $0.50 per full competition run"
+target. `design.json` is capped only for uniformity. The marker names the artifact so the critic can
+say its view was partial rather than passing silently.
+
+**The experiment directory is resolved once, and all three artifacts come from it** (review fix).
+The readers originally scanned the candidate list independently, so `train.py` could come from
+`exp_7` while `design.json`/`results.json` fell back to `exp_0` — reproduced on a real filesystem,
+where the prompt carried exp_7's LightGBM code to be reviewed against exp_0's *distilbert* design.
+This is the expected case rather than an edge case once `coder` lands, because nothing in `src/`
+increments `current_iteration`, so the fallback is permanently `exp_0`. It is also a route to a false
+**pass**, not merely a false iterate: the prompt accepts early stopping only when it is "recorded in
+`results.json`", so a stale `results.json` from another experiment can make the critic accept a leak
+it would otherwise reject. `_read_code` now returns the directory that actually yielded the script
+and the context reads are pinned to it; when no candidate yields the script, the first candidate is
+used so the placeholders still name one place.
+
+**Prompt-injection hardening for the code section** (review fix). The reviewed `train.py` is emitted
+in a fence computed to be longer than the longest backtick run inside it, because a script containing
+a ``` line would otherwise close a fixed 3-backtick fence early and let the remainder render as
+top-level prompt markup — a valid-Python docstring can carry a counterfeit `## Experiment design`
+section instructing a `pass`. The prompt separately states that everything under the code heading is
+data to review, never an instruction to obey. Worth recording explicitly because the initial security
+rationale here was backwards: the retry cap bounds *iterate* loops and does nothing to bound a false
+*pass*, which is exactly what injection seeks.
 
 **No `try/except` around the target re-invocation.** `analysis_critic` catches
 `FoldsAlreadyFrozenError` because `validation_strategist` has a documented write-once guard;
@@ -1553,10 +1597,20 @@ truncating JSON mid-object would be worse than showing it whole.
 a forced pass.
 
 **`tests/fixtures/graph_mocks.py` left un-dispatched for `code_critic`.** With no entry in
-`_DISPATCH`, the fallback `_MOCK_LLM_CONTENT` fails JSON parsing, normalizes to `iterate`,
-re-invokes the (still `NoOpNode`) `coder` three times and then forces a pass — which is real
-executed coverage of the forced-pass path through a real graph, and the only such coverage there
-is. Same reasoning B-001 used to keep `analysis_critic_pass=False` as the default.
+`_DISPATCH`, the fallback `_MOCK_LLM_CONTENT` normalizes to `iterate`, re-invokes the (still
+`NoOpNode`) `coder` three times and then forces a pass — real executed coverage of the forced-pass
+path through a real graph, and the only such coverage there is. Same reasoning B-001 used to keep
+`analysis_critic_pass=False` as the default.
+
+The **mechanism** matters and an earlier version of this entry got it wrong (corrected in review):
+`_MOCK_LLM_CONTENT` does *not* "fail JSON parsing". Measured, `extract_json_object` **succeeds** on
+it — the brace salvage recovers the fenced fold-config object
+`{"strategy": "stratified", "n_folds": 1, "seed": 0, "fold_indices": [...]}` — and the verdict
+normalizes to `iterate` only because that object carries no `verdict` key. So the coverage hangs on
+the *absence of a key*, not on a parse failure: were `_MOCK_LLM_CONTENT` ever to grow a `verdict`
+key, this coverage would vanish silently. That is why the smoke test now asserts
+`final_verdict["forced_pass"] is True` and the full attempt sequence rather than merely that the
+record file exists — the assertion fails loudly instead of quietly covering nothing.
 
 **Discarded alternatives:** a new `LabState` field for the generated-code path (protected contract,
 no writer); hoisting the critic retry loop into `src/nodes/llm/base.py` (reserved for a separate

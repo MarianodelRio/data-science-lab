@@ -89,12 +89,73 @@ FOLD_CONFIG = {
 
 # (alias the LLM might write, canonical family it must resolve to) for every alias
 # in the real table. Catches a renamed canonical key, a typo'd alias, and an alias
-# that is unreachable after normalization or that matches two families.
+# that is unreachable after normalization.
+#
+# It CANNOT catch a cross-family collision: each case feeds exactly one alias, and a
+# collision by definition needs two aliases from different families co-occurring in
+# one string, which single-alias parametrization can never construct. That blind spot
+# is why a bare `"linear"` alias shipped past 39 green tests while making "Holt's
+# linear trend method" and "Prophet (growth=linear)" hard-abort the phase.
+# `_MULTIWORD_PHRASING_CASES` below is the guard that actually covers collisions.
 _ALIAS_CASES = [(alias, family) for family, aliases in _MODEL_FAMILIES.items() for alias in aliases]
 
-# The `TimeSeriesSplit` argument names a temporal design reaches for most naturally.
-# All four are in `FORBIDDEN_CV_KEYS`; the values are the shapes each would really
-# be written with.
+# Realistic full answers, not bare aliases: the phrasings an LLM actually writes, each
+# mapped to the ONE family it must resolve to. Every entry co-occurs with vocabulary
+# that is adjacent to another family — a trend word ("linear"), a base-learner mention,
+# a hyperparameter spelling — so a future over-broad alias makes one of these ambiguous
+# instead of passing unnoticed. The CamelCase block additionally pins the concatenated
+# spellings that normalization cannot reach from their spaced twins (it collapses
+# `-`/`_` to a space but never splits CamelCase).
+_MULTIWORD_PHRASING_CASES: list[tuple[str, str]] = [
+    # "linear" as a TREND word, never a family word — each of these was a hard
+    # `ValueError("ambiguous")` while a bare "linear" alias existed.
+    ("Holt's linear trend method", "exponential_smoothing"),
+    ("damped linear trend exponential smoothing", "exponential_smoothing"),
+    ("ETS with linear trend and additive seasonality", "exponential_smoothing"),
+    ("Prophet (growth=linear)", "prophet"),
+    ("Prophet with piecewise linear trend", "prophet"),
+    ("ARIMA with linear trend", "arima"),
+    ("SARIMAX with a linear time trend", "arima"),
+    ("LightGBM linear_tree", "gradient_boosting_lags"),
+    ("gradient boosting with linear base learners", "gradient_boosting_lags"),
+    # "linear" as a genuine family word.
+    ("linear regression over lag features", "linear_lags"),
+    ("Ridge regression on lag features", "linear_lags"),
+    # Concatenated / CamelCase library and token spellings.
+    ("ExponentialSmoothing", "exponential_smoothing"),
+    ("HoltWinters", "exponential_smoothing"),
+    ("GradientBoostingRegressor", "gradient_boosting_lags"),
+    ("HistGradientBoostingRegressor", "gradient_boosting_lags"),
+    ("XGBRegressor", "gradient_boosting_lags"),
+    ("LGBMRegressor", "gradient_boosting_lags"),
+    ("GradientBoostingLags", "gradient_boosting_lags"),
+    ("LinearLags", "linear_lags"),
+    ("LinearRegression", "linear_lags"),
+    ("AutoARIMA", "arima"),
+    # Other realistic multi-word answers.
+    ("seasonal ARIMA with exogenous regressors", "arima"),
+    ("Prophet with yearly seasonality", "prophet"),
+    ("LightGBM over lagged targets", "gradient_boosting_lags"),
+]
+
+# Bagged-tree answers, which this table deliberately does NOT alias — see the comment
+# above `_MODEL_FAMILIES["gradient_boosting_lags"]`. They must fail loudly rather than
+# resolve to a boosting family whose constructor would reject their hyperparameters.
+_BAGGING_ANSWERS = [
+    "random forest",
+    "RandomForestRegressor",
+    "extra trees",
+    "ExtraTreesRegressor",
+    "decision tree",
+    "tree ensemble",
+]
+
+# Cross-validation keys a temporal design reaches for most naturally. `n_splits` and
+# `test_size` are genuinely `TimeSeriesSplit` arguments; `shuffle` and `validation` are
+# NOT (`TimeSeriesSplit` takes `n_splits`/`max_train_size`/`test_size`/`gap`, and the
+# absence of `shuffle` is its defining property) — they come from `KFold`/
+# `train_test_split` habits. All four are in `FORBIDDEN_CV_KEYS`; the values are the
+# shapes each would really be written with.
 _TIMESERIES_SPLIT_PARAMS: list[tuple[str, Any]] = [
     ("n_splits", 5),
     ("test_size", 0.2),
@@ -454,8 +515,14 @@ def test_every_production_alias_resolves_to_its_family(
     expected_family: str,
 ) -> None:
     """`coder` (T-029) dispatches on the written `model_family`, so every alias in
-    the real table must canonicalize rather than pass through — and no alias may
-    collide with another family, which a future addition could easily cause."""
+    the real table must canonicalize rather than pass through.
+
+    Scope, precisely: this catches an alias that is unreachable after normalization
+    (e.g. a concatenated spelling listed only in its spaced form) and a renamed
+    canonical key. It does NOT catch cross-family collisions — one alias per case
+    cannot produce one — see `_ALIAS_CASES` and
+    `test_realistic_multiword_phrasings_resolve_to_exactly_one_family`.
+    """
     mock_llm.invoke.return_value = AIMessage(content=_design(model_family=alias))
     _, workspace_instance = mock_workspace_manager
     node = TimeseriesSpecialistNode()
@@ -463,6 +530,82 @@ def test_every_production_alias_resolves_to_its_family(
     node(_build_state())
 
     assert _written_design(workspace_instance)["model_family"] == expected_family
+
+
+@pytest.mark.parametrize(("raw", "expected_family"), _MULTIWORD_PHRASING_CASES)
+def test_realistic_multiword_phrasings_resolve_to_exactly_one_family(
+    patched_llm_factory,
+    patched_settings,
+    mock_workspace_manager,
+    mock_llm: MagicMock,
+    raw: str,
+    expected_family: str,
+) -> None:
+    """The collision guard the per-alias parametrization structurally cannot be.
+
+    A cross-family collision only appears when two families' vocabulary co-occur in
+    one real answer, so these cases feed whole phrasings rather than bare aliases.
+    Every "linear" case here was a hard `ValueError("ambiguous")` — an aborted phase
+    with zero artifacts, on a node with no retry wrapper — while the table carried a
+    bare `"linear"` alias, even though "Holt's linear trend method" is the textbook
+    name for an `exponential_smoothing` model and `growth="linear"` is Prophet's own
+    default. An over-broad alias added later fails here instead of in production.
+    """
+    mock_llm.invoke.return_value = AIMessage(content=_design(model_family=raw))
+    _, workspace_instance = mock_workspace_manager
+    node = TimeseriesSpecialistNode()
+
+    node(_build_state())
+
+    assert _written_design(workspace_instance)["model_family"] == expected_family
+
+
+@pytest.mark.parametrize("raw", _BAGGING_ANSWERS)
+def test_bagged_tree_answers_are_rejected_rather_than_resolved_to_boosting(
+    patched_llm_factory, patched_settings, mock_workspace_manager, mock_llm: MagicMock, raw: str
+) -> None:
+    """Failing loudly beats misdispatching silently.
+
+    While `random forest`/`extra trees`/`decision tree`/`tree ensemble` were aliased
+    to `gradient_boosting_lags`, a coherent RandomForest design — `bootstrap`,
+    `oob_score`, and a rationale arguing for bagging — validated and was written with
+    `model_family: "gradient_boosting_lags"` and its RF hyperparameters intact, so
+    `coder` (T-029) would build a boosting model, be handed `bootstrap=`/`oob_score=`
+    and die on a constructor `TypeError`, from a `design.json` contradicting its own
+    `rationale`. Unaliased, the same answer raises "not a supported model family":
+    attributable and recoverable. Same principle `deep_learning_specialist` states.
+    """
+    mock_llm.invoke.return_value = AIMessage(content=_design(model_family=raw))
+    _, workspace_instance = mock_workspace_manager
+    node = TimeseriesSpecialistNode()
+
+    with pytest.raises(ValueError, match="not a supported model family"):
+        node(_build_state())
+
+    workspace_instance.write_json.assert_not_called()
+
+
+def test_bagged_tree_design_does_not_write_a_boosting_family(
+    patched_llm_factory, patched_settings, mock_workspace_manager, mock_llm: MagicMock
+) -> None:
+    """The end-to-end shape of the misdispatch above: a *complete*, internally
+    coherent RandomForest design — not just the family string — must not become a
+    `gradient_boosting_lags` design carrying `bootstrap`/`oob_score`."""
+    mock_llm.invoke.return_value = AIMessage(
+        content=_design(
+            model_family="RandomForestRegressor",
+            search_space={"n_estimators": {"type": "int", "low": 100, "high": 1000}},
+            fixed_params={"bootstrap": True, "oob_score": False},
+            rationale="Bagged trees over lag features decorrelate errors better here.",
+        )
+    )
+    _, workspace_instance = mock_workspace_manager
+    node = TimeseriesSpecialistNode()
+
+    with pytest.raises(ValueError, match="not a supported model family"):
+        node(_build_state())
+
+    workspace_instance.write_json.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -646,12 +789,19 @@ def test_every_preprocessing_token_the_prompt_recommends_satisfies_the_validator
 # -- tuple-shaped hyperparameters (ARIMA order / seasonal order) --
 
 
-def test_tuple_shaped_order_as_json_array_is_rejected(
+def test_tuple_shaped_order_as_json_array_in_choices_is_rejected(
     patched_llm_factory, patched_settings, mock_workspace_manager, mock_llm: MagicMock
 ) -> None:
-    """Why the prompt mandates hyphenated string tokens: an ARIMA `(p, d, q)` order
-    is not expressible as a `choices` entry, because `choices` takes only JSON
-    scalars."""
+    """Why the prompt mandates hyphenated string tokens *inside `search_space`*: an
+    ARIMA `(p, d, q)` order is not expressible as a `choices` entry, because
+    `choices` takes only JSON scalars.
+
+    Scope note: this is the `choices` path only. `_validate_fixed_params` explicitly
+    permits a flat list of scalars, so `fixed_params: {"order": [1, 1, 1]}` is
+    *accepted* by the validator — the array ban there is a pipeline convention the
+    prompt states so `coder` (T-029) sees exactly one encoding, not a rejection the
+    schema enforces. See the T-027 entry in `context/discoveries.md`.
+    """
     mock_llm.invoke.return_value = AIMessage(
         content=_design(
             search_space={"order": {"type": "categorical", "choices": [[1, 1, 1], [2, 1, 2]]}}

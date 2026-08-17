@@ -478,13 +478,27 @@ agent, step 3).
   feature-spec reference, the same shared validator, the same `experiments/exp_{iteration}/design.json`
   output path, and no `_build_output_state` override. It picks one `model_family` out of `arima`,
   `prophet`, `exponential_smoothing`, `gradient_boosting_lags` and `linear_lags` (its own five-family
-  table, again passed to `normalize_model_family` as a parameter). Its aliasing is deliberately
-  generous — `specialist_selector`'s routing vocabulary is almost disjoint from these tokens, and an
-  unresolvable `model_family` is a hard `ValueError` that aborts the phase with no artifacts. Two
-  modifier axes are handled by explicit alias entries rather than by changing the shared matcher:
-  seasonal/exogenous ARIMA spellings (`sarimax`, `autoarima`) have no word break before `arima`, and
-  a bare "lag features" is aliased to *neither* lag family, since both are models over lag features —
-  the model brand alone discriminates.
+  table, again passed to `normalize_model_family` as a parameter). Its aliasing is generous where
+  that is safe and deliberately absent where it is not — `specialist_selector`'s routing vocabulary
+  is almost disjoint from these tokens, and an unresolvable `model_family` is a hard `ValueError`
+  that aborts the phase with no artifacts, but a *wrong* resolution is worse than a loud one:
+
+  - *Concatenated spellings are listed explicitly*, because normalization collapses `-`/`_` to a
+    space but never splits CamelCase: `\barima\b` cannot reach inside `sarimax`/`autoarima`, and
+    `ExponentialSmoothing` (statsmodels' own class name for one of these families),
+    `GradientBoostingRegressor`, `XGBRegressor` and the CamelCase rendering of the canonical tokens
+    are all unreachable from their spaced twins.
+  - *A bare "linear" is not aliased.* It is a trend word far more often than a family word here, and
+    it co-occurs with every other family — "Holt's linear trend method", "Prophet (growth=linear)",
+    "ARIMA with linear trend", "LightGBM linear_tree" — so aliasing it made all of those ambiguous.
+    Only the qualified forms (`linear lags`, `linear regression`, `linear model`) are aliased.
+  - *Bagged trees are not aliased to boosting.* `random forest`/`extra trees`/`decision tree` raise
+    "not a supported model family" rather than silently resolving to `gradient_boosting_lags`, which
+    would hand `coder` a boosting model with `bootstrap`/`oob_score` hyperparameters and a
+    contradicting `rationale`. Rejecting is the safe direction to fail — the same principle
+    `deep_learning_specialist` documents.
+  - *A bare "lag features" is aliased to neither lag family*, since both are models over lag
+    features — the model brand alone discriminates.
 
   Three rules live in its prompt rather than in the validator, and **none is validator-enforced**:
   1. *No self-gate on temporal structure.* The task's "activated only when temporal structure exists"
@@ -505,7 +519,12 @@ agent, step 3).
 
   Tuple-shaped hyperparameters (ARIMA `order` `(p, d, q)`, `seasonal_order` `(P, D, Q, s)`) follow
   `nlp_specialist`'s `ngram_range` precedent: hyphenated string tokens (`"1-1-1"`) either as
-  `categorical` `choices` or pinned in `fixed_params`, never JSON arrays, which `choices` rejects.
+  `categorical` `choices` or pinned in `fixed_params`. The array form is *enforced* only in
+  `search_space` — `choices` accepts scalars only — whereas `_validate_fixed_params` explicitly
+  permits a flat list of scalars, so `fixed_params: {"order": [1, 1, 1]}` passes validation. Banning
+  it there is a **pipeline convention stated in the prompt**, not a schema rejection, so that `coder`
+  (T-029) has one encoding to parse rather than two; the string convention itself is unvalidated
+  (see `context/discoveries.md`).
 
 #### The `design.json` contract (shared by all Phase 5 specialists)
 

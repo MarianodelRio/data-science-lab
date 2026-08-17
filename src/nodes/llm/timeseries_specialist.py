@@ -64,13 +64,23 @@ _SPECIALIST = "timeseries_specialist"
 # `model_family` is a hard `ValueError` that aborts the phase with zero artifacts
 # (see the 2026-08-12 T-025 entry in context/discoveries.md).
 #
-# Two modifier axes are handled here rather than in `normalize_model_family`,
+# Two spelling axes are handled here rather than in `normalize_model_family`,
 # which has no longest-match-wins rule (2026-08-12 T-026 discovery) and is NOT
 # changed by this task:
-#   1. Seasonal/exogenous ARIMA variants ("SARIMAX", "auto-ARIMA") do NOT contain
-#      `\barima\b` as a bounded phrase ("sarimax" has no word break before
-#      "arima"), so each variant spelling is listed explicitly instead of relying
-#      on the base token.
+#   1. Concatenated/CamelCase spellings. Normalization collapses `-`/`_` to a
+#      space but never splits CamelCase, so a one-word spelling is unreachable
+#      from its spaced alias: `\barima\b` does not match inside "autoarima" or
+#      "sarimax", and `\bgradientboosting\b` does not match inside
+#      "gradientboostingregressor". This matters most for the library class names
+#      an LLM actually writes — `ExponentialSmoothing` is statsmodels' own class
+#      name for one of these five families, and `XGBRegressor`/`LGBMRegressor`/
+#      `GradientBoostingRegressor` are the sklearn-API spellings — and for the
+#      CamelCase rendering of this table's own canonical tokens
+#      (`ExponentialSmoothing`, `GradientBoostingLags`, `LinearLags`). Every
+#      concatenated form is therefore listed alongside its spaced twin, following
+#      the convention already used for `auto arima`/`autoarima`,
+#      `fb prophet`/`fbprophet`, `light gbm`/`lightgbm`, `elastic net`/
+#      `elasticnet`.
 #   2. The lag-feature modifier is NOT aliased anywhere. `gradient_boosting_lags`
 #      and `linear_lags` are BOTH "model over lag features", so a bare "lag
 #      features" cannot be assigned to either; listing it under one would make
@@ -78,11 +88,21 @@ _SPECIALIST = "timeseries_specialist"
 #      perfectly clear answer, and listing it under both would do the same for
 #      every phrase. The discriminator is therefore the model brand alone:
 #      "lag features for XGBoost" and "XGBoost" both resolve via "xgboost".
-# Generic routing words ("forecast", "time series") are deliberately NOT aliased:
-# mapping them to a family is an arbitrary modeling decision, and they co-occur
-# with real family names constantly ("ARIMA for time series forecasting"), which
-# would turn a clear answer into an "ambiguous" rejection. The prompt pins the
-# five bare literal tokens instead.
+#
+# Deliberately NOT aliased, in both directions:
+#   - Generic routing words ("forecast", "time series"). Mapping them to a family
+#     is an arbitrary modeling decision, and they co-occur with real family names
+#     constantly ("ARIMA for time series forecasting"), which would turn a clear
+#     answer into an "ambiguous" rejection. The prompt pins the five bare literal
+#     tokens instead.
+#   - A bare "linear". It is a *trend* word far more often than a family word in
+#     this domain, and every use of it co-occurs with another family: "Holt's
+#     linear trend method" (the textbook name), "damped linear trend exponential
+#     smoothing", "Prophet (growth=linear)" (Prophet's own default),
+#     "ARIMA with linear trend", "LightGBM linear_tree", "gradient boosting with
+#     linear base learners". Aliasing it made all of those raise "ambiguous" and
+#     abort the phase with zero artifacts. Only the qualified forms
+#     ("linear lags", "linear regression", "linear model") are aliased.
 _MODEL_FAMILIES: dict[str, tuple[str, ...]] = {
     "arima": (
         "arima",
@@ -105,14 +125,32 @@ _MODEL_FAMILIES: dict[str, tuple[str, ...]] = {
     ),
     "exponential_smoothing": (
         "exponential smoothing",
+        "exponentialsmoothing",
         "ets",
         "holt winters",
+        "holtwinters",
         "holt",
         "ses",
     ),
+    # BOOSTING ONLY — bagging is deliberately absent. "random forest", "extra
+    # trees", "decision tree" and "tree ensemble" were removed after an
+    # adversarial review demonstrated the failure end to end: a coherent
+    # RandomForest design (`bootstrap: true`, `oob_score: false`, and a rationale
+    # arguing for bagging) validated and was written as
+    # `model_family: "gradient_boosting_lags"` with its RF hyperparameters intact,
+    # so `coder` (T-029) would dispatch to a boosting model, be handed
+    # `bootstrap=`/`oob_score=`, and die on a constructor `TypeError` — from a
+    # `design.json` that contradicts its own `rationale`. Unaliased, a bagged-tree
+    # answer instead raises "not a supported model family": loud, attributable and
+    # recoverable. Same principle `deep_learning_specialist.py:60-73` states
+    # verbatim — rejecting is the safe direction to fail, silently resolving to
+    # the wrong family is not.
     "gradient_boosting_lags": (
         "gradient boosting lags",
+        "gradientboostinglags",
         "gradient boosting",
+        "gradientboosting",
+        "gradientboostingregressor",
         "gradient boosted trees",
         "gradient boosted regression trees",
         "boosted trees",
@@ -121,26 +159,31 @@ _MODEL_FAMILIES: dict[str, tuple[str, ...]] = {
         "gbrt",
         "xgboost",
         "xgb",
+        "xgbregressor",
         "lightgbm",
         "light gbm",
         "lgbm",
         "lgb",
+        "lgbmregressor",
         "catboost",
         "hist gradient boosting",
-        "random forest",
-        "extra trees",
-        "decision tree",
-        "tree ensemble",
+        "histgradientboosting",
+        "histgradientboostingregressor",
     ),
     "linear_lags": (
         "linear lags",
-        "linear",
+        "linearlags",
+        "linear lag",
+        "linear regression",
+        "linearregression",
+        "linear model",
         "ridge",
         "lasso",
         "elastic net",
         "elasticnet",
         "ols",
         "least squares",
+        "leastsquares",
     ),
 }
 

@@ -1419,6 +1419,48 @@ an ambiguous rejection. The prompt pins the five bare literal tokens instead. Re
 and logged: `\bar\b` in the `arima` aliases can make "ridge with ar terms" raise *ambiguous* — a hard
 raise is the T-026-sanctioned outcome, strictly better than a silent misclassification.
 
+**CORRECTION (same day, T-027 review) — the claim above that the table had "no cross-family
+collisions" was false, and the table has been fixed in three ways.** The blind spot was structural:
+the alias tests parametrized over one alias at a time, and a collision by construction needs two
+families' vocabulary in one string, so 39 green tests could not see it.
+1. *The bare `"linear"` alias is removed.* It is a **trend** word far more often than a family word
+   in this domain, and it co-occurs with every other family: "Holt's linear trend method" (the
+   textbook name for an `exponential_smoothing` model), "damped linear trend exponential smoothing",
+   "ETS with linear trend and additive seasonality", "Prophet (growth=linear)" (Prophet's own
+   default) , "Prophet with piecewise linear trend", "ARIMA with linear trend", "SARIMAX with a
+   linear time trend", "LightGBM linear_tree", "gradient boosting with linear base learners" — all
+   nine raised `ValueError("ambiguous")` and aborted the phase with zero artifacts. Only the
+   qualified forms are aliased now: `linear lags`, `linear lag`, `linear regression`, `linear model`.
+   The canonical key still round-trips via `"linear lags"`.
+2. *The bagging aliases are removed* (`random forest`, `extra trees`, `decision tree`,
+   `tree ensemble`, previously pointing at `gradient_boosting_lags`). Demonstrated end to end: a
+   coherent RandomForest design (`bootstrap: true`, `oob_score: false`, a bagging `rationale`)
+   validated and was written as `model_family: "gradient_boosting_lags"` with its RF
+   hyperparameters intact — so `coder` (T-029) would dispatch to a boosting model, receive
+   `bootstrap=`/`oob_score=` and die on a constructor `TypeError`, from a `design.json`
+   contradicting its own `rationale`. Unaliased, the answer raises "not a supported model family":
+   loud, attributable, recoverable. This makes the node consistent with the principle
+   `deep_learning_specialist.py:60-73` already states verbatim — rejecting is the safe direction to
+   fail. Accepted cost: a genuinely-intended bagged-tree design now aborts instead of degrading.
+   That is the correct trade for a value `coder` dispatches on.
+3. *Concatenated/CamelCase spellings are listed alongside their spaced twins.* Normalization
+   collapses `-`/`_` to a space but never splits CamelCase, so a one-word spelling is unreachable
+   from a spaced alias. `ExponentialSmoothing` — statsmodels' **own class name for one of these five
+   families** — was a hard abort, as were `HoltWinters`, `GradientBoostingRegressor`,
+   `HistGradientBoostingRegressor`, `XGBRegressor`, `LGBMRegressor` and the CamelCase rendering of
+   this table's own pinned tokens (`GradientBoostingLags`, `LinearLags`). Follows the convention the
+   table already used for `auto arima`/`autoarima`, `fb prophet`/`fbprophet`, `light gbm`/`lightgbm`,
+   `elastic net`/`elasticnet`. Note that `"gradientboosting"` alone does **not** fix
+   `GradientBoostingRegressor` (`\bgradientboosting\b` has no word break before "regressor"), so the
+   `...regressor` forms are listed explicitly rather than relying on the base token.
+
+Guarding the fix: `test_realistic_multiword_phrasings_resolve_to_exactly_one_family` parametrizes
+over whole realistic answers rather than bare aliases, which is the only shape that can catch a
+collision; `test_bagged_tree_answers_are_rejected_rather_than_resolved_to_boosting` and
+`test_bagged_tree_design_does_not_write_a_boosting_family` pin the safe-fail direction. The
+docstring on `test_every_production_alias_resolves_to_its_family` now states its real (narrower)
+scope instead of claiming collision coverage it structurally cannot have.
+
 **Column identity comes from `feature_spec_ref`; `_FOLD_SUMMARY_KEYS` was deliberately not widened.**
 The obvious alternative — carrying a `time_column` through `read_fold_summary` — would change a
 shared helper whose output shape three landed sibling prompts (T-024/T-025/T-026) already document,
@@ -1446,7 +1488,17 @@ time-aware (`stratified_kfold` on a forecasting problem); the folds are write-on
 tells the node to design against them and note the mismatch in `rationale` rather than change them.
 
 **Tuple-shaped ARIMA `order`/`seasonal_order` use hyphenated string tokens** (`"1-1-1"`,
-`"1-1-1-12"`), either as `categorical` `choices` or pinned in `fixed_params` — never JSON arrays,
-which `_validate_choices` rejects (scalars only). Follows T-026's `ngram_range` precedent, and the
-format is stated in the prompt so it is a public encoding rather than a private one `coder` has to
-reverse-engineer.
+`"1-1-1-12"`), either as `categorical` `choices` or pinned in `fixed_params` — never JSON arrays.
+Follows T-026's `ngram_range` precedent, and the format is stated in the prompt so it is a public
+encoding rather than a private one `coder` has to reverse-engineer.
+
+*Correction (T-027 review) — the enforcement is `choices`-scoped only.* `_validate_choices` does
+reject an array inside `search_space` (scalars only), but `_validate_fixed_params` explicitly
+permits a **flat list of scalars**, so `fixed_params: {"order": [1, 1, 1]}` is accepted and written
+through (verified). The prompt originally justified the ban as a validator rejection, which is false
+for the `fixed_params` path; it now states the array ban there as a **pipeline convention** — one
+encoding for `coder` to parse instead of two — and `docs/pipeline.md` says the same. The string
+convention itself is entirely unvalidated (`"1,1,1"`, `"(1,1,1)"`, `"1-1"`, `"banana"` all pass), so
+`coder` (T-029) must parse defensively; recorded in `context/discoveries.md`. The identical
+incorrect claim is inherited from `nlp_specialist`'s `ngram_range` section — flagged in discoveries,
+deliberately not edited in that landed sibling.

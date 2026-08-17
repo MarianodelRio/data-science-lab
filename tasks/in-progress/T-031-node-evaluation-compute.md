@@ -3,11 +3,11 @@ id: T-031
 phase: 2
 agent: pipeline-agent
 depends_on: [T-011]
-status: available
+status: in-progress
 folders: ["src/nodes/compute/", "config/phases/"]
 outputs: [score_evaluator node, feature_importance_extractor node, feature_importance_N.json]
 size: M
-branch: ~
+branch: feature/T-031-node-evaluation-compute
 pr: ~
 ---
 

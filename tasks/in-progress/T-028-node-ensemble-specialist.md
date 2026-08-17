@@ -3,11 +3,11 @@ id: T-028
 phase: 2
 agent: pipeline-agent
 depends_on: [T-010]
-status: available
+status: in-progress
 folders: ["src/nodes/llm/", "config/agents/", "config/prompts/"]
 outputs: [ensemble_specialist node, stacking/blending design using OOF predictions]
 size: S
-branch: ~
+branch: feature/T-028-node-ensemble-specialist
 pr: ~
 ---
 

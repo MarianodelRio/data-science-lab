@@ -91,6 +91,27 @@ def test_phase_subgraph_compiles_and_runs(stem: str, tmp_path) -> None:
         assert design["cv_strategy_ref"] == "validation/fold_config.json"
         assert "n_estimators" in design["search_space"]
 
+        # `code_critic` (T-030) is a real node now, not a `NoOpNode` — its
+        # verdict record landing proves the live edge. Like `analysis_critic`, it
+        # is deliberately left undispatched in `graph_mocks._DISPATCH`, so this is
+        # the only place the real forced-pass path runs through a real graph.
+        #
+        # The mechanism is worth stating precisely, because a weaker assertion
+        # here would let it be lost silently: `extract_json_object` *succeeds* on
+        # the fallback `_MOCK_LLM_CONTENT` — it salvages the fenced fold-config
+        # object — and the verdict normalizes to `iterate` only because that
+        # object has no `verdict` key. So asserting `forced_pass` (rather than
+        # merely that the file exists) is what pins the retry-budget path: were
+        # `_MOCK_LLM_CONTENT` ever to grow a `verdict` key, this test would fail
+        # loudly instead of quietly covering nothing.
+        verdicts_path = tmp_path / "reports" / "code_critic_verdicts_iter0.json"
+        assert verdicts_path.is_file()
+        verdicts = json.loads(verdicts_path.read_text())
+        assert verdicts["targets"] == ["coder"]
+        assert verdicts["final_verdict"]["verdict"] == "pass"
+        assert verdicts["final_verdict"]["forced_pass"] is True
+        assert [a["verdict"] for a in verdicts["attempts"]] == ["iterate"] * 3 + ["pass"]
+
 
 def test_phase5_subgraph_routes_neural_plan_to_deep_learning_specialist(tmp_path) -> None:
     """The parametrized phase-5 case above runs on an unseeded workspace, so

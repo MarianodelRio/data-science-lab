@@ -48,6 +48,6 @@ mypy src/
 
 - Never write outside `src/api/`
 - Never import node internals directly — depend on the compiled graph interface and shared contracts
-- Never modify shared contracts (LabState, WorkspaceManager) — request via `context/discoveries.md`
+- Never modify shared contracts (LabState, WorkspaceManager) — request via `context/discoveries/T-XXX.md`
 - Never use `git add -A` — stage specific files
 - Document every endpoint in `docs/api.md`

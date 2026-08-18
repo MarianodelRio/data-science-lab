@@ -65,6 +65,6 @@ are critical — ≥85% coverage.
 ## Rules
 
 - Never write outside owned folders
-- Never modify `src/state.py`, `LLMFactory`, or `WorkspaceManager` — those are infra-agent's; request changes via `context/discoveries.md`
+- Never modify `src/state.py`, `LLMFactory`, or `WorkspaceManager` — those are infra-agent's; request changes via `context/discoveries/T-XXX.md`
 - Never use `git add -A` — stage specific files
 - Every new agent gets a row in `docs/agents.md`

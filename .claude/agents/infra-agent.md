@@ -57,7 +57,7 @@ are held to ≥85% coverage.
 
 ## Rules
 
-- Never write outside owned folders — note cross-module findings in `context/discoveries.md`
+- Never write outside owned folders — note cross-module findings in `context/discoveries/T-XXX.md`
 - Never change a protected contract without Orchestrator approval
 - Never use `git add -A` — stage specific files
 - Keep provider wrappers thin: config in, `BaseChatModel` out, no business logic

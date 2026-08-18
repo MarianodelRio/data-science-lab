@@ -11,7 +11,13 @@ checkpoints, and learning from their own experiments via a persistent RAG store.
 Built and coordinated with the **dev-team** framework (parallel spec-driven
 development). Single source of truth: git.
 
-See `design.md` for the full architecture and `plan.md` for the task graph.
+Reference documents:
+
+| File | What it holds |
+|---|---|
+| `design.md` | Intended architecture: shared contracts, LangGraph topology, the seven phases |
+| `spec.md` | What each module **actually does today** — logic, interface, out-of-scope, cross-module flows. Generated brownfield from the code; where it and `design.md` disagree, `spec.md` follows the implementation and says so. **Edit only via `/refine`** |
+| `plan.md` | The task graph |
 
 ---
 
@@ -36,6 +42,11 @@ Each agent writes **only** inside its folders (defined in `.claude/agents/`).
 | `pipeline-agent` | `src/graph/`, `src/nodes/`, `config/agents/`, `config/phases/`, `config/prompts/`, `docs/pipeline.md`, `docs/agents.md` |
 | `api-agent` | `src/api/`, `docs/api.md` |
 | `frontend-agent` | `frontend/` |
+
+Cross-cutting rules for the framework agents live in `.claude/steering/`, injected
+per-agent by scope (`always.md` and `task-format.md` → all; `context-formats.md` →
+orchestrator/architect/coder/planner; `coder-complete.md` → coder). `.claude/AGENTS.md`
+is only a stub pointing there.
 
 **Protected contracts** (require explicit human approval before change):
 `src/state.py` (LabState), `src/config/` dataclasses, `LLMFactory.get` signature,
@@ -90,9 +101,18 @@ available/ → in-progress/ → pr-open/ → done/
 ```
 
 Status lives in each task file's YAML frontmatter; folder = visual signal.
-State transitions go through `scripts/` (`dt-claim`, `dt-ready`, `dt-done`,
-`dt-cancel`, `dt-restart`) — not hand-rolled git. `dt-board` regenerates the
-git-ignored `.dt-index.json` cache.
+State transitions go through `scripts/` — not hand-rolled git:
+
+| Script | Transition |
+|---|---|
+| `dt-claim` | `available/` → `in-progress/` (creates branch + worktree) |
+| `dt-pr` | `in-progress/` (or `ready-for-pr/`) → `pr-open/`; opens the PR, tears down the worktree |
+| `dt-done` | `pr-open/` → `done/` after merge |
+| `dt-cancel` · `dt-restart` | abandon / recover a task |
+| `dt-ready` | `in-progress/` → `ready-for-pr/` — **escape hatch only**; the normal path goes straight through `dt-pr` |
+
+`dt-verify` runs test + lint + type-check against a worktree (used by `/orchestrate`
+before and after review). `dt-board` regenerates the git-ignored `.dt-index.json` cache.
 
 ### Task file format
 
@@ -148,6 +168,10 @@ frontend `npm run lint && npm run build`. No secrets, debug prints, or dead code
 **Architecture** — no imports outside owned folders; no business logic in HTTP
 handlers; protected contracts untouched (or explicitly approved).
 
+**Spec coverage** — when `quality.spec_coverage_enabled` is on, the `spec-coverage`
+agent maps `spec.md` constraints to tests in the diff. Advisory: it reports
+`WARN_LOW` below `spec_coverage_threshold` but **never blocks a PR**.
+
 **Documentation** — new pipeline stage/node → `docs/pipeline.md`; new agent →
 `docs/agents.md`; new endpoint → `docs/api.md`; config change → `docs/configuration.md`;
 architectural decision → ADR in `docs/adr/`.
@@ -156,10 +180,26 @@ architectural decision → ADR in `docs/adr/`.
 
 ## Context files
 
-- `context/decisions.md` — log non-obvious technical decisions
-- `context/discoveries.md` — cross-agent alerts (found something affecting another module → note it here, don't touch that module)
+One file **per task**, not one flat log (dev-team v1.1+):
 
-`git pull origin main --ff-only` before appending (these are append-only).
+- `context/decisions/T-XXX.md` — non-obvious technical decisions taken in that task
+- `context/discoveries/T-XXX.md` — cross-agent alerts (found something affecting another
+  module → note it here, don't touch that module). `Status: open` is load-bearing: the
+  Orchestrator surfaces only open entries to the Architect and Planner
+- `context/retrospectives/{coder,planner,architect}.md` — lessons extracted by `/done`
+  and injected back in `/orchestrate` Phase 0. Written by the framework, not by hand
+
+Create the file if it doesn't exist; `git pull origin main --ff-only` before appending.
+The exact entry formats live in `.claude/steering/context-formats.md` — that file is the
+source of truth and the Orchestrator injects it into the agents that need it.
+
+**Agents do not read `context/` directly.** The Orchestrator pre-selects the relevant
+entries (decisions filtered by folder, discoveries filtered to open) and passes them in
+the prompt.
+
+History note: entries predating the v1.4 migration live in `context/decisions/` under
+their task id, plus `general.md` (entries with no task id) and `legacy-header.md`. All
+pre-migration discoveries are in `context/discoveries/legacy.md`.
 
 ---
 
@@ -173,6 +213,8 @@ architectural decision → ADR in `docs/adr/`.
 | `/explore [topic]` | Investigate behavior in the project |
 | `/done T-XXX` | Mark DONE after merge, report unblocked tasks |
 | `/add-task [description]` | Add a task mid-project |
+| `/refine [change]` | Edit `spec.md` safely, propagating by task status — **the only way to change `spec.md`; never edit it by hand** |
+| `/reopen T-XXX` | Move a task from `pr-open/` back to `available/` when its PR is rejected or closed unmerged |
 | `/status` · `/cheatsheet` · `/guide` | Board, next-step, and state views |
 | `/restart T-XXX` · `/cancel T-XXX` | Recover / abandon a task |
 
@@ -183,8 +225,8 @@ architectural decision → ADR in `docs/adr/`.
 1. Never write outside assigned `folders:`
 2. Never modify a protected contract without explicit human approval
 3. Always write tests in the same PR (LLM/network mocked in unit tests)
-4. Always log non-obvious choices in `context/decisions.md`
-5. Always check `context/discoveries.md` before implementing
+4. Always log non-obvious choices in `context/decisions/T-XXX.md`
+5. Always check open entries in `context/discoveries/` before implementing
 6. Planner plans, Coder codes — escalate out-of-role needs to the Orchestrator
 7. Never skip the human checkpoint
 8. Update the task with a `## Completed` section after READY_FOR_PR

@@ -43,6 +43,6 @@ npm test        # component tests
 ## Rules
 
 - Never write outside `frontend/`
-- Never call backend endpoints not defined in `docs/api.md` — if you need a new one, note it in `context/discoveries.md` for api-agent
+- Never call backend endpoints not defined in `docs/api.md` — if you need a new one, note it in `context/discoveries/T-XXX.md` for api-agent
 - Keep the API client the single source of backend types
 - Never use `git add -A` — stage specific files

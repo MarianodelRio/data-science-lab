@@ -132,4 +132,4 @@ does not reach them. Only the stale prose in their prompt is touched — see bel
 - [ ] unit tests with mocked LLM, no network; `src/nodes/llm/feature_engineer.py` ≥85% coverage
 - [ ] `ruff check . && ruff format --check .` and `mypy src/` pass
 - [ ] `docs/pipeline.md` documents the v2 `feature_spec.json` schema — it is the contract `coder` (T-029) generates against
-- [ ] `context/decisions.md` entry recording the v2 primitive and the family-based fit-scope guard, explicitly superseding the `fold_aware` decisions at lines 749-780
+- [ ] `context/decisions/T-047.md` entry recording the v2 primitive and the family-based fit-scope guard, explicitly superseding the `fold_aware` decisions now in `context/decisions/T-022.md` (the two `2026-08-11 — T-022 [pipeline-agent]` entries; they were at `context/decisions.md:749-780` before the dev-team v1.4 migration split that file per task)

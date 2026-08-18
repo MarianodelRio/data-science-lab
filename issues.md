@@ -362,10 +362,47 @@ Nada commiteado, por indicación explícita.
 - **Se volverá a corromper en la próxima ejecución de `scripts/dt-board.sh`**, que es lo
   que hacen `/orchestrate` y `/status`. Hasta que A-1 se arregle, el cache no es fiable.
 
+---
+
+## Cambios aplicados en este repo (2026-08-18)
+
+Todo sin commitear. **Ningún fichero de framework de dev-team fue modificado** — verificado
+con `diff -q` contra `/tmp/dev-team-ref` para `scripts/` y `.claude/{agents,commands,steering}/`
+de framework.
+
+| Fichero | Cambio | Issue |
+|---|---|---|
+| `CLAUDE.md` | Sección *Context files* reescrita: carpetas por tarea, `retrospectives/`, puntero a `.claude/steering/context-formats.md` como fuente de verdad, nota de dónde quedó el histórico | C-1 |
+| `CLAUDE.md` | Reglas 4 y 5 → `context/decisions/T-XXX.md` y entradas abiertas de `context/discoveries/` | C-1 |
+| `CLAUDE.md` | *Task lifecycle*: tabla de scripts con `dt-pr`, `dt-verify` y `dt-ready` marcado como escape hatch | C-2 |
+| `CLAUDE.md` | Tabla de comandos: `/refine` (única vía de editar `spec.md`) y `/reopen` | C-2 |
+| `CLAUDE.md` | `spec.md` añadido al mapa de documentos de referencia | C-2 |
+| `CLAUDE.md` | `.claude/steering/` explicado en *Module ownership*; `spec-coverage` en *Quality gates* | C-2 |
+| `.claude/agents/{api,frontend,infra,pipeline}-agent.md` | 4 reglas → `context/discoveries/T-XXX.md` (son project agents nuestros, no de dev-team) | C-1 |
+| `tasks/available/T-047-…md` | Puntero muerto `context/decisions.md:749-780` → `context/decisions/T-022.md`, identificando las dos entradas por cabecera | C-1 |
+| `migration.md` | Script del PASO 5 corregido + verificación por conteo | B-1, B-3 |
+
+### Deliberadamente NO tocado
+
+- **`tasks/done/*.md`** (~60 referencias) — registro histórico de lo que ocurrió en cada
+  tarea. Reescribirlo sería falsificar el log.
+- **`context/decisions/*.md` y `context/discoveries/legacy.md`** (~20) — contenido
+  histórico ya migrado; se citan entre sí con el nombre que tenían entonces.
+- **`src/`, `tests/`, `frontend/`, `docs/pipeline.md`** (~30 citas en docstrings, del tipo
+  *"see `context/decisions.md`'s T-019 entry"*) — son punteros degradados, no rotos: el
+  mapeo al nuevo nombre es mecánico. Además esos ficheros pertenecen a `infra-agent`,
+  `pipeline-agent` y `frontend-agent` según *Module ownership*, así que un barrido
+  transversal debería ir en su propia tarea, no colarse en la migración.
+  **Propuesta:** una tarea `S` de documentación que actualice esas citas de golpe.
+
+---
+
 ### Orden de resolución sugerido
 
-1. **C-1** — cada sesión que empiece antes de arreglarlo opera con instrucciones falsas
-2. **A-1 + A-2** — 2 líneas; sin ellas el board miente desde la primera ejecución
-3. **C-2** — coherencia documental
-4. **C-3 / C-4** — tras revisar `spec.md`
-5. **A-3, B-1, B-2, B-3** — issues/PR hacia `MarianodelRio/dev-team`
+1. ~~**C-1**~~ ✅ hecho — era lo más urgente: cada sesión arrancaba con instrucciones falsas
+2. ~~**C-2**~~ ✅ hecho · ~~**B-1**, **B-3**~~ ✅ hechos
+3. **A-1 + A-2** ⏳ — 2 líneas, pero upstream. Hasta entonces `.dt-index.json` no es fiable
+   tras cualquier ejecución de `scripts/dt-board.sh`
+4. **A-3** ⏳ upstream → desbloquea **B-2**
+5. **C-3 / C-4** — tu decisión, tras revisar `spec.md`
+6. Opcional: tarea de documentación para el barrido de citas en `src/`/`docs/`

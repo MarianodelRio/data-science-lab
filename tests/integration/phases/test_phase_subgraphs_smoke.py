@@ -112,6 +112,31 @@ def test_phase_subgraph_compiles_and_runs(stem: str, tmp_path) -> None:
         assert verdicts["final_verdict"]["forced_pass"] is True
         assert [a["verdict"] for a in verdicts["attempts"]] == ["iterate"] * 3 + ["pass"]
 
+    if stem == "phase6_evaluation":
+        # `score_evaluator` (T-031) is a real node now — it runs on a bare,
+        # unseeded workspace here (no upstream `results.json`), which is
+        # exactly the "nothing to evaluate" path its own module docstring
+        # documents: `evaluated` is False, `best_score` is left untouched at
+        # its `-inf` sentinel, but `iterations_without_improvement` still
+        # advances (the liveness override — see score_evaluator.py's module
+        # docstring and context/decisions.md's 2026-08-17 entry). This is the
+        # only place that liveness rule is exercised through a real graph run
+        # rather than a direct unit-level `.run()` call.
+        score_path = tmp_path / "reports" / "score_evaluation_0.json"
+        assert score_path.is_file()
+        score_artifact = json.loads(score_path.read_text(encoding="utf-8"))
+        assert score_artifact["evaluated"] is False
+        assert result["best_score"] == float("-inf")
+        assert result["iterations_without_improvement"] == 1
+
+        # `feature_importance_extractor` (T-031) runs next in the same
+        # sequence; with no `design.json` for the (nonexistent) experiment
+        # either, it takes its own degrade-safe skip path rather than raising.
+        fi_path = tmp_path / "reports" / "feature_importance_0.json"
+        assert fi_path.is_file()
+        fi_artifact = json.loads(fi_path.read_text(encoding="utf-8"))
+        assert fi_artifact["skipped"] is True
+
 
 def test_phase5_subgraph_routes_neural_plan_to_deep_learning_specialist(tmp_path) -> None:
     """The parametrized phase-5 case above runs on an unseeded workspace, so

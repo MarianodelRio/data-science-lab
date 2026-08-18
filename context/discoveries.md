@@ -875,3 +875,70 @@ every `ensemble_specialist` design references a predictions file that was never 
 `coder`'s own downstream consumption of that design (fitting a meta-learner on
 `base_experiments[i]["oof_path"]`) fails at read time rather than at design time.
 Status: open (binding convention for T-029)
+
+
+## OPEN — 2026-08-17 [pipeline-agent (T-031) → pipeline-agent (T-029 `coder`)]
+`score_evaluator`/`feature_importance_extractor` (T-031) pin a `results.json` contract `coder` has not
+landed yet, since nothing else in `src/` defines this file's shape beyond `baseline_runner`'s own
+`experiments/baseline/results.json` precedent:
+- `cv_score` (float, required) — mirrors `baseline_runner.py:126,201`'s own key. `score_evaluator`
+  degrades to "no valid score" (never raises) when it is absent, non-numeric, or non-finite.
+- `metric` (string, optional) — set it to `"accuracy"`/`"r2"`/`"rsquared"`/`"score"` (separator-
+  normalized matching, same as the direction table) to opt an experiment into a `delta_vs_baseline`
+  comparison against `state["baseline_score"]`. Any other value, or its absence, just means no
+  comparison is made — never an error.
+- `feature_importance` (`{feature: value}` dict, optional) and `feature_names` (`list[str]`, optional)
+  — read by `feature_importance_extractor` only when `design.json`'s `model_family` is one of the
+  curated tree-ensemble tokens. Absent/malformed degrades to a skip artifact, never a raise.
+
+Also flagging that both new nodes inherit `code_critic`'s known experiment-pointer staleness (the
+2026-08-17 T-030 entry above, still open): they resolve `state["experiments"][-1]["path"]` via the
+same ported helper, which may not track the last-*regenerated* script until `coder` settles which
+convention it writes.
+Status: open
+
+## NOTE — 2026-08-17 [pipeline-agent (T-031) → pipeline-agent (T-032 iteration loop)]
+T-031 explicitly does **not** increment `state["current_iteration"]` — the 2026-08-11
+`T-024 → T-031/T-032` entry's "T-031 or T-032" framing resolves to T-032 only. Incrementing it inside
+`score_evaluator` (the first Phase 6 node) would desync every `{iteration}`-suffixed artifact the rest
+of Phase 6 writes — including `score_evaluator`'s and `feature_importance_extractor`'s own two
+artifacts — from the `exp_{N}` experiment directory that iteration actually scored.
+Status: open
+
+## RESOLVED — 2026-08-17 [pipeline-agent (T-031)]
+Closes the 2026-08-04 `infra-agent (T-002) → pipeline-agent (T-031 score_evaluator)` entry above.
+Implemented via `score_evaluator._MINIMIZE_METRICS`/`_direction_for_metric`
+(`src/nodes/compute/score_evaluator.py`): every score is normalized to "higher is better" —
+minimize-oriented metrics negated via a curated, separator-normalized metric-name match — before it
+is ever compared against `best_score` or written to `last_score`/`best_score` anywhere in `LabState`.
+`LabState` itself still carries no explicit polarity field; the decision made was to resolve polarity
+once, at the single write site, rather than add one (see `context/decisions.md`'s matching 2026-08-17
+entry for the full reasoning).
+Status: resolved
+
+## OPEN — 2026-08-17 [pipeline-agent (T-031) → whoever owns the `LabState` polarity question (protected
+contract, requires human approval)]
+Adversarial review of T-031 (repro3) found a real gap in the resolution the entry directly above
+records as closed: `best_score` is persisted **already normalized** (sign-flipped for minimize
+metrics), with no record anywhere in `LabState` of *which direction produced it*. `score_evaluator`
+re-derives direction fresh every call from `problem_definition.json`'s `success_metric`, defaulting to
+"maximize" when that file is unset or unreadable (its own degrade-safe convention — necessary so a
+missing upstream artifact never crashes the node). Concretely: iteration 0 runs with a readable
+`problem_definition.json` declaring `"success_metric": "rmse"`; the actual RMSE of `2.0` (excellent)
+normalizes to `best_score = -2.0`. If `problem_definition.json` becomes unreadable on a later
+iteration (moved, corrupted, `problem_definition_path` cleared), direction silently defaults to
+"maximize" for that call, and a raw RMSE of `50.0` (far worse) is compared as `50.0 > -2.0` — a false
+improvement. `best_score` flips to `50.0` and `best_experiment_path` flips to the objectively worse
+experiment, with no field anywhere recording that the comparison spanned two different assumed
+directions.
+The real fix is a polarity field on `LabState` (e.g. persisting `direction` alongside `best_score`, so
+a later call can detect a mismatch instead of silently re-assuming "maximize") — `LabState` is a
+protected contract per CLAUDE.md and out of T-031's scope to touch without explicit human approval.
+**Not mitigated in code**: a mitigation that re-reads a previous iteration's `score_evaluation_*.json`
+report to recover the prior direction was considered and deliberately rejected — it would add
+cross-iteration file coupling to a compute node for a case the contract should settle properly, not a
+targeted fix. What T-031 *does* provide: every `reports/score_evaluation_{iteration}.json` records
+`success_metric`, `success_metric_raw`, and `direction` for that call, so a flip like the one above is
+at least **forensically detectable** after the fact by diffing consecutive reports, even though nothing
+currently detects or blocks it automatically.
+Status: open

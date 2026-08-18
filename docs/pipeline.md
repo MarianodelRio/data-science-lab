@@ -46,10 +46,12 @@ always counts as an improvement), all other scores `0.0`, all path-pointer/check
 - `baseline_results_path` and `baseline_score` are set once (Pipeline Phase 3) and never
   overwritten.
 - `best_experiment_path` and `best_score` update only when a new experiment's score improves
-  on the current best. **Scores must be normalized so that "higher is better" before being
-  written to `last_score`/`best_score`** — the state contract itself has no polarity field, so
-  whichever node computes `last_score` (Pipeline Phase 6, `score_evaluator`) is responsible for
-  sign-flipping minimize-oriented metrics (RMSE, LogLoss, MAE, etc.) before writing.
+  on the current best. **Scores are normalized so that "higher is better" before being written
+  to `last_score`/`best_score`** — the state contract itself has no polarity field, so
+  `score_evaluator` (Pipeline Phase 6, `src/nodes/compute/score_evaluator.py`, T-031) is
+  responsible for, and now implements, sign-flipping minimize-oriented metrics (RMSE, LogLoss,
+  MAE, etc.) before writing — see "Evaluation (Phase 6)" above for the curated metric set and
+  the separator-normalized matching this requires in practice.
 - `messages` is trimmed per node via the `add_messages` reducer plus
   `context.trim_strategy`/`max_messages_per_node` from `config/settings.yaml`.
 
@@ -738,6 +740,122 @@ node-injected from `state["experiments"]`, never read from the LLM response) as 
 last key. The other four specialists' eight-key `validate_experiment_design` path, and `coder`'s
 (T-029) reads of their `design.json` files, are entirely unaffected by this addition.
 
+### Evaluation (Phase 6)
+
+`config/phases/phase6_evaluation.yaml`'s `sequence`: `score_evaluator` -> `feature_importance_extractor`
+-> `error_analyst` -> `hypothesis_generator` -> `experiment_designer`, no critic, `interrupt_after: true`.
+`score_evaluator` and `feature_importance_extractor` (T-031) are real `ComputeNode`s; the remaining
+three still resolve to `NoOpNode` (no implementing task has landed). Both real nodes share experiment-
+directory resolution and degrade-safe JSON reading via the private `src/nodes/compute/_evaluation_common.py`
+module -- ported (not imported, to keep `code_critic`'s Phase 5 module and this Phase 6 module
+decoupled) from `code_critic._experiment_dir_from_state`/`_candidate_experiment_dirs`
+(`code_critic.py:99-158`): the state-recorded experiment pointer (`state["experiments"][-1]["path"]`)
+is tried first, then the well-known `experiments/exp_{iteration}` directory, so both nodes work whether
+or not `coder` (T-029, not yet landed) populates `experiments`.
+
+- **`score_evaluator`** (`src/nodes/compute/score_evaluator.py`, `ComputeNode` subclass, T-031) -- the
+  phase's first node, pure Python, no LLM. Reads the resolved experiment directory's `results.json`
+  (`cv_score` key -- mirrors `baseline_runner`'s own results-file shape, pinned as a contract for
+  `coder` in `context/discoveries.md`) and `problem_definition.json`'s `success_metric`. It is the
+  **sole writer** anywhere in `src/` of `LabState`'s `last_score`, `score_delta`, `best_score`,
+  `best_experiment_path` and `iterations_without_improvement`.
+
+  *Metric-direction normalization* (CLAUDE.md invariant #3): `success_metric` is lowercased and every
+  non-alphanumeric character stripped, then matched against a curated minimize-oriented set (`rmse`,
+  `mse`, `mae`, `mape`, `smape`, `rmsle`, `msle`, `medae`, `logloss`, `crossentropy`, `brier`,
+  `hammingloss`, `wmae`); anything else -- including an absent or unrecognized metric -- defaults to
+  "maximize". The separator-normalized matching (rather than an exact-string match) is deliberate:
+  `"log_loss"`, `"Log-Loss"` and `"Log Loss"` must all resolve identically. A minimize-metric's raw
+  score is negated before ever being written to `last_score`/`best_score`, so every score compared
+  or stored anywhere in `LabState` is already higher-is-better.
+
+  *Score-delta / tie / first-evaluation rules.* `is_improvement = normalized_score > best_score_before`
+  -- **strict** `>`; a tie is never an improvement. `score_delta = normalized_score - best_score_before`
+  when `best_score_before` is finite; on the very first evaluation (`best_score` still at its `-inf`
+  sentinel from `new_state`), `score_delta` is fixed at `0.0` rather than computed against `-inf` (which
+  would otherwise be `+inf`, a non-finite value CLAUDE.md invariant #3 and this artifact's own
+  "never write `inf`/`nan`" rule both forbid). `best_score`/`best_experiment_path` are only present in
+  the returned delta when `is_improvement` is `True` -- CLAUDE.md invariant #3, enforced here for the
+  first time.
+
+  *Liveness.* `iterations_without_improvement` **increments even when no valid score is obtainable**
+  (missing/malformed `results.json`, no finite `cv_score`) -- not just on a non-improving evaluated
+  score. This is because `src/graph/supervisor.py:31-33` makes `iterations_without_improvement >=
+  max_iterations` the *only* exit from the Phase 6 -> Phase 4 iteration loop, and `score_evaluator` is
+  the field's sole writer: not incrementing on "nothing to evaluate" would let a permanently-broken
+  `results.json` loop the pipeline forever. The "nothing to evaluate" vs. "evaluated and didn't
+  improve" distinction that this collapses out of the counter is preserved in the artifact's own
+  `evaluated`/`reason` fields instead (`context/decisions.md`, 2026-08-17).
+
+  *Baseline comparison* (`delta_vs_baseline`) is informational only -- it never influences `best_score`,
+  `best_experiment_path` or `is_improvement`. It is computed only when `results.json`'s optional
+  `metric` field normalizes into `{accuracy, r2, rsquared, score}` (the token set `baseline_runner`'s
+  own `.score()` convention, T-020, can produce) AND `state["baseline_score"]` is a finite number;
+  otherwise the artifact records `null` plus a reason string. Even when eligible, the subtraction
+  itself is re-checked for overflow (see "Never non-finite" below) before being trusted.
+
+  *Output iteration and the experiment-resolution warning.* The artifact's filename number and
+  `iteration` field are **not** simply `resolve_iteration`'s entry/`current_iteration` lookup -- they
+  come from `_evaluation_common.resolve_output_iteration`, which prefers the *resolved*
+  `experiment_dir`'s own trailing `exp_<N>` component, falling back to `resolve_iteration` only when
+  the directory doesn't match that shape. Without this, a stale or non-corresponding `iteration` key
+  on an `experiments` entry could file a correctly-read report under the wrong number. Separately, when
+  an entry declares a valid `iteration` N but its `path` is absent/unusable -- so the well-known
+  fallback directory `exp_M` was read instead, with `M != N` -- the artifact's
+  `experiment_resolution_warning` field names both. This does not change *which* directory is read
+  (that precedence stays a verbatim match with `code_critic`); it makes an adversarial-review-found
+  divergence forensically visible instead of a silent false-positive `is_improvement`.
+
+  *Never non-finite.* Writes `reports/score_evaluation_{iteration}.json` unconditionally via
+  `workspace.write_json` -- every key always present, `null` (never `inf`/`nan`) for any value that
+  would otherwise be non-finite (e.g. `best_score_before` on the first evaluation). This includes the
+  *results* of `score_delta`/`delta_vs_baseline`'s subtractions, not just their inputs: two
+  individually-finite operands of opposite sign can still overflow to `+-inf` on subtraction, so both
+  are re-checked with `math.isfinite` and degraded explicitly (`score_delta` to `0.0`,
+  `delta_vs_baseline` to `null`) rather than trusting operand-level finiteness alone.
+
+  *Known limitation (open, not fixed here): polarity is not itself persisted.* `best_score` is stored
+  already sign-normalized, with no record of which `direction` produced it. `score_evaluator`
+  re-derives direction fresh on every call from `problem_definition.json`, defaulting to "maximize"
+  when that file is unreadable -- if it becomes unreadable on a later iteration after being readable
+  (with a minimize metric) on an earlier one, a worse raw score can compare as an "improvement" and
+  flip `best_score`/`best_experiment_path` to the objectively worse experiment. The fix is a polarity
+  field on `LabState`, a protected contract requiring human approval -- out of this task's scope. See
+  `context/discoveries.md`'s 2026-08-17 OPEN entry for the concrete repro. Every artifact's
+  `success_metric`/`success_metric_raw`/`direction` fields at least make a flip forensically detectable
+  after the fact by diffing consecutive reports, even though nothing currently detects it automatically.
+
+- **`feature_importance_extractor`** (`src/nodes/compute/feature_importance_extractor.py`,
+  `ComputeNode` subclass, T-031) -- runs second, pure Python, no LLM, **always returns `{}`** (no
+  `LabState` field exists for this artifact). It **extracts a pre-computed payload, it does not
+  compute anything** -- `design.md`'s "Python + SHAP" phrasing for this node is stale for this
+  implementation: there is **no `shap` import anywhere** in the module. `results.json`'s optional
+  `feature_importance` (`{feature: value}`) and `feature_names` fields are read, validated, and
+  ranked by absolute magnitude into `reports/feature_importance_{iteration}.json`; nothing is fit.
+  Gated by an explicit **allow-list** of tree-ensemble `model_family` tokens (`xgboost`, `lightgbm`,
+  `catboost`, `extra_trees`, `gradient_boosting_lags`, sourced from `classical_ml_specialist.py:42-47`
+  and `timeseries_specialist.py:148-172`) read from the resolved experiment directory's `design.json`
+  -- an unrecognized or future model family skips safely with a reason rather than failing or producing
+  a meaningless ranking. Skip and success artifacts share one shape (`skipped`, `reason`, `iteration`,
+  `experiment_dir`, `experiment_resolution_warning`, `model_family`, `features`,
+  `importance_total_overflowed`, `features_truncated`, `original_feature_count`); a success artifact's
+  `features` list carries `feature`/`importance`/`normalized_importance`/`rank` per surviving entry.
+  Shares the same output-iteration derivation and `experiment_resolution_warning` diagnostic as
+  `score_evaluator` above (both delegate to `_evaluation_common.resolve_output_iteration`).
+
+  *Bounded output.* `results.json`'s `feature_importance` payload is LLM/generated-script output, not
+  a trusted internal artifact -- an unbounded entry count would otherwise flow uncapped through the
+  filtered dict, the ranked list, and the serialized report. Entries beyond `_MAX_RANKED_FEATURES`
+  (3000, a generous headroom for real tabular feature engineering) are dropped, keeping the largest by
+  absolute magnitude; `features_truncated`/`original_feature_count` record it explicitly when this
+  happens, in-band with the report -- the same "never silently drop data without a marker" precedent
+  `code_critic._truncate` set for its own text-length artifact caps, adapted to a list. Independently,
+  the *sum* of surviving importances (used to compute `normalized_importance`) can itself overflow to a
+  non-finite value on just two extreme-magnitude entries; that is guarded and recorded as
+  `importance_total_overflowed` -- ranking by raw magnitude stays correct even when it fires, but every
+  `normalized_importance` degrades to `0.0` rather than a share of a sum that cannot be represented as a
+  finite float.
+
 ## Node classification
 
 > Skeleton — table of LLM nodes vs pure Python nodes vs tools, populated as each node lands.
@@ -757,6 +875,8 @@ last key. The other four specialists' eight-key `validate_experiment_design` pat
 | `timeseries_specialist` | LLM (`LLMNode`) | 5 — Implementation | Landed (T-027) |
 | `ensemble_specialist` | LLM (`LLMNode`) | 5 — Implementation | Landed (T-028) |
 | `code_critic` | LLM (`LLMNode`) | 5 — Implementation | Landed (T-030) |
+| `score_evaluator` | Compute (`ComputeNode`) | 6 — Evaluation | Landed (T-031) |
+| `feature_importance_extractor` | Compute (`ComputeNode`) | 6 — Evaluation | Landed (T-031) |
 
 ### ComputeNode base class
 
@@ -993,3 +1113,15 @@ for test injection, mirroring `src/graph/checkpointer.py`'s `build_checkpointer`
 > Skeleton — the pipeline-level invariants enforced by this codebase (fold immutability, single
 > file-I/O point, best-score-only updates, retry caps, etc.), populated as each is implemented and
 > enforced in code. See `design.md` § Critical invariants for the current target list.
+
+**CLAUDE.md invariant #3 — `best_experiment_path`/`best_score` update only on improvement** — enforced
+by `score_evaluator` (`src/nodes/compute/score_evaluator.py`, T-031), the sole writer of both fields.
+`is_improvement = normalized_score > best_score_before` uses **strict** `>`: a tie against the current
+best is never treated as an improvement, and `best_score`/`best_experiment_path` are omitted from the
+returned `LabState` delta whenever `is_improvement` is `False`, leaving both fields byte-for-byte
+untouched by LangGraph's `LastValue` channel merge. On the very first evaluation of a run,
+`best_score` still holds `new_state`'s `-inf` sentinel; `score_delta` is fixed at `0.0` rather than
+computed against `-inf` (which is otherwise `+inf`, non-finite and therefore never written anywhere in
+`LabState` or an artifact). Every score is normalized to higher-is-better (`score_evaluator`'s own
+minimize-metric sign flip, see "Evaluation (Phase 6)" above) before any of this comparison happens —
+polarity is resolved once, at the point of comparison, not re-derived per call site.

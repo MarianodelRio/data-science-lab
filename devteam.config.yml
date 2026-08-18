@@ -3,7 +3,7 @@
 # Edit this file to customize how the framework works for your project.
 # All settings have sensible defaults — you only need to change what you want different.
 
-devteam_version: "1.0.0"     # Framework version
+devteam_version: "1.4.0"     # Framework version
 
 # ─────────────────────────────────────────
 # PROJECT
@@ -91,6 +91,10 @@ orchestration:
   # Defaults to model.implementation if not set.
   # coder_model: ""
 
+  # Maximum tasks that may be in-progress at once. The Orchestrator refuses to
+  # claim a new task when this cap is reached.
+  max_parallel_tasks: 5
+
   # Timeout per task size before /restart is suggested (in minutes)
   # The orchestrator warns if a sub-agent exceeds this without reporting.
   timeout_s: 120    # ~2h
@@ -148,6 +152,13 @@ quality:
     - src/graph/phases/phase1_understanding.py
     - src/nodes/compute/score_evaluator.py
 
+  # Map spec.md constraints to tests in the diff (advisory — never blocks a PR).
+  # Turn on after spec.md exists and has been reviewed.
+  spec_coverage_enabled: false
+
+  # Minimum % of spec constraints covered before the report is WARN_LOW
+  spec_coverage_threshold: 80
+
 # ─────────────────────────────────────────
 # COMMANDS
 # ─────────────────────────────────────────
@@ -197,3 +208,10 @@ tasks:
   # Maximum task size the Orchestrator will pick without asking — XL tasks should be split
   # S = ~2h | M = ~4h | L = ~8h | XL = very large, consider splitting into smaller tasks
   max_auto_size: L
+
+# ─────────────────────────────────────────
+# MEMORY
+# ─────────────────────────────────────────
+memory:
+  # Lessons extracted in /done and injected into /orchestrate Phase 0
+  retrospective_memory_enabled: true

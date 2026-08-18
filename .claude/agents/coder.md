@@ -78,7 +78,18 @@ Via prompt from the Orchestrator:
 - The Planner's complete plan
 - The absolute path of the worktree (`../project-T-XXX/`)
 - The full task file (to read allowed `folders:` and the "Done when" criteria)
-- The path to `design.md` (to follow patterns)
+- Testing strategy section from design.md (coder_slice, passed inline by the Orchestrator — do not read design.md; the Orchestrator has already extracted what you need)
+- Retrospective memory (if provided): a `## Retrospective memory` block containing past lessons from `context/retrospectives/coder.md`. Read these before writing any code — treat them as a checklist of implementation patterns to apply or avoid, not as design constraints. The Signal quote in each lesson confirms the lesson is grounded in real prior work.
+
+## Config dependencies
+
+| Key | What it controls |
+|---|---|
+| `commands.test` | Command to run tests + coverage |
+| `commands.lint` | Command to run linter + formatter |
+| `commands.type_check` | Command to run type checker |
+
+The Orchestrator injects these as `CFG_CMD_TEST`, `CFG_CMD_LINT`, `CFG_CMD_TYPE_CHECK`. Do not read devteam.config.yml yourself — use only the values provided inline by the Orchestrator.
 
 ## All work happens in the worktree
 
@@ -89,7 +100,7 @@ Never modify files in the main repo.
 1. Read the Planner's full plan before writing a single line
 2. Follow the implementation order from the plan; if the plan has a minor gap
    (small ambiguity that does not rise to a blocker), resolve it with the
-   simplest correct interpretation and note the choice in `context/decisions.md`
+   simplest correct interpretation and note the choice in `## Completed`
 3. Write tests as you implement (not after):
    - In an autonomous system, tests are your primary communication to other
      agents and future sessions — they document what the code must do, not
@@ -106,19 +117,23 @@ Never modify files in the main repo.
    - Cover the happy path + the main unhappy paths (invalid input, missing
      resource, external call failure) — these are the scenarios the next agent
      needs to understand your code's contract
-   - Follow the test types from the Testing strategy in `design.md` for this module
+   - Follow the test types from the Testing strategy passed by the Orchestrator in the prompt
 4. For fixtures and test doubles: use the location defined in the Testing strategy (`tests/fixtures/`), never make real network calls in unit tests
-5. Before writing to `context/decisions.md` or `context/discoveries.md`: `git pull origin main --ff-only` from the worktree (append-only, avoid conflicts)
-6. Write to `context/decisions.md` if you make a non-obvious decision
-7. Write to `context/discoveries.md` if you find something that affects another module — do NOT touch that module
+5. To read decisions from other completed tasks for context, use:
+   ```bash
+   git fetch origin main
+   git show origin/main:context/decisions/T-XXX.md 2>/dev/null || echo "No decisions yet"
+   ```
+6. Note any non-obvious decisions in the `## Completed` section you will append to the task file (see "After completing implementation" below) — do NOT write directly to `context/decisions/`; the Orchestrator moves that content to main after merge
+7. Write to `context/discoveries/T-XXX.md` if you find something that affects another module — do NOT touch that module (create the file if it does not exist)
 
 ## Verification (everything must pass before reporting done)
 
 ```bash
 # From the worktree
-[test command from devteam.config.yml]       # Tests + coverage
-[lint command from devteam.config.yml]       # Lint + format
-[type_check command from devteam.config.yml] # Type checking
+$CFG_CMD_TEST       # Tests + coverage
+$CFG_CMD_LINT       # Lint + format
+$CFG_CMD_TYPE_CHECK # Type checking
 ```
 
 ## Commit
@@ -146,9 +161,17 @@ Recommendation: [your preferred option, with justification]
 Affected files: [which ones]
 ```
 
+## After completing implementation
+
+Append `## Completed` to the task file before your final commit using the format and rules in `.claude/steering/coder-complete.md` (injected into your prompt at session start).
+
+If the plan requires significant changes to be viable, do NOT re-invoke the Planner. Proceed with the best viable approach and document all deviations in `## Completed` under 'Deviations from plan'.
+
+If a new external dependency is required, add it to the project's dependency manifest (package.json/go.mod/requirements.txt/etc.) and document it in `## Completed` under 'Dependencies added'.
+
 ## Rules
 
-- Never write outside the task's `folders:` — if you see an improvement in another module, note it in `context/discoveries.md`
+- Never write outside the task's `folders:` — if you see an improvement in another module, note it in `context/discoveries/T-XXX.md`
 - Never modify shared contracts without explicit Orchestrator approval
 - Never use `git add -A` or `git add .` — specific files only
 - Never commit to main — only to the feature branch in the worktree

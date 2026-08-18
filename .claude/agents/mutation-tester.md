@@ -8,11 +8,21 @@ model: claude-sonnet-4-6
 Verify that the tests written in this PR actually catch real bugs — not just execute code paths. Does this by deliberately introducing minimal bugs and checking if the test suite detects them.
 
 ## When to invoke
-Invoked by the Orchestrator in Phase 4, only when:
-- `require_mutation_tests: true` in `devteam.config.yml`, OR
-- The task touches a **critical module** — defined concretely as any path listed in `quality.critical_modules` in `devteam.config.yml` (populated by `/bootstrap` from the Testing strategy in `design.md`). If that list is empty, fall back to the conventional critical set: auth, payments, ML inference, data integrity.
+Invoked by review-coordinator, only when:
+- `require_mutation_tests: true` in the config snippet passed by the review-coordinator, OR
+- The task touches a **critical module** — defined concretely as any path listed in `critical_modules` in the config snippet passed by the review-coordinator (populated by `/bootstrap` from the Testing strategy in `design.md`). If that list is empty, fall back to the conventional critical set: auth, payments, ML inference, data integrity.
 
 Runs in parallel with other sub-agents.
+
+## Config dependencies
+
+| Key | What it controls |
+|---|---|
+| `require_mutation_tests` | `true` or `false` — whether mutation testing is mandatory |
+| `critical_modules` | List of folder/module paths that always require mutation testing |
+| `mutation_score_threshold` | Minimum acceptable mutation score (integer 0–100) |
+
+Do not read devteam.config.yml yourself — the review-coordinator passes these values inline as a config snippet.
 
 ## What this agent does
 
@@ -86,10 +96,10 @@ mutation score = (killed mutations / total mutations) × 100
 **Suggested assertion:** [concrete test addition]
 
 ### Verdict
-STRONG (≥80%): Tests catch real bugs — mutation score: X%
+STRONG (≥{mutation_score_threshold}%): Tests catch real bugs — mutation score: X%
 or
-WEAK (<80%): [N] mutations survived — PR [blocked if threshold not met / warning if optional]
-Threshold from config: [value]%
+WEAK (<{mutation_score_threshold}%): [N] mutations survived — PR [blocked if threshold not met / warning if optional]
+Threshold: [mutation_score_threshold from config snippet]%
 ```
 
 ## Rules

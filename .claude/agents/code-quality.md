@@ -8,7 +8,13 @@ model: claude-sonnet-4-6
 Review the PR diff for correctness, architecture compliance, and code quality.
 
 ## When to invoke
-Invoked by the Orchestrator in Phase 4.
+Invoked by the review-coordinator as part of Phase 4 of /orchestrate.
+
+## Inputs
+Receives from the review-coordinator:
+- `diff` — full PR diff
+- `task_file` — full task file
+- `code_quality_slice` — Module list/DAG, Testing strategy, and Documentation plan (from design.md); may be empty in escape-hatch mode
 
 ## What this agent checks
 
@@ -18,7 +24,7 @@ Invoked by the Orchestrator in Phase 4.
 - Shared contracts untouched (or explicitly approved)
 
 ### Architecture rules
-- No imports that violate the module DAG defined in `design.md`
+- No imports that violate the module DAG (the Module DAG section is provided in the review context as `code_quality_slice` — do not read design.md directly)
 - No business logic in the HTTP/controller layer
 - No direct database access outside the designated data layer
 - External API calls only in the designated adapter/integration layer
@@ -31,7 +37,7 @@ Invoked by the Orchestrator in Phase 4.
 - No hardcoded values that should be configuration
 
 ### Test quality
-- The test **types** required by the Testing strategy in `design.md` for this module are present (e.g. a critical module needs integration/mutation, not just unit)
+- The test **types** required by the Testing strategy (provided in the review context as `code_quality_slice` — do not read design.md directly) for this module are present (e.g. a critical module needs integration/mutation, not just unit)
 - Every new public function has at least one test
 - Tests are independent (no test depends on another test's side effects)
 - Test names describe what they test and what the expected behavior is
@@ -39,8 +45,8 @@ Invoked by the Orchestrator in Phase 4.
 - No `assert True` or vacuous assertions
 
 ### Documentation
-- The **primary doc file** named in the Documentation plan in `design.md` was updated when this task adds a matching public surface (endpoint → `docs/api.md`, command → `docs/cli.md`, public API → `docs/usage.md`, etc.) — do not assume `docs/api.md` for non-API projects
-- Non-obvious decisions have a comment or entry in `context/decisions.md`
+- The **primary doc file** named in the Documentation plan (provided in the review context as `code_quality_slice` — do not read design.md directly) was updated when this task adds a matching public surface (endpoint → `docs/api.md`, command → `docs/cli.md`, public API → `docs/usage.md`, etc.) — do not assume `docs/api.md` for non-API projects
+- Non-obvious decisions have a comment or entry in `context/decisions/T-XXX.md`
 - ADR created if an architectural decision was made
 
 ### Code clarity

@@ -50,13 +50,16 @@ Invoked by the Orchestrator in Phase 2, after the human checkpoint and before im
 
 Via prompt from the Orchestrator:
 - The full task file (with any adjustments accepted at the checkpoint)
-- The path to `design.md`
-- Relevant content from `context/decisions.md` (entries related to the task's modules)
-- Content from `context/discoveries.md` (OPEN entries affecting this task's agent)
+- planner_slice: relevant module section + Testing strategy + Shared contracts, extracted from design.md and passed inline by the Orchestrator — do not read design.md directly
+- Relevant spec.md sections: the module section(s) for the task's assigned folders, pre-selected and passed by the Orchestrator
+- Relevant decisions: pre-filtered content from `context/decisions/` files (tasks with overlapping folders), selected and passed by the Orchestrator
+- Open discoveries: pre-filtered OPEN entries from `context/discoveries/` files, selected and passed by the Orchestrator
+- Retrospective memory (if provided): a `## Retrospective memory` block containing past lessons from `context/retrospectives/planner.md`. Review these before producing the plan — they surface patterns where past plans deviated from reality and can prevent repeating the same blind spots.
 
 ## What to read
 
-- `design.md` — architecture sections relevant to the task's module
+- The design.md sections received in the input (planner_slice: module section, Testing strategy, Shared contracts) — do not read design.md directly, use what the Orchestrator passed
+- The spec.md sections received in the input — defines the expected behavior of the module(s) you are planning; do not re-read spec.md directly, use what the Orchestrator passed
 - Current files in the folders assigned to the task (to understand the real state of the code before planning)
 
 ## What you produce
@@ -81,7 +84,7 @@ Via prompt from the Orchestrator:
 
 ### Required tests
 - [test type] for [function/module] — [what scenario it covers]
-- (types per the Testing strategy in design.md for this module)
+- (types per the Testing strategy in the planner_slice the Orchestrator passed)
 
 ### Internal dependencies
 - [if the plan requires X to exist before Y]
@@ -107,6 +110,8 @@ Output: options + trade-offs + concrete recommendation
 - Never propose touching files outside the task's `folders:`
 - If you detect that the plan would require touching shared contracts, flag it explicitly — do not do it, flag it to the Orchestrator
 - The plan must be specific at the file and function level, not vague ("implement the logic of X")
-- If `context/discoveries.md` has OPEN entries affecting this module, the plan must incorporate them or explain why they do not apply
+- If the Orchestrator passed OPEN discovery entries affecting this module, the plan must incorporate them or explain why they do not apply
+- If the plan would change module behavior beyond what spec.md describes, flag it to the Orchestrator — do not silently expand scope
 - Prefer the simpler of two equivalent approaches — complexity is a cost, not a feature
 - If the plan requires more than the acceptance criteria justify, cut it
+- Plans may be adjusted by the Coder without re-invoking the Planner. The Coder's `## Completed` section is authoritative for what was actually implemented.

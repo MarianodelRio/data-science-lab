@@ -36,6 +36,7 @@ Stage:   [see stage rules below]
 Docs
   IDEA.md     [empty / has content]
   design.md   [missing / exists] [· testing strategy ✓/✗ · doc plan ✓/✗ if design.md exists]
+  spec.md     [missing / exists]
   plan.md     [missing / exists]
 
 Tasks
@@ -47,8 +48,9 @@ Config
   Models:      reasoning=[model] · implementation=[model] · fast=[model]
   PR mode:     [automatic / manual]
   Checkpoint:  [before_code / before_pr / both]
-  Parallel:    [max_parallel_tasks]
-  Quality:     coverage=[N]% · security=[on/off] · smoke=[on/off] · mutation=[on/off]
+  Parallel:    [orchestration.max_parallel_tasks from config, default: 5]
+  Quality:     coverage=[N]% · security=[on/off] · smoke=[on/off] · mutation=[on/off] · spec-coverage=[on/off]
+  Memory:      retrospective=[on/off]
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
@@ -59,10 +61,38 @@ Config
 |-------|-------|
 | config empty, IDEA.md empty | `Fresh install — not configured` |
 | config set, IDEA.md has content, no design.md | `Idea defined — ready for /bootstrap` |
-| design.md exists, no tasks | `Design done — needs planning` |
+| design.md exists, no spec.md, no tasks | `Design done — run /bootstrap to generate spec + tasks` |
+| design.md exists, spec.md exists, no tasks | `Spec ready — run /bootstrap to generate tasks` |
 | tasks exist, none in-progress or done | `Planned — ready for /orchestrate` |
 | tasks in-progress or done > 0 | `In progress — N/total complete` |
 | all tasks done | `Complete` |
+
+---
+
+## Step 2b — Validate configuration
+
+After displaying the state card, check these two config values and warn inline if they are invalid. Run silently — only print output when a problem is found.
+
+**`review_profile`** must be one of `full`, `fast`, or `auto`:
+```bash
+CFG_REVIEW_PROFILE=$(grep -E '^  review_profile:' devteam.config.yml | awk '{print $2}')
+```
+If the value is not empty and not one of the three valid options, print:
+```
+⚠️  WARNING: review_profile '[value]' is not valid. Accepted values: full | fast | auto
+```
+
+**`git.base_branch`** must exist on the remote:
+```bash
+BASE_BRANCH=$(grep 'base_branch:' devteam.config.yml | awk '{print $2}')
+git ls-remote --heads origin "$BASE_BRANCH"
+```
+If the `git ls-remote` command returns no output (branch not found on remote), print:
+```
+⚠️  WARNING: git.base_branch '[value]' does not exist on remote origin. Check devteam.config.yml.
+```
+
+Skip both checks if the respective field is empty, `~`, or absent from the config.
 
 ---
 
@@ -74,14 +104,15 @@ What would you like to configure?
   A) Everything — walk me through full setup
   B) Project basics — name, stack, idea
   C) Workflow — PR mode, checkpoints, parallelism
-  D) Quality gates — coverage, security, smoke tests, mutation tests
+  D) Quality gates — coverage, security, smoke tests, mutation tests, spec coverage
   E) Models — which AI models to use
-  F) Nothing — just show me the state above
+  F) Memory — retrospective lessons across tasks
+  G) Nothing — just show me the state above
 
 [or type what you want to change directly]
 ```
 
-Wait for response. If the user says F or presses enter without input, skip to Step 5.
+Wait for response. If the user says G or presses enter without input, skip to Step 5.
 
 If the user types something free-form (e.g. "set pr to manual and parallelism to 5"), interpret it directly and apply the changes without going through the menu.
 
@@ -154,9 +185,9 @@ Accept answers one question at a time or all at once. Write to `devteam.config.y
 Test coverage threshold (0–100, default 70)
   Current: [value]%  →  keep or change?
 
-Review profile (how many review sub-agents run in /prepare-pr escape-hatch mode; /orchestrate always runs all applicable agents regardless of this setting)
-  full — all 5  ·  fast — code quality + security  ·  auto — scales to the diff  ← recommended
-  (protected files / contracts always force full)
+Review profile (controls which review sub-agents the review-coordinator runs)
+  full — all applicable agents  ·  fast — code quality + security  ·  auto — scales to the diff  ← recommended
+  (protected files / contracts always force full; spec-coverage runs when spec_coverage_enabled: true regardless of profile)
   Current: [value]  →  keep or change?
 
 Security scan on every PR (OWASP Top 10 + AI/agentic risks)
@@ -212,10 +243,27 @@ Write each changed value to `devteam.config.yml`. Then **also update the `model:
 | Slot | Agent files to update |
 |------|-----------------------|
 | `reasoning` | `.claude/agents/advisor.md`, `.claude/agents/architect.md`, `.claude/agents/orchestrator.md` |
-| `implementation` | `.claude/agents/planner.md`, `.claude/agents/coder.md`, `.claude/agents/code-quality.md`, `.claude/agents/adversarial.md`, `.claude/agents/security.md`, `.claude/agents/smoke-tester.md`, `.claude/agents/mutation-tester.md` |
+| `implementation` | `.claude/agents/planner.md`, `.claude/agents/coder.md`, `.claude/agents/review-coordinator.md`, `.claude/agents/code-quality.md`, `.claude/agents/adversarial.md`, `.claude/agents/security.md`, `.claude/agents/smoke-tester.md`, `.claude/agents/mutation-tester.md`, `.claude/agents/spec-coverage.md` |
 | `fast` | any `[module].md` agents generated by `/bootstrap` for this project |
 
 For each file: open it, find the `model: [old-value]` line inside the `---` frontmatter block, replace it with `model: [new-value]`. Confirm to the user which files were updated.
+
+---
+
+### Section F — Memory
+
+```
+Retrospective memory — persist lessons learned from completed tasks
+  When enabled, /done extracts non-trivial lessons from each task's ## Completed section,
+  decisions, and discoveries, writing them to context/retrospectives/{coder,planner,architect}.md.
+  /orchestrate injects the relevant role's lessons into each sub-agent's prompt.
+  Lessons require a verbatim Signal quote from source documents to prevent confabulation.
+  Max 25 entries per role; lowest-weight entries pruned when limit is reached.
+
+  Current: [on/off]  →  keep or change?
+```
+
+Write to `devteam.config.yml` under `memory.retrospective_memory_enabled` (true/false).
 
 ---
 
@@ -242,9 +290,14 @@ Then print **exactly one** of these blocks based on the current stage:
   → Run /bootstrap to generate architecture, plan, and tasks
 ```
 
-**Design done — needs planning:**
+**Design done — run /bootstrap to generate spec + tasks:**
 ```
-  → Run /bootstrap (it will detect your design.md and go straight to planning)
+  → Run /bootstrap (it will detect your design.md, generate spec.md, then generate tasks)
+```
+
+**Spec ready — run /bootstrap to generate tasks:**
+```
+  → Run /bootstrap (it will detect your spec.md and go straight to task generation)
 ```
 
 **Planned — ready for /orchestrate:**

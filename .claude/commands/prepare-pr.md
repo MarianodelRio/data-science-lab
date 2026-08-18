@@ -34,7 +34,7 @@ git rebase origin/main
 ```
 
 If there are conflicts:
-- Mechanical (whitespace, unrelated imports, context/ append): resolve alone
+- Mechanical (whitespace, unrelated imports): resolve alone
 - Design (contracts, business logic, schema): stop and present to the user:
   ```
   ⚠️ Design conflict in [file:line]
@@ -54,40 +54,69 @@ If there are conflicts:
 ## Step 3 — Verification
 
 ```bash
-[test command from devteam.config.yml]
-[lint command from devteam.config.yml]
-[type_check command from devteam.config.yml]
+bash scripts/dt-verify.sh
 ```
 
 If anything fails: report the specific error and stop. Do not fix behavioral failures automatically.
 
 ---
 
-## Step 4 — Reviewers in parallel
+## Step 3b — Extract config
 
-Read `quality.review_profile` in `devteam.config.yml`. Inspect the diff:
+```bash
+source scripts/dt-common.sh
+CFG_REVIEW_PROFILE=$(dt_config review.review_profile "auto")
+CFG_PR_MODE=$(dt_config pr.mode "auto")
+CFG_BASE_BRANCH=$(dt_config git.base_branch "main")
+CFG_REQUIRE_MUTATION_TESTS=$(dt_config quality.require_mutation_tests "false")
+CFG_CRITICAL_MODULES=$(dt_config quality.critical_modules "")
+CFG_MUTATION_SCORE_THRESHOLD=$(dt_config quality.mutation_score_threshold "80")
+CFG_SMOKE_TEST_MODE=$(dt_config quality.smoke_test_mode "docker")
+CFG_PROJECT_TYPE=$(dt_config project.type "")
+CFG_SPEC_COVERAGE_ENABLED=$(dt_config quality.spec_coverage_enabled "false")
+CFG_SPEC_COVERAGE_THRESHOLD=$(dt_config quality.spec_coverage_threshold "80")
+```
+
+Load steering content:
+```bash
+STEERING_ALWAYS=$(cat .claude/steering/always.md 2>/dev/null || echo "")
+STEERING_TASK_FORMAT=$(cat .claude/steering/task-format.md 2>/dev/null || echo "")
+```
+
+---
+
+## Step 4 — Review (via review-coordinator)
+
+Inspect the diff for protected files or shared contracts:
 
 ```bash
 git diff --name-only origin/main
 ```
 
-- `full` → all sub-agents (4a–4e)
-- `fast` → code-quality + security only
-- `auto` → if only docs/config changed → fast; if any code changed → full
+Read `design.md` and extract `code_quality_slice` (three sections: Module DAG, Testing strategy, Documentation plan). If `design.md` is absent (escape-hatch mode for migrated tasks), set `code_quality_slice` to empty.
 
-Safety override: if the diff touches protected files or shared contracts → force full.
+If `$CFG_SPEC_COVERAGE_ENABLED` is `true` and `spec.md` exists:
+  Read `spec.md` and extract the spec sections for the task's modules (the module sections whose folders overlap with the task's `folders:` frontmatter). Set `SPEC_SECTIONS` to the Logic and Interface subsections of those modules. If no matching sections are found, set `SPEC_SECTIONS` to empty.
+Else:
+  Set `SPEC_SECTIONS` to empty.
 
-Launch in parallel:
+Launch the `review-coordinator` sub-agent with:
+- Steering context (inline at the top of the prompt, before all other inputs):
+  - Content of `STEERING_ALWAYS`
+  - Content of `STEERING_TASK_FORMAT`
+- `diff` — output of `git diff origin/main` from the feature branch
+- `task_file` — full task file
+- `context_slice` — empty (no Phase 1 context packet available in escape-hatch mode)
+- `code_quality_slice` — Module DAG + Testing strategy + Documentation plan from `design.md`; empty if `design.md` is absent
+- `spec_sections` — `$SPEC_SECTIONS` (empty if spec.md absent, spec_coverage_enabled: false, or no matching module sections)
+- `config`:
+  - `smoke_test_mode`: `$CFG_SMOKE_TEST_MODE`, `project.type`: `$CFG_PROJECT_TYPE`
+  - `require_mutation_tests`: `$CFG_REQUIRE_MUTATION_TESTS`, `critical_modules`: `$CFG_CRITICAL_MODULES`, `mutation_score_threshold`: `$CFG_MUTATION_SCORE_THRESHOLD`
+  - `spec_coverage_enabled`: `$CFG_SPEC_COVERAGE_ENABLED`, `spec_coverage_threshold`: `$CFG_SPEC_COVERAGE_THRESHOLD`
+- `review_profile` — `$CFG_REVIEW_PROFILE`
+- `touches_protected` — `true` if any file in the diff is a protected file or shared contract; `false` otherwise
 
-**4a. code-quality** — scope, patterns from design.md, architecture, clarity
-
-**4b. adversarial** — finds what the others missed; activates on unanimous approval
-
-**4c. security** — OWASP Top 10 on the diff. Severity: BLOCKER | WARNING | INFO
-
-**4d. smoke-tester** — "Done when" criteria from the task file against the running app
-
-**4e. mutation-tester** — ONLY if `require_mutation_tests: true` OR touches critical modules
+The coordinator applies the safety override internally: touching protected files or contracts always forces `full` profile regardless of `review_profile`. Wait for the consolidated review report.
 
 ---
 
@@ -121,15 +150,36 @@ Fix in the branch and run /prepare-pr T-XXX again
 
 ---
 
-## Step 6 — Open PR
+## Step 5b — Final sync before opening PR
 
-Read `pr_mode` in `devteam.config.yml`.
-
-If `pr_mode: automatic`:
+Merges to main may have landed during the review phase. Rebase one last time:
 ```bash
-gh pr create \
-  --title "T-XXX: [task title]" \
-  --body "$(cat <<'EOF'
+git fetch origin
+git rebase origin/main
+```
+
+If there are conflicts:
+- Mechanical (whitespace, unrelated imports): resolve alone
+- Design (contracts, business logic, schema): stop and present to the user with the same conflict format as Step 2; note that reviewers already ran — flag it so the user can decide whether to re-run them
+
+After a clean rebase, run a quick verify:
+```bash
+bash scripts/dt-verify.sh
+```
+
+If verify fails: report and stop — do not open the PR until clean. The user must fix and re-run `/prepare-pr T-XXX`.
+
+---
+
+## Step 6 — Open PR and update task
+
+Use `$CFG_PR_MODE` (extracted in Step 3b).
+
+If `$CFG_PR_MODE` is `automatic`:
+
+Write the PR body to a temp file, then call `dt-pr.sh`:
+```bash
+cat > /tmp/pr-body-T-XXX.md <<'EOF'
 ## Summary
 - [what was implemented — bullet 1]
 - [what was implemented — bullet 2]
@@ -150,32 +200,31 @@ gh pr create \
 
 🤖 Generated with dev-team
 EOF
-)"
+
+bash scripts/dt-pr.sh T-XXX \
+  --title "T-XXX: [task title]" \
+  --body-file /tmp/pr-body-T-XXX.md
 ```
+The script creates the PR, captures the URL, moves the task from `tasks/ready-for-pr/` to `tasks/pr-open/`, and commits to main. It outputs `PR_NUMBER` and `PR_URL`.
 
-If `pr_mode: manual`: print the exact command for the user to run.
+If `$CFG_PR_MODE` is `manual`:
 
----
-
-## Step 7 — Update task file
-
-Move `tasks/ready-for-pr/` → `tasks/pr-open/`.
-
-Update frontmatter:
-```yaml
-status: pr-open
-pr: "[PR URL]"
-```
-
+Print the `gh pr create` command for the user to run:
 ```bash
-git add tasks/pr-open/T-XXX-slug.md
-git commit -m "chore(T-XXX): mark PR_OPEN — PR #[number]"
-git push origin main
+gh pr create \
+  --title "T-XXX: [task title]" \
+  --body-file /tmp/pr-body-T-XXX.md \
+  --head "feature/T-XXX-[slug]" \
+  --base main
+```
+Wait for the user to provide the PR URL. Then:
+```bash
+bash scripts/dt-pr.sh T-XXX --pr-url "[URL provided by user]"
 ```
 
 ---
 
-## Step 8 — Human reviewer summary
+## Step 7 — Human reviewer summary
 
 ```
 ## PR Ready for Review — T-XXX

@@ -12,14 +12,21 @@ No production code. No tasks. Investigation only.
 
 Read:
 - `design.md` — architecture and modules involved
+- `spec.md` — module-level behavioral specifications (filter for sections relevant to the topic)
 - `plan.md` — phases and dependencies
-- `context/decisions.md` — decisions already made relevant to the topic
-- `context/discoveries.md` — relevant cross-agent findings
+- All files in `context/decisions/` — decisions made per task (read all, filter for relevance to the topic)
+- All files in `context/discoveries/` — cross-agent findings per task (filter OPEN entries for relevance)
 - Code files relevant to the topic being investigated
 
 ---
 
 ## Step 2 — Assess complexity
+
+Load steering content:
+```bash
+STEERING_ALWAYS=$(cat .claude/steering/always.md 2>/dev/null || echo "")
+STEERING_CONTEXT_FORMATS=$(cat .claude/steering/context-formats.md 2>/dev/null || echo "")
+```
 
 Does the question involve:
 - Shared modules or contracts?
@@ -36,10 +43,13 @@ Does the question involve:
 ## Step 3 — Launch sub-agents if applicable
 
 Architect (if it involves architecture):
-- Input: the question + relevant modules + design.md + context/
+- Steering context (inline): Content of `STEERING_ALWAYS` and `STEERING_CONTEXT_FORMATS`
+- Read the relevant `context/decisions/T-XXX.md` files and pass their content as inline text — not as a file path
+- Input: the question + relevant modules + design.md + the inlined content of relevant context/decisions/ files
 - Expected output: architectural impact analysis, affected contracts, DAG risks
 
 Advisor (if there are decision trade-offs):
+- Steering context (inline): Content of `STEERING_ALWAYS`
 - Input: the question + Architect's analysis + project constraints
 - Expected output: options + trade-offs + opinionated recommendation
 
@@ -78,6 +88,17 @@ Risk: ...
 - Does this generate a new task? → run /add-task
 - Is this informational only? → nothing to do
 ```
+
+---
+
+## Step 5 — Offer to save findings
+
+After presenting the report, ask:
+```
+Save findings to docs/explorations/[TOPIC-SLUG].md? (y/N)
+```
+
+If the user agrees, write the file with a date header and the full findings from Step 4.
 
 ---
 

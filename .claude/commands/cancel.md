@@ -8,9 +8,15 @@ Your job: cleanly abandon a task that is no longer needed. This is destructive �
 
 ## Step 1 — Find the task
 
-Search `tasks/` (all subfolders) for `[ID]-*.md`. Report where it is.
+```bash
+bash scripts/dt-board.sh
+```
 
-If already in `tasks/done/`:
+Read `.dt-index.json`. Look up `tasks["[ID]"]` in the index for status and dependent tasks.
+
+If the key is absent in the index, fall back to searching `tasks/` (all subfolders) for `[ID]-*.md`. Report where it is.
+
+If `folder == "done"` (or the file is in `tasks/done/`):
 ```
 [ID] is already DONE and cannot be cancelled.
 ```
@@ -20,6 +26,8 @@ Stop.
 
 ## Step 2 — Show current state
 
+Read the individual task file (found in Step 1) for the full frontmatter. Use `tasks["[ID]"].unblocks` from `.dt-index.json` for the dependent task list — no need to scan all task files.
+
 ```
 Task: [ID] — [title]
 Status: [current status]
@@ -27,8 +35,38 @@ Branch: [branch or "none"]
 Depends on: [deps or "none"]
 
 Tasks that depend on this one (would be affected by cancellation):
-[list any tasks in tasks/ that have [ID] in their depends_on, or "None"]
+[tasks["[ID]"].unblocks from .dt-index.json, or "None"]
 ```
+
+---
+
+## Step 2.5 — Handle pr-open tasks
+
+If the task status is `pr-open`, offer a non-destructive alternative before proceeding to the cancellation checkpoint:
+
+```
+⚠️ [ID] has an open PR: [PR URL from frontmatter]
+
+Instead of cancelling permanently, you can move it back to available for a retry:
+  retry  — Close the PR and reset the task to available (branch and pr fields cleared to ~)
+  cancel — Cancel permanently (moves to tasks/cancelled/)
+
+retry or cancel?
+```
+
+If the user chooses **retry**:
+1. Close the GitHub PR: `gh pr close [PR_URL] --comment "Closing for retry — task reset to available"`
+2. Update the task frontmatter: set `branch: ~`, `pr: ~`, `status: available`
+3. Move the task file from `tasks/pr-open/` to `tasks/available/`
+4. Commit and push to main
+5. Report:
+   ```
+   ✓ [ID] PR closed and task reset to available.
+   Run /orchestrate to start a fresh attempt.
+   ```
+   Stop — do not proceed to Step 3.
+
+If the user chooses **cancel**, continue to Step 3.
 
 ---
 

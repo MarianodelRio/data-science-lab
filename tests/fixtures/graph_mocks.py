@@ -200,6 +200,55 @@ _MOCK_TIMESERIES_DESIGN = json.dumps(
     }
 )
 
+# error_analyst / hypothesis_generator / experiment_designer (T-032, phase6_evaluation)
+# are structured-JSON nodes too — each validates a whitelist-rebuilt schema (see
+# src/nodes/llm/_evaluation_llm_common.py and config/prompts/{name}/v1.md), which
+# `_MOCK_LLM_CONTENT`'s fenced ```python narrative shape would fail, so all three
+# need their own dispatch entries. Every input they read degrades to a placeholder
+# on the bare unseeded workspace the smoke test runs them against, so no fixture
+# seeding is needed.
+_MOCK_ERROR_DIAGNOSIS = json.dumps(
+    {
+        "root_cause": "underfitting",
+        "confidence": 0.4,
+        "evidence": ["Smoke-test placeholder evidence."],
+        "recommended_focus": "model capacity",
+    }
+)
+# `priority` must be a permutation of 1..N across the list, and
+# `addresses_root_cause` one of the five root-cause tokens — a single entry with
+# `priority: 1` is the smallest schema-valid payload.
+_MOCK_HYPOTHESES = json.dumps(
+    {
+        "hypotheses": [
+            {
+                "id": "increase_capacity",
+                "statement": "A higher-capacity model will fit the signal.",
+                "rationale": "Smoke-test placeholder rationale.",
+                "priority": 1,
+                "expected_impact": "medium",
+                "addresses_root_cause": "underfitting",
+            }
+        ]
+    }
+)
+# `order` must likewise be a permutation of 1..N, and `target` one of
+# `solution_plan`/`feature_spec`/`experiment_design`/`data`.
+_MOCK_EXPERIMENT_PLAN = json.dumps(
+    {
+        "changes": [
+            {
+                "order": 1,
+                "change": "Widen the search space for model capacity.",
+                "target": "experiment_design",
+                "hypothesis_id": "increase_capacity",
+                "expected_effect": "Smoke-test placeholder expected effect.",
+            }
+        ],
+        "rationale": "Smoke-test placeholder experiment plan.",
+    }
+)
+
 # One payload serves both `analysis_critic` invocations. In
 # `config/phases/phase1_understanding.yaml` `data_analyst` is listed in
 # `critic.targets`, so the target below is honored as-is; in
@@ -248,6 +297,12 @@ _DISPATCH: tuple[tuple[str, str], ...] = (
     ("web_researcher", _MOCK_EMPTY_EXTRACTION),
     ("competition_analyst", _MOCK_COMPETITION_ANALYSIS),
     ("memory_manager", _MOCK_EMPTY_EXTRACTION),
+    # Appended at the end (T-032). Order is load-bearing only for the
+    # `problem_framer`/`leakage_auditor` pair above — no later entry's prompt prose
+    # mentions an earlier node's name — so appending is safe.
+    ("error_analyst", _MOCK_ERROR_DIAGNOSIS),
+    ("hypothesis_generator", _MOCK_HYPOTHESES),
+    ("experiment_designer", _MOCK_EXPERIMENT_PLAN),
 )
 
 
@@ -358,7 +413,10 @@ def graph_llm_mocks(*, analysis_critic_pass: bool = False) -> Iterator[MagicMock
     lazily-constructed `RagStore` shape (`_ensure_rag_store`) as
     `web_researcher`/`memory_manager` — patched at `src.nodes.llm.
     solution_architect.RagStore` with `.query()` returning an empty list for
-    the same reason.
+    the same reason. `hypothesis_generator` (T-032, phase6_evaluation) has the
+    same shape again and is patched the same way — with no findings returned,
+    its prompt section degrades to the documented
+    "No relevant findings found in the RAG store." placeholder.
     """
     mock_llm = MagicMock()
     mock_llm.invoke.side_effect = _make_llm_side_effect(analysis_critic_pass=analysis_critic_pass)
@@ -376,6 +434,7 @@ def graph_llm_mocks(*, analysis_critic_pass: bool = False) -> Iterator[MagicMock
         patch("src.nodes.llm.competition_analyst.RagStore") as mock_rag_store_cls,
         patch("src.nodes.llm.memory_manager.RagStore") as mock_memory_rag_store,
         patch("src.nodes.llm.solution_architect.RagStore") as mock_sa_rag_store,
+        patch("src.nodes.llm.hypothesis_generator.RagStore") as mock_hg_rag_store,
         patch("src.nodes.compute.baseline_runner.mlflow") as mock_mlflow,
     ):
         mock_factory.get.return_value = mock_llm
@@ -388,6 +447,8 @@ def graph_llm_mocks(*, analysis_critic_pass: bool = False) -> Iterator[MagicMock
         mock_memory_rag_store.return_value.query.return_value = []
         mock_sa_rag_store.return_value = MagicMock()
         mock_sa_rag_store.return_value.query.return_value = []
+        mock_hg_rag_store.return_value = MagicMock()
+        mock_hg_rag_store.return_value.query.return_value = []
         mock_mlflow.start_run.return_value.__enter__.return_value = MagicMock()
         yield mock_llm
 

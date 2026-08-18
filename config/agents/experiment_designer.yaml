@@ -1,0 +1,6 @@
+name: experiment_designer
+model_role: reasoning
+prompt_version: v1
+tools: []
+output_file_pattern: "reports/experiment_plan_{iteration}.json"
+max_tokens: 4096

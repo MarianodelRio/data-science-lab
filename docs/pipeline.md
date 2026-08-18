@@ -52,6 +52,16 @@ always counts as an improvement), all other scores `0.0`, all path-pointer/check
   responsible for, and now implements, sign-flipping minimize-oriented metrics (RMSE, LogLoss,
   MAE, etc.) before writing — see "Evaluation (Phase 6)" above for the curated metric set and
   the separator-normalized matching this requires in practice.
+- `current_iteration` is written by exactly one node: `experiment_designer` (Pipeline Phase 6,
+  `src/nodes/llm/experiment_designer.py`, T-032), which runs **last** in that phase's sequence and
+  increments it once per completed Phase 6 pass. The increment lives in `_build_output_state`, which
+  `LLMNode.__call__` runs *after* `_resolve_output_path`, so every `{iteration}`-suffixed Phase 6
+  artifact files under the **pre-increment** number and stays aligned with the `exp_{N}` directory
+  just scored. Reordering that node would desync them. Safe against CLAUDE.md invariant #4 (baseline
+  only at iteration 0) because the supervisor routes to `phase3_baseline` only from `phase2_research`
+  at `current_iteration == 0`, while the Phase 6 loop-back goes to `phase4_design`; safe against
+  concurrent writes because `current_iteration` is a plain `LastValue` channel and Phase 6 declares
+  `parallel_nodes: []`.
 - `messages` is trimmed per node via the `add_messages` reducer plus
   `context.trim_strategy`/`max_messages_per_node` from `config/settings.yaml`.
 
@@ -744,14 +754,16 @@ last key. The other four specialists' eight-key `validate_experiment_design` pat
 
 `config/phases/phase6_evaluation.yaml`'s `sequence`: `score_evaluator` -> `feature_importance_extractor`
 -> `error_analyst` -> `hypothesis_generator` -> `experiment_designer`, no critic, `interrupt_after: true`.
-`score_evaluator` and `feature_importance_extractor` (T-031) are real `ComputeNode`s; the remaining
-three still resolve to `NoOpNode` (no implementing task has landed). Both real nodes share experiment-
-directory resolution and degrade-safe JSON reading via the private `src/nodes/compute/_evaluation_common.py`
+All five nodes are real: `score_evaluator` and `feature_importance_extractor` (T-031) are
+`ComputeNode`s, and `error_analyst`, `hypothesis_generator` and `experiment_designer` (T-032) are
+`LLMNode`s -- the `NoOpNode` fallback is no longer reachable in this phase. The two compute nodes
+share experiment-directory resolution and degrade-safe JSON reading via the private `src/nodes/compute/_evaluation_common.py`
 module -- ported (not imported, to keep `code_critic`'s Phase 5 module and this Phase 6 module
 decoupled) from `code_critic._experiment_dir_from_state`/`_candidate_experiment_dirs`
 (`code_critic.py:99-158`): the state-recorded experiment pointer (`state["experiments"][-1]["path"]`)
 is tried first, then the well-known `experiments/exp_{iteration}` directory, so both nodes work whether
-or not `coder` (T-029, not yet landed) populates `experiments`.
+or not `coder` (T-029, not yet landed) populates `experiments`. The three LLM nodes deliberately do
+**not** share that module -- see the `_evaluation_llm_common.py` paragraph at the end of this section.
 
 - **`score_evaluator`** (`src/nodes/compute/score_evaluator.py`, `ComputeNode` subclass, T-031) -- the
   phase's first node, pure Python, no LLM. Reads the resolved experiment directory's `results.json`
@@ -856,6 +868,90 @@ or not `coder` (T-029, not yet landed) populates `experiments`.
   `normalized_importance` degrades to `0.0` rather than a share of a sum that cannot be represented as a
   finite float.
 
+- **`error_analyst`** (`src/nodes/llm/error_analyst.py`, `LLMNode` subclass, T-032) -- runs third,
+  `model_role: reasoning`. Diagnoses the single most likely root cause of the iteration just scored
+  and writes `reports/error_diagnosis_{iteration}.json` (`iteration`, `root_cause`, `confidence`,
+  `evidence`, `recommended_focus`, `inputs`). `root_cause` is one of five pinned tokens --
+  `overfitting`, `underfitting`, `cv_lb_divergence`, `feature_quality`, `wrong_model_family` -- and
+  the response is **whitelist-rebuilt**: any other key the model emits is dropped.
+
+  *Inputs, and how the experiment directory is obtained.* Four artifacts:
+  `reports/score_evaluation_{iteration}.json` and `reports/feature_importance_{iteration}.json`
+  (both written unconditionally by the two compute nodes above, including on their
+  "nothing to evaluate"/skip paths), plus the experiment's own `results.json` and `design.json`
+  joined onto the **score artifact's own `experiment_dir` field**. The directory is never
+  re-derived: `state["experiments"]` is not read (its pointer can name the first rather than the
+  last regenerated experiment) and neither `resolve_output_iteration` nor `candidate_experiment_dirs`
+  is imported from `src/nodes/compute/` or reimplemented. Score polarity is likewise read
+  (`direction`) out of the score artifact rather than re-derived. A directory that is absolute or
+  contains a `..` component is rejected without a read attempt.
+
+  *No leaderboard data.* `cv_lb_divergence` is retained as design.md's vocabulary, but no
+  leaderboard score exists anywhere in this pipeline -- `LabState` has no such field and the
+  `kaggle_client` node that would fetch one is unbuilt. The prompt states this explicitly and
+  forbids inventing, assuming or quoting one; the diagnosis inputs are the CV score, the baseline
+  score and the feature importance report only.
+
+- **`hypothesis_generator`** (`src/nodes/llm/hypothesis_generator.py`, `LLMNode` subclass, T-032) --
+  runs fourth, `model_role: reasoning`. Reads the diagnosis, **queries this competition's RAG store
+  for what has already been tried**, and writes `reports/hypotheses_{iteration}.json` (`iteration`,
+  `hypotheses`, `rag_query`, `prior_attempts_considered`). 1 to 5 hypotheses, each with
+  `id`/`statement`/`rationale`/`priority`/`expected_impact`/`addresses_root_cause`; `priority` must
+  be a permutation of `1..N` (no gaps, no duplicates) and the list is **stored sorted ascending by
+  `priority`**, so "prioritized" is a property of the artifact rather than of the response order.
+  `id`s are rejected as duplicates when they match case-insensitively.
+
+  The `RagStore` is an optional keyword-only constructor argument plus a lazy `_ensure_rag_store`
+  built from `Settings.load().workspace.chroma_host`/`chroma_port` -- the same convention
+  `solution_architect`/`memory_manager`/`web_researcher` use, preserving zero-argument construction
+  for `resolve_node`'s `cls()` and giving tests an injection point. The query always names the
+  competition and names the diagnosed root cause when one was read; a root-cause token outside the
+  pinned vocabulary is never interpolated into the query. `rag_query` and
+  `prior_attempts_considered` are stashed on the node during `_build_messages` for `_write_output`
+  to inject -- safe because `LLMNode.__call__` runs the two in that order within one call and this
+  phase declares `parallel_nodes: []`.
+
+- **`experiment_designer`** (`src/nodes/llm/experiment_designer.py`, `LLMNode` subclass, T-032) --
+  runs **last**, `model_role: reasoning`. Converts the hypotheses into an ordered next-iteration
+  plan at `reports/experiment_plan_{iteration}.json` (`iteration`, `next_iteration`, `changes`,
+  `rationale`). 1 to 6 changes, each with `order`/`change`/`target`/`hypothesis_id`/
+  `expected_effect`; `order` must be a permutation of `1..N` and `changes` is **stored sorted
+  ascending by `order`**. `target` is one of `solution_plan`, `feature_spec`, `experiment_design`,
+  `data`. `hypothesis_id` is deliberately *not* cross-validated against the hypotheses file, which
+  may itself have degraded -- and this phase has no critic to retry a rejection.
+
+  *The `current_iteration` increment.* `_build_output_state` returns
+  `{"current_iteration": <pre> + 1}`, making this the **only** writer of that field anywhere in
+  `src/` -- see the § State mutation rule below. The plan is written to disk and consumed by the
+  **next** iteration's Phase 4 (`solution_architect`, `feature_engineer`) by reading the file; it is
+  not consumed by the supervisor, which is deterministic Python reading only counters. None of the
+  three T-032 nodes adds a `LabState` field (`src/state.py` is a protected contract).
+
+`src/nodes/llm/_evaluation_llm_common.py` is the private module the three LLM nodes share for
+fence-stripping/JSON-object extraction, degrade-safe artifact reading and the validators. One
+private module rather than three copies, on the same "all consumers land in the same PR" ground
+`_evaluation_common.py` carries; it declares no class whose `name` matches its own stem, so
+`node_resolver._find_node_class` never mistakes it for a node module, and it is never referenced in
+`config/phases/*.yaml`. It deliberately does **not** import
+`src/nodes/compute/_evaluation_common.py` (that would contradict T-031's ported-not-imported
+decoupling) and does not reimplement `resolve_output_iteration`/`candidate_experiment_dirs` (a fresh
+copy could reintroduce the experiment-directory mislabeling bug T-031's adversarial review fixed) --
+the resolved directory is read out of the score artifact instead. It is likewise **not** a hoist
+into `src/nodes/llm/base.py`: that hoist would mean migrating eight landed node modules and is its
+own future task, so this module takes the extraction-copy count from 8 to 9, not to 11. Its readers
+catch `DEGRADE_ERRORS = (OSError, ValueError, RecursionError)` and guard `isinstance(path, str)`
+from day one, on both the read *and* the re-serialization back into the prompt.
+
+**Known fragility -- the artifact filename number can diverge.** `score_evaluator` and
+`feature_importance_extractor` name their reports from `_evaluation_common.resolve_output_iteration`
+(derived from the `exp_{N}` directory actually read), while `LLMNode._resolve_output_path` and every
+read in the three LLM nodes use `state["current_iteration"]`. Those two can differ when the
+state-recorded experiment pointer is stale. That is exactly why every read in this phase's LLM nodes
+degrades to an explicit placeholder string instead of raising: a Phase 6 pass whose upstream report
+is filed under a different number still produces a diagnosis, hypotheses and a plan rather than
+aborting the graph run. `error_diagnosis_{N}.json`'s `inputs` block records which of the four inputs
+were actually read, so a degraded diagnosis stays forensically detectable.
+
 ## Node classification
 
 > Skeleton — table of LLM nodes vs pure Python nodes vs tools, populated as each node lands.
@@ -877,6 +973,9 @@ or not `coder` (T-029, not yet landed) populates `experiments`.
 | `code_critic` | LLM (`LLMNode`) | 5 — Implementation | Landed (T-030) |
 | `score_evaluator` | Compute (`ComputeNode`) | 6 — Evaluation | Landed (T-031) |
 | `feature_importance_extractor` | Compute (`ComputeNode`) | 6 — Evaluation | Landed (T-031) |
+| `error_analyst` | LLM (`LLMNode`) | 6 — Evaluation | Landed (T-032) |
+| `hypothesis_generator` | LLM (`LLMNode`) | 6 — Evaluation | Landed (T-032) |
+| `experiment_designer` | LLM (`LLMNode`) | 6 — Evaluation | Landed (T-032) |
 
 ### ComputeNode base class
 

@@ -1,0 +1,6 @@
+name: hypothesis_generator
+model_role: reasoning
+prompt_version: v1
+tools: []
+output_file_pattern: "reports/hypotheses_{iteration}.json"
+max_tokens: 4096

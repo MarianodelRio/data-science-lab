@@ -3,11 +3,11 @@ id: T-032
 phase: 2
 agent: pipeline-agent
 depends_on: [T-010, T-008]
-status: available
+status: in-progress
 folders: ["src/nodes/llm/", "config/agents/", "config/prompts/"]
 outputs: [error_analyst node, hypothesis_generator node, experiment_designer node]
 size: M
-branch: ~
+branch: feature/T-032-node-evaluation-llm
 pr: ~
 ---
 

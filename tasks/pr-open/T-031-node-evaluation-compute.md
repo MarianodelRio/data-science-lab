@@ -89,3 +89,57 @@ discovery.
 `tests/tools/test_rag.py` (unrelated to this task's folders, confirmed present on `main` before any
 change here), global coverage 96.09%. `score_evaluator.py` alone: 100% coverage (target ≥85%).
 `ruff check .` and `ruff format --check .` both clean. `mypy src/`: no issues in 68 source files.
+
+### Review-response round (2026-08-18)
+
+Code review results: code-quality clean, smoke-tester clean 8/8, mutation 95% (threshold 80),
+security WARNING (2), adversarial WARNING (1 treated as blocker). Six findings fixed, all inside
+`src/nodes/compute/`:
+
+1. **BLOCKER — output-filename/directory-read divergence.** `resolve_iteration` (names the output
+   file) and directory resolution (`candidate_experiment_dirs`, names what gets *read*) were two
+   independent lookups that could disagree: an `experiments` entry with a valid `iteration` key but
+   an unusable/absent `path` made the node read the well-known fallback directory while filing the
+   report under the entry's claimed number — a stale read silently mislabeled as a different
+   experiment, with a false-positive `is_improvement` possible. Fixed via
+   `_evaluation_common.resolve_output_iteration`: the output number now comes from the *resolved*
+   `experiment_dir`'s own trailing `exp_<N>`, falling back to `resolve_iteration` only when the
+   directory doesn't match that shape; a new `experiment_resolution_warning` field (both nodes'
+   artifacts) names the entry's claimed iteration and the fallback actually used when they diverge.
+   Directory-resolution precedence itself (the verbatim `code_critic` match) is unchanged.
+2. **Non-finite subtraction results.** `score_delta`/`delta_vs_baseline` are each a subtraction of two
+   individually-finite operands, and the *result* was never re-checked — two large finite floats of
+   opposite sign can overflow to `inf`. Both are now guarded with `math.isfinite` and degrade
+   explicitly (`score_delta` → `0.0`; `delta_vs_baseline` → `None`); `baseline_comparison_made` now
+   reflects whether a finite delta was actually produced, not mere eligibility.
+3. **`_rank_importances`' `total = sum(...)` overflow.** Two extreme-magnitude entries are enough to
+   overflow the sum, silently zeroing every `normalized_importance`. Now guarded explicitly and
+   recorded as `importance_total_overflowed` in the artifact (rank order/individual magnitudes stay
+   correct either way).
+4. **Unbounded `feature_importance` payload.** Capped at `_MAX_RANKED_FEATURES = 3000` (largest by
+   absolute magnitude); truncation is recorded in-band via `features_truncated`/
+   `original_feature_count`, mirroring `code_critic._truncate`'s marker precedent.
+5. **Mutation survivor: `bool` rejection in `_coerce_finite_float`.** No test fed a JSON boolean as a
+   score, so removing the `isinstance(value, bool)` guard survived. Added tests for `cv_score`,
+   `best_score`, and `baseline_score` as booleans (code already handled all three correctly).
+6. **NIT — `candidate_experiment_dirs` now routes `current_iteration` through `_coerce_iteration`**
+   instead of reading it raw, for consistency with every other iteration lookup in the module.
+
+**Not fixed in code (by design):** the polarity-persistence gap adversarial review's repro3 found
+(`best_score` is stored sign-normalized with no record of which `direction` produced it, so a
+`problem_definition.json` that goes unreadable between iterations can silently flip which experiment
+counts as "best"). The real fix is a polarity field on `LabState` — a protected contract requiring
+human approval, out of scope here. Logged as an OPEN entry in `context/discoveries.md` (2026-08-17)
+with the concrete repro; noted in `docs/pipeline.md`'s § Evaluation (Phase 6). Explicitly did not
+half-mitigate by reading a previous iteration's own report cross-iteration, per review's instruction.
+
+**Tests added:** 24 new unit tests across `test_evaluation_common.py` (11: `entry_iteration`,
+`iteration_from_experiment_dir`, `resolve_output_iteration`, boolean `current_iteration`),
+`test_score_evaluator.py` (8: boolean coercion x3, overflow guards x2, resolution-warning divergence
+x3) and `test_feature_importance_extractor.py` (5: overflow x2, truncation cap x2, resolution
+warning x1), plus one existing filename test updated to assert the corrected (bug-fixed) behavior.
+
+**Re-verification:** `pytest --cov=src --cov-fail-under=70` → **1321 passed**, same 13 pre-existing
+`tests/tools/test_rag.py` failures (unrelated, confirmed present before this task started), global
+coverage **96.17%**. `score_evaluator.py` alone: **100%** coverage (45 tests, target ≥85%).
+`ruff check .` and `ruff format --check .` both clean. `mypy src/`: no issues in 68 source files.

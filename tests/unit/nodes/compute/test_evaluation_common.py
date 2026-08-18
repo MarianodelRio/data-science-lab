@@ -19,11 +19,14 @@ from src.nodes.compute._evaluation_common import (
     EXPERIMENT_DIR_PATTERN,
     RESULTS_FILENAME,
     candidate_experiment_dirs,
+    entry_iteration,
     experiment_dir_from_state,
+    iteration_from_experiment_dir,
     read_experiment_results,
     read_json_dict,
     relative_to_workspace,
     resolve_iteration,
+    resolve_output_iteration,
 )
 from src.workspace.workspace_manager import WorkspaceManager
 
@@ -159,6 +162,17 @@ def test_candidate_experiment_dirs_lists_pointer_before_fallback(tmp_path) -> No
     ]
 
 
+def test_candidate_experiment_dirs_uses_coerce_iteration_for_boolean_current_iteration(
+    tmp_path,
+) -> None:
+    """NIT fix: `current_iteration=True` must fall back to `0`, the same
+    `_coerce_iteration` degrade-on-bool rule every other iteration lookup in
+    this module follows -- not silently format as `exp_True`."""
+    workspace = WorkspaceManager(str(tmp_path))
+    dirs = candidate_experiment_dirs({"current_iteration": True}, workspace)
+    assert dirs == ["experiments/exp_0"]
+
+
 # -- read_experiment_results --
 
 
@@ -224,6 +238,93 @@ def test_resolve_iteration_falls_back_to_current_iteration_when_experiments_empt
 def test_resolve_iteration_ignores_bool_iteration_and_falls_back() -> None:
     state = {"current_iteration": 4, "experiments": [{"iteration": True}]}
     assert resolve_iteration(state) == 4
+
+
+# -- entry_iteration --
+
+
+def test_entry_iteration_returns_entrys_own_key() -> None:
+    assert entry_iteration({"experiments": [{"iteration": 3}]}) == 3
+
+
+def test_entry_iteration_returns_none_without_falling_back_to_current_iteration() -> None:
+    # Unlike `resolve_iteration`, this must NOT fall back -- callers that
+    # need "does the entry itself declare an iteration" (resolve_output_iteration's
+    # divergence check) would get a false negative if this silently substituted
+    # `current_iteration` here.
+    state = {"current_iteration": 9, "experiments": [{"path": "experiments/exp_1"}]}
+    assert entry_iteration(state) is None
+
+
+def test_entry_iteration_returns_none_for_empty_experiments() -> None:
+    assert entry_iteration({"experiments": []}) is None
+    assert entry_iteration({}) is None
+
+
+# -- iteration_from_experiment_dir --
+
+
+def test_iteration_from_experiment_dir_parses_trailing_exp_number() -> None:
+    assert iteration_from_experiment_dir("experiments/exp_7") == 7
+
+
+def test_iteration_from_experiment_dir_returns_none_for_non_matching_shape() -> None:
+    assert iteration_from_experiment_dir("experiments/custom_dir") is None
+    assert iteration_from_experiment_dir("") is None
+
+
+# -- resolve_output_iteration --
+
+
+def test_resolve_output_iteration_prefers_directory_basename_over_stale_entry(tmp_path) -> None:
+    workspace = WorkspaceManager(str(tmp_path))
+    state = {"current_iteration": 9, "experiments": [{"path": "experiments/exp_7"}]}
+    iteration, warning = resolve_output_iteration(state, workspace, "experiments/exp_7")
+    assert iteration == 7
+    assert warning is None
+
+
+def test_resolve_output_iteration_falls_back_to_resolve_iteration_for_non_matching_dir(
+    tmp_path,
+) -> None:
+    workspace = WorkspaceManager(str(tmp_path))
+    state = {"current_iteration": 5, "experiments": []}
+    iteration, warning = resolve_output_iteration(state, workspace, "experiments/custom_dir")
+    assert iteration == 5
+    assert warning is None
+
+
+def test_resolve_output_iteration_warns_when_entry_iteration_and_fallback_dir_disagree(
+    tmp_path,
+) -> None:
+    workspace = WorkspaceManager(str(tmp_path))
+    # Entry claims iteration 3 but has no usable "path", so the resolved
+    # directory is the well-known fallback for current_iteration (0).
+    state = {"current_iteration": 0, "experiments": [{"iteration": 3}]}
+    iteration, warning = resolve_output_iteration(state, workspace, "experiments/exp_0")
+    assert iteration == 0
+    assert warning is not None
+    assert "3" in warning
+    assert "0" in warning
+
+
+def test_resolve_output_iteration_no_warning_when_pointer_is_usable(tmp_path) -> None:
+    workspace = WorkspaceManager(str(tmp_path))
+    state = {
+        "current_iteration": 0,
+        "experiments": [{"path": "experiments/exp_3", "iteration": 3}],
+    }
+    iteration, warning = resolve_output_iteration(state, workspace, "experiments/exp_3")
+    assert iteration == 3
+    assert warning is None
+
+
+def test_resolve_output_iteration_no_warning_when_entry_and_fallback_agree(tmp_path) -> None:
+    workspace = WorkspaceManager(str(tmp_path))
+    state = {"current_iteration": 0, "experiments": [{"iteration": 0}]}
+    iteration, warning = resolve_output_iteration(state, workspace, "experiments/exp_0")
+    assert iteration == 0
+    assert warning is None
 
 
 # -- no-LLM-import invariant: AST-based static check --

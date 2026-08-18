@@ -1759,3 +1759,73 @@ table to actually raise `ValueError("ambiguous", ...)` before being added, and p
 `test_ambiguous_multiword_phrasings_raise`'s parametrization. `_MODEL_FAMILIES` and the no-retry
 behavior on this node were left unchanged — both remain accepted, documented design decisions, out
 of scope for this fix.
+
+
+## 2026-08-17 — T-031 [pipeline-agent]
+
+**Shared `src/nodes/compute/_evaluation_common.py` rather than per-node duplication.** The Phase 5
+specialists each carry their own copy of the `design.json` reader, and that convention exists because
+those readers are duplicated *across separately-scheduled tasks landed by different agents* — a shared
+import between tasks that ship independently would create exactly the coupling `resolve_node`'s
+by-convention node discovery is designed to avoid. Here both consumers (`score_evaluator`,
+`feature_importance_extractor`) land in the same task/PR, so one small private module (no class whose
+`name` matches its own stem, same convention as `_experiment_design.py`) is strictly less duplication
+at zero extra coupling cost: neither node imports the other, and the module is never referenced by a
+phase YAML. Experiment-directory resolution (`experiment_dir_from_state`/`candidate_experiment_dirs`)
+is a verbatim port of `code_critic`'s own private helpers (`code_critic.py:99-158`), not an import —
+the T-030 module lives in `src/nodes/llm/`, which pulls in `langchain_core` transitively, violating
+both Phase 6 nodes' "no LLM import" contract.
+
+**Score-direction normalization: curated minimize-set + separator-normalized matching + default
+maximize.** Resolves the 2026-08-04 `infra-agent (T-002) → pipeline-agent (T-031)` polarity
+discovery (closed below in `context/discoveries.md`). `success_metric` is lowercased and every
+non-alphanumeric character stripped before matching against the curated set (`rmse`, `mse`, `mae`,
+`mape`, `smape`, `rmsle`, `msle`, `medae`, `logloss`, `crossentropy`, `brier`, `hammingloss`, `wmae`)
+— an *exact*-string match (the Planner's original design) would silently default `"log_loss"` and
+`"Log-Loss"` to different directions depending on which spelling a real `problem_definition.json`
+happened to use, which is worse than merely incomplete: it gets the sign backwards for some of the
+inputs it was specifically built to handle. Unknown/absent metrics default to "maximize".
+
+**`delta_vs_baseline` comparability rule.** `baseline_score` is each estimator's own `.score()` value
+(accuracy/R², T-020's `baseline_runner`), so a comparison is only made when `results.json`'s optional
+`metric` field normalizes into `{accuracy, r2, rsquared, score}` — the same separator-normalized
+matching as the direction table above, applied to a different lookup set. This token set is a **new
+contract invented by T-031** (no landed `coder` output defines `results.json`'s `metric` field yet) —
+pinned for T-029 in `context/discoveries.md`. `delta_vs_baseline` never drives `best_score`,
+`best_experiment_path`, or `is_improvement`; it is purely informational, recorded alongside a reason
+string whether or not the comparison was actually made.
+
+**`iterations_without_improvement` increments even when no valid score is obtainable — ORCHESTRATOR
+OVERRIDE of the Planner's original design.** The Planner proposed *not* incrementing the counter on a
+missing/malformed `results.json` or a non-finite `cv_score`, to keep "nothing to evaluate" cleanly
+distinct from "evaluated and didn't improve". Overridden during implementation because
+`src/graph/supervisor.py:31-33` makes `iterations_without_improvement >= max_iterations` the *only*
+exit from the Phase 6 → Phase 4 iteration loop, and `score_evaluator` is the field's sole writer
+anywhere in `src/`: not incrementing on "nothing to evaluate" would let a permanently-missing or
+permanently-malformed `results.json` loop the pipeline forever, which is worse than losing the
+distinction from the counter. The distinction is preserved where it belongs instead — in the
+`reports/score_evaluation_{iteration}.json` artifact's `evaluated`/`reason` fields — not in the
+termination counter itself. Not reverted; do not revert it in a future task without re-litigating the
+supervisor's loop-exit condition first.
+
+**`current_iteration` deliberately NOT incremented by T-031.** The 2026-08-11 `T-024 → T-031/T-032`
+discovery framed the increment as "T-031 or T-032"; this resolves to T-032 only. Incrementing it in
+the *first* Phase 6 node would desync every `{iteration}`-suffixed artifact the rest of Phase 6 writes
+(including this task's own two artifacts) from the `exp_{N}` experiment directory just scored.
+
+**`shap` never imported.** `feature_importance_extractor` extracts a pre-computed `{feature: value}`
+payload from `results.json` rather than fitting anything itself, so there is no SHAP call site at all
+— not even a lazy/deferred one. This avoids `src/graph/node_resolver.py:75-82` turning a missing
+transitive import in a landed node module into a `GraphBuilderError` that fails the whole graph build,
+and sidesteps whether `shap` (declared in `pyproject.toml`) is actually installed in a given
+environment. `design.md`'s "Python + SHAP" phrasing for this node is stale for this implementation;
+`docs/pipeline.md` carries the clarification since `design.md` is not in pipeline-agent's owned
+folders (CLAUDE.md's module ownership table).
+
+**Discarded alternative for the `-inf` sentinel:** round-tripping `best_score` through the same
+`_coerce_finite_float` helper used for `cv_score`/`baseline_score`. Rejected because that helper
+rejects non-finite values by design (it exists to keep non-finite floats out of `LabState` and out of
+written artifacts), and doing so here would collapse `-inf` to `None`, losing the "is it `-inf`
+specifically" distinction both the `score_delta` finite/`-inf` branch and the artifact's
+`best_score_before` field need. `best_score` is read raw instead, with its own explicit
+`math.isfinite` check.

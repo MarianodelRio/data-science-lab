@@ -716,6 +716,28 @@ def test_real_resolve_node_resolves_landed_timeseries_specialist(tmp_path, monke
     assert resolved.name == "timeseries_specialist"
 
 
+def test_real_resolve_node_resolves_landed_ensemble_specialist(tmp_path, monkeypatch) -> None:
+    from src.graph.node_resolver import resolve_node
+    from src.nodes.llm.ensemble_specialist import EnsembleSpecialistNode
+
+    # Same fake-env rationale as the classical case above: resolution constructs the node (which
+    # loads `Settings`), it never invokes it, so no client is built and no request is made.
+    for var in (
+        "ANTHROPIC_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "GROQ_API_KEY",
+        "KAGGLE_USERNAME",
+        "KAGGLE_KEY",
+    ):
+        monkeypatch.setenv(var, "unit-test-fake-value")
+
+    _seed_workspace(tmp_path, {"problem_type": "binary_classification"}, {})
+    resolved = resolve_node("ensemble_specialist")
+    assert isinstance(resolved, EnsembleSpecialistNode)
+    assert not isinstance(resolved, NoOpNode)
+    assert resolved.name == "ensemble_specialist"
+
+
 # -- ComputeNode.__call__ delegates to run --
 
 

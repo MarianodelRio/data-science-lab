@@ -1616,3 +1616,146 @@ record file exists — the assertion fails loudly instead of quietly covering no
 no writer); hoisting the critic retry loop into `src/nodes/llm/base.py` (reserved for a separate
 refactor task — logged in `context/discoveries.md` instead); a `{phase}` placeholder in
 `output_file_pattern` (this node runs in exactly one phase, so `{iteration}` alone disambiguates).
+
+## 2026-08-17 — T-028 [pipeline-agent]
+**`ENSEMBLE_DESIGN_KEYS`/`validate_ensemble_design` is a thin wrapper, not a parameter widening
+`validate_experiment_design`.** `ensemble_specialist` is the only Phase 5 specialist whose
+`design.json` needs a ninth key (`base_experiments`), so the alternative — adding a keyword-only
+`base_experiments: Any | None = None` parameter to `validate_experiment_design` itself — was
+rejected: it would force the four landed siblings (`classical_ml_specialist`,
+`deep_learning_specialist`, `nlp_specialist`, `timeseries_specialist`) to keep *not* passing a
+parameter that means nothing to them, and it would put `DESIGN_KEYS`'s frozen
+`assert tuple(result) == DESIGN_KEYS` test one accidental default-value change away from breaking.
+Instead `ENSEMBLE_DESIGN_KEYS = DESIGN_KEYS + ("base_experiments",)` and
+`validate_ensemble_design(...)` calls `validate_experiment_design(...)` unchanged, then appends a
+whitelist-rebuilt `base_experiments` as the last key. `DESIGN_KEYS`,
+`validate_experiment_design`'s signature, and `tests/unit/nodes/llm/test_experiment_design.py`'s
+`assert tuple(result) == DESIGN_KEYS` are all byte-for-byte untouched — verified by running that
+exact test unmodified before touching anything else in `_experiment_design.py` (implementation
+order 1 in the task plan). `_validate_base_experiments` requires a **non-empty** list, mirroring
+`_validate_search_space`'s "must not be empty" floor: an ensemble over zero sources is
+unrepresentable. It deliberately requires only `>= 1`, not `>= 2` — the `>= 2` eligibility rule is
+`specialist_selector._should_ensemble`'s routing decision (already made before this node ever
+runs), not this shared schema's to re-derive; a single-source ensemble is degenerate but
+representable, and `test_exactly_one_experiment_still_writes` pins that boundary rather than
+merely documenting it.
+
+**Alias table: three canonical families, with a bare-modifier defusing technique borrowed from
+`timeseries_specialist`'s `"linear"` precedent — and one case it cannot defuse.**
+`normalize_model_family` still has no longest-match-wins rule (2026-08-12 T-026 discovery,
+unchanged by this task), so `ensemble_specialist`'s own `_MODEL_FAMILIES` table
+(`stacking`/`blending`/`weighted_average`) deliberately carries no bare `"weighted"`, `"weight"`,
+`"stack"` or `"stacked"` alias — only qualified multi-word forms (`"weighted blend"`, `"weighted
+average"`, `"stacked ensemble"`, ...). This defuses the realistic phrasing "weighted blend of
+stacked models" to `blending` alone (verified: `"blending"`'s "weighted blend" alias matches;
+"stacked" matches nothing, so `stacking` never enters the candidate set) — pinned by
+`test_weighted_blend_of_stacked_models_resolves_to_blending`. It structurally **cannot** defuse
+`"blended stacking"`: "blended" is `blending`'s own self-match alias and "stacking" is
+`stacking`'s own self-match alias, so any phrase containing both words matches two families no
+matter how the table is tuned — removing either alias would make the bare canonical token
+unreachable for its own family, which is worse. This is accepted as structurally ambiguous by
+design, not a bug: `test_ambiguous_multiword_phrasings_raise` parametrizes over `"blended
+stacking"`, `"stacking and blending combined"` and `"a meta learner that blends the outputs"`, all
+of which raise `ValueError("ambiguous")` rather than silently resolving to one family. The
+prompt's `## model_family — exactly one of three literal tokens` section states the rejection
+explicitly with these same examples and tells the LLM to put the nuance in `rationale` instead —
+same push-the-ambiguity-into-prose approach the T-026 discovery entry recommends for a table with
+no precedence rule.
+
+**`_experiment_dir_from_entry` is a local duplication of `code_critic._experiment_dir_from_state`'s
+normalization, not an import.** Both functions relativize a `state`-recorded path, treat a
+suffixed value as a file pointer (take its parent), and reject a `..` component — but
+`code_critic`'s version operates on `state["experiments"][-1]` (the *last* entry only, for its own
+single-experiment review), while `ensemble_specialist` needs the same normalization applied to
+*every* entry independently (`_build_base_experiments` calls it once per entry, by index). Sibling
+LLM node modules never import from each other — established at T-022/T-024/T-025 and restated in
+`code_critic`'s own module docstring — so this task duplicates the four-step normalization locally
+(`src/nodes/llm/ensemble_specialist.py:_experiment_dir_from_entry`) rather than importing from
+`code_critic.py` or hoisting a shared helper, consistent with that precedent. One deliberate
+divergence: the fallback directory uses the entry's own recorded `iteration` field when it is a
+real (non-bool) int, falling back to the entry's list position only when that field is missing or
+the wrong type (`_fallback_iteration`) — `code_critic`'s single-entry version has no need for this
+because it only ever has one candidate entry to fall back for.
+
+**Per-source weight parameters are named by positional index, never by `experiment_id`.**
+`base_experiments[i]["experiment_id"]` is free text carried over from `state["experiments"]`'s own
+`id` field (or a synthesized `experiment_{i}` fallback) and is not guaranteed to be a valid Python
+identifier — `exp-3`, `exp 07`, and similar are all plausible values `coder`-adjacent tooling might
+produce, and `_PARAM_NAME_RE` requires `^[A-Za-z_][A-Za-z0-9_]{0,63}$`. Using the entry's
+*positional index* in `## Base experiments` instead (`weight_0`, `weight_1`, ...) sidesteps that
+entirely: the index is always available, always a valid identifier suffix, and is the same value
+`_render_base_experiments` already lists the entries in order by — so the prompt's instruction
+("use the positional index, never the raw `experiment_id`") points at something the LLM can read
+directly off the injected section rather than having to invent a sanitization scheme of its own.
+`test_weighted_average_design_with_index_named_weights_accepted` pins the shape as a passing
+example; the prompt's own worked JSON example intentionally uses a `stacking` design instead (a
+meta-learner's own hyperparameter, `alpha`, needs no per-source naming scheme at all), so the two
+together cover both `model_family` branches' distinct parameter-naming needs.
+
+## 2026-08-18 — T-028 [pipeline-agent]
+**Fallback-numbering collision (adversarial review BLOCKER): unified `_experiment_id`'s fallback
+onto `_fallback_iteration`, and added a duplicate-`oof_path` rejection to
+`_validate_base_experiments` as a genuine schema invariant.** The initial T-028 landing (above) had
+two independent fallback-numbering sources for the same degraded `state["experiments"]` entry:
+`_experiment_id`'s fallback used the entry's raw list **index** (`experiment_{index}`), while
+`_experiment_dir_from_entry`'s fallback (via `_fallback_iteration`) preferred the entry's own
+recorded `iteration`, falling back to the index only when `iteration` was absent or the wrong type.
+For `[{"iteration": 1}, {}]` this produced `experiment_0`/`experiment_1` — two distinct ids — both
+pointing at directory `experiments/exp_1` (the first via its own `iteration`, the second via its
+list position, which happens to equal `1`), and therefore identical `oof_path`s. Nothing rejected
+the collision: `_validate_base_experiments` checked shape only, so `design.json` would have
+shipped two rows under two labels reading the same OOF file, and `coder` (T-029) would fit a
+meta-learner double-counting one real source while silently never reading whichever source the
+colliding entry actually meant — corruption with no error anywhere in the pipeline.
+
+Two defensible fixes were on the table: (a) make `_experiment_id`'s fallback derive from
+`_fallback_iteration(entry, index)` too, so a degraded entry's id and directory always agree, or
+(b) drop the `iteration` preference entirely and number both purely by list position. **(a) was
+chosen** — it is the smaller change (one call site), and it preserves `_fallback_iteration`'s
+original rationale intact: preferring the entry's own recorded `iteration` keeps the fallback
+*directory* pointing at that experiment's real location when entries are read out of order or
+interleaved with entries missing a `path`, and unifying the id onto the same value extends that
+same correctness property to the id rather than discarding it. Both `_fallback_iteration`'s and
+`_experiment_id`'s docstrings were rewritten to state the unified rule explicitly (the old
+`_fallback_iteration` docstring justified the divergence by describing itself as "the value used to
+build the fallback experiment **directory**" only — that framing no longer holds now that
+`_experiment_id` derives from it too).
+
+Unifying the numbering does not, by itself, make a coincidental collision impossible — two entries
+can still each carry their own real, distinct-looking `iteration` values that happen to be equal
+(or one entry's own `iteration` happens to equal another entry's list position), and now that both
+functions share one source, such entries collide on **both** id and directory rather than drifting
+apart. So `_validate_base_experiments` (`src/nodes/llm/_experiment_design.py`) now tracks
+`oof_path`s seen so far and raises `ValueError` naming both colliding `experiment_id`s and the
+shared `oof_path` the moment a second entry resolves to a path already claimed — in the same
+"internal error" phrasing style the function already uses for its other pipeline-injected-data
+violations. This is the correct behavior, not a regression: two `state["experiments"]` entries that
+resolve to the same OOF source are a genuinely ambiguous, unrepresentable ensemble design, and
+failing loudly at design-write time beats writing a `design.json` that silently double-counts one
+source. Two entries with real, distinct fallback numbers (e.g. `{"iteration": 1}` and
+`{"iteration": 2}`) still produce distinct `oof_path`s and write successfully —
+`test_two_legitimately_distinct_degraded_entries_write_successfully` pins that the rejection
+targets the collision specifically, not degraded entries in general.
+
+Test coverage added: the exact reproducer (two degraded entries that previously collided) now
+raising with nothing written
+(`test_two_degraded_entries_with_colliding_fallback_numbers_raise_and_write_nothing`); a direct
+unit-level test of `_validate_base_experiments` rejecting a duplicate `oof_path`
+(`test_validate_base_experiments_rejects_duplicate_oof_path_directly`) and accepting distinct ones
+(`test_validate_base_experiments_accepts_distinct_oof_paths_directly`); two legitimately distinct
+degraded entries still writing successfully
+(`test_two_legitimately_distinct_degraded_entries_write_successfully`); and the unified-numbering
+rule itself, pinning that a degraded entry's fallback id and the directory used to resolve its OOF
+path agree (`test_degraded_entry_fallback_id_and_directory_agree`) — all in
+`tests/unit/nodes/llm/test_ensemble_specialist.py` and
+`tests/unit/nodes/llm/test_experiment_design.py`.
+
+Separately (adversarial review Finding 3, low severity): widened the prompt's § model_family
+rejected-examples list (`config/prompts/ensemble_specialist/v1.md`) with five ambiguous phrasings
+the adversarial reviewer found plausible and unwarned-against (`"super learner blend"`, `"weighted
+average of blends"`, `"convex combination blend"`, `"holdout blend with learned weights"`, `"a
+stacked super learner with weighted blend"`), each verified against the real `_MODEL_FAMILIES`
+table to actually raise `ValueError("ambiguous", ...)` before being added, and pinned by extending
+`test_ambiguous_multiword_phrasings_raise`'s parametrization. `_MODEL_FAMILIES` and the no-retry
+behavior on this node were left unchanged — both remain accepted, documented design decisions, out
+of scope for this fix.

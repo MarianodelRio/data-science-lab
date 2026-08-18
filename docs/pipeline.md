@@ -791,11 +791,39 @@ or not `coder` (T-029, not yet landed) populates `experiments`.
   `best_experiment_path` or `is_improvement`. It is computed only when `results.json`'s optional
   `metric` field normalizes into `{accuracy, r2, rsquared, score}` (the token set `baseline_runner`'s
   own `.score()` convention, T-020, can produce) AND `state["baseline_score"]` is a finite number;
-  otherwise the artifact records `null` plus a reason string.
+  otherwise the artifact records `null` plus a reason string. Even when eligible, the subtraction
+  itself is re-checked for overflow (see "Never non-finite" below) before being trusted.
 
-  *Artifact.* Writes `reports/score_evaluation_{iteration}.json` unconditionally via
+  *Output iteration and the experiment-resolution warning.* The artifact's filename number and
+  `iteration` field are **not** simply `resolve_iteration`'s entry/`current_iteration` lookup -- they
+  come from `_evaluation_common.resolve_output_iteration`, which prefers the *resolved*
+  `experiment_dir`'s own trailing `exp_<N>` component, falling back to `resolve_iteration` only when
+  the directory doesn't match that shape. Without this, a stale or non-corresponding `iteration` key
+  on an `experiments` entry could file a correctly-read report under the wrong number. Separately, when
+  an entry declares a valid `iteration` N but its `path` is absent/unusable -- so the well-known
+  fallback directory `exp_M` was read instead, with `M != N` -- the artifact's
+  `experiment_resolution_warning` field names both. This does not change *which* directory is read
+  (that precedence stays a verbatim match with `code_critic`); it makes an adversarial-review-found
+  divergence forensically visible instead of a silent false-positive `is_improvement`.
+
+  *Never non-finite.* Writes `reports/score_evaluation_{iteration}.json` unconditionally via
   `workspace.write_json` -- every key always present, `null` (never `inf`/`nan`) for any value that
-  would otherwise be non-finite (e.g. `best_score_before` on the first evaluation).
+  would otherwise be non-finite (e.g. `best_score_before` on the first evaluation). This includes the
+  *results* of `score_delta`/`delta_vs_baseline`'s subtractions, not just their inputs: two
+  individually-finite operands of opposite sign can still overflow to `+-inf` on subtraction, so both
+  are re-checked with `math.isfinite` and degraded explicitly (`score_delta` to `0.0`,
+  `delta_vs_baseline` to `null`) rather than trusting operand-level finiteness alone.
+
+  *Known limitation (open, not fixed here): polarity is not itself persisted.* `best_score` is stored
+  already sign-normalized, with no record of which `direction` produced it. `score_evaluator`
+  re-derives direction fresh on every call from `problem_definition.json`, defaulting to "maximize"
+  when that file is unreadable -- if it becomes unreadable on a later iteration after being readable
+  (with a minimize metric) on an earlier one, a worse raw score can compare as an "improvement" and
+  flip `best_score`/`best_experiment_path` to the objectively worse experiment. The fix is a polarity
+  field on `LabState`, a protected contract requiring human approval -- out of this task's scope. See
+  `context/discoveries.md`'s 2026-08-17 OPEN entry for the concrete repro. Every artifact's
+  `success_metric`/`success_metric_raw`/`direction` fields at least make a flip forensically detectable
+  after the fact by diffing consecutive reports, even though nothing currently detects it automatically.
 
 - **`feature_importance_extractor`** (`src/nodes/compute/feature_importance_extractor.py`,
   `ComputeNode` subclass, T-031) -- runs second, pure Python, no LLM, **always returns `{}`** (no
@@ -809,8 +837,24 @@ or not `coder` (T-029, not yet landed) populates `experiments`.
   and `timeseries_specialist.py:148-172`) read from the resolved experiment directory's `design.json`
   -- an unrecognized or future model family skips safely with a reason rather than failing or producing
   a meaningless ranking. Skip and success artifacts share one shape (`skipped`, `reason`, `iteration`,
-  `experiment_dir`, `model_family`, `features`); a success artifact's `features` list carries
-  `feature`/`importance`/`normalized_importance`/`rank` per surviving entry.
+  `experiment_dir`, `experiment_resolution_warning`, `model_family`, `features`,
+  `importance_total_overflowed`, `features_truncated`, `original_feature_count`); a success artifact's
+  `features` list carries `feature`/`importance`/`normalized_importance`/`rank` per surviving entry.
+  Shares the same output-iteration derivation and `experiment_resolution_warning` diagnostic as
+  `score_evaluator` above (both delegate to `_evaluation_common.resolve_output_iteration`).
+
+  *Bounded output.* `results.json`'s `feature_importance` payload is LLM/generated-script output, not
+  a trusted internal artifact -- an unbounded entry count would otherwise flow uncapped through the
+  filtered dict, the ranked list, and the serialized report. Entries beyond `_MAX_RANKED_FEATURES`
+  (3000, a generous headroom for real tabular feature engineering) are dropped, keeping the largest by
+  absolute magnitude; `features_truncated`/`original_feature_count` record it explicitly when this
+  happens, in-band with the report -- the same "never silently drop data without a marker" precedent
+  `code_critic._truncate` set for its own text-length artifact caps, adapted to a list. Independently,
+  the *sum* of surviving importances (used to compute `normalized_importance`) can itself overflow to a
+  non-finite value on just two extreme-magnitude entries; that is guarded and recorded as
+  `importance_total_overflowed` -- ranking by raw magnitude stays correct even when it fires, but every
+  `normalized_importance` degrades to `0.0` rather than a share of a sum that cannot be represented as a
+  finite float.
 
 ## Node classification
 

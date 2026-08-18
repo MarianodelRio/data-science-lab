@@ -614,6 +614,21 @@ def _validate_base_experiments(value: Any, specialist: str) -> list[dict[str, st
     empty search space), each entry an object with a non-empty string
     `experiment_id` and `oof_path`. Extra keys on an entry are dropped by the
     rebuild.
+
+    Also rejects two entries that resolve to the **same** `oof_path`: ensembling
+    the same out-of-fold predictions file twice under two different
+    `experiment_id` labels is not a representable design — a `coder` (T-029)
+    meta-learner built from this file would read one real source's predictions
+    twice under two names while silently never reading the source the
+    colliding entry was actually meant to point at. This can legitimately arise
+    from `ensemble_specialist._fallback_iteration`: two `state["experiments"]`
+    entries that are both missing/unusable `path` values and whose own
+    recorded (or positionally inferred) `iteration` numbers coincide degrade to
+    the *same* fallback directory, and since T-028's fallback-numbering fix
+    `_experiment_id`'s fallback is derived from that same number, so the ids
+    collide too — genuinely ambiguous, and failing loudly here beats writing a
+    design that silently double-counts one source. Real, distinct entries with
+    real, distinct `oof_path` values are unaffected.
     """
     if not isinstance(value, list) or not value:
         raise ValueError(
@@ -621,6 +636,7 @@ def _validate_base_experiments(value: Any, specialist: str) -> list[dict[str, st
             f"got {value!r}"
         )
     validated: list[dict[str, str]] = []
+    seen_oof_paths: dict[str, str] = {}
     for index, entry in enumerate(value):
         if not isinstance(entry, dict):
             raise ValueError(
@@ -639,6 +655,17 @@ def _validate_base_experiments(value: Any, specialist: str) -> list[dict[str, st
                 f"{specialist} internal error: 'base_experiments[{index}].oof_path' must be a "
                 f"non-empty string, got {oof_path!r}"
             )
+        if oof_path in seen_oof_paths:
+            raise ValueError(
+                f"{specialist} internal error: 'base_experiments' entries "
+                f"{seen_oof_paths[oof_path]!r} and {experiment_id!r} both resolve to the same "
+                f"'oof_path' {oof_path!r} — ensembling the same out-of-fold predictions twice "
+                "under two labels is not a representable design (one real source would be read "
+                "twice under two names while another is silently never read); the two "
+                "state['experiments'] entries behind these ids are ambiguous and must resolve to "
+                "distinct experiment directories before this design can be written"
+            )
+        seen_oof_paths[oof_path] = experiment_id
         validated.append({"experiment_id": experiment_id, "oof_path": oof_path})
     return validated
 

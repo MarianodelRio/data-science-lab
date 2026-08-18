@@ -141,14 +141,26 @@ _MODEL_FAMILIES: dict[str, tuple[str, ...]] = {
 
 
 def _fallback_iteration(entry: dict[str, Any], index: int) -> Any:
-    """The `{iteration}` value used to build the fallback experiment directory
-    for one `state["experiments"]` entry: the entry's own recorded `iteration`
-    when it is a real (non-bool) int, else the entry's position in the list.
+    """The single fallback number for one `state["experiments"]` entry, shared by
+    **both** the fallback experiment directory (`_experiment_dir_from_entry`) and
+    the fallback experiment id (`_experiment_id`): the entry's own recorded
+    `iteration` when it is a real (non-bool) int, else the entry's position in
+    the list.
 
     Preferring the entry's own `iteration` over its list position keeps the
     fallback meaningful when experiments are read out of order or a later
     entry is missing its `path`: it still points at *that* experiment's own
     well-known directory rather than an arbitrary positional one.
+
+    Deriving `_experiment_id`'s fallback from this same function (rather than
+    from `index` alone) is what keeps a degraded entry's id and directory in
+    agreement — see the T-028 fallback-numbering-unification entry in
+    context/decisions.md. Two entries whose *own* recorded `iteration` values
+    collide (e.g. two entries both missing `path`, one with `iteration: 1` and
+    one with no `iteration` at all reading as index `1`) now degrade to the
+    *same* fallback number by construction, which `_validate_base_experiments`
+    then rejects outright as a duplicate `oof_path` rather than silently
+    writing two distinct ids pointing at one directory.
     """
     raw_iteration = entry.get("iteration")
     if isinstance(raw_iteration, int) and not isinstance(raw_iteration, bool):
@@ -190,13 +202,19 @@ def _experiment_dir_from_entry(
 
 
 def _experiment_id(entry: dict[str, Any], index: int) -> str:
-    """`entry["id"]` when it is a non-empty string, else `experiment_{index}` —
-    the same "position-numbered fallback" convention `_EXPERIMENT_DIR_PATTERN`
-    uses for a missing directory pointer."""
+    """`entry["id"]` when it is a non-empty string, else
+    `experiment_{_fallback_iteration(entry, index)}` — the **same** fallback
+    number `_experiment_dir_from_entry` uses for the directory (via
+    `_fallback_iteration`), so a degraded entry's id and directory are always
+    derived from one shared source and cannot drift apart. Numbering the id
+    fallback by raw `index` instead (the pre-T-028-fix behavior) let two
+    degraded entries land on the same fallback directory while getting
+    distinct ids — see the T-028 fallback-numbering-unification entry in
+    context/decisions.md."""
     experiment_id = entry.get("id")
     if isinstance(experiment_id, str) and experiment_id:
         return experiment_id
-    return f"experiment_{index}"
+    return f"experiment_{_fallback_iteration(entry, index)}"
 
 
 def _oof_path_for_experiment(entry: dict[str, Any], index: int, workspace: WorkspaceManager) -> str:

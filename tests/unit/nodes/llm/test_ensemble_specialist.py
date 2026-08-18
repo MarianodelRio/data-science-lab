@@ -527,6 +527,87 @@ def test_llm_sent_base_experiments_are_discarded(
     assert _written_design(workspace_instance)["base_experiments"] == EXPECTED_BASE_EXPERIMENTS
 
 
+# -- fallback-numbering collision (adversarial review BLOCKER, T-028 fix) --
+
+
+def test_two_degraded_entries_with_colliding_fallback_numbers_raise_and_write_nothing(
+    patched_llm_factory, patched_settings, mock_workspace_manager
+) -> None:
+    """The exact BLOCKER reproducer: two `state["experiments"]` entries with no
+    usable `path` — `{"iteration": 1}` and `{}` — whose fallback numbers both
+    resolve to `1` (the first via its own recorded `iteration`, the second via
+    its list position). Before this fix, `_experiment_id` numbered by list
+    index while `_fallback_iteration` numbered by the entry's own `iteration`,
+    so the two got distinct ids (`experiment_0`/`experiment_1`) sharing one
+    `oof_path` (`experiments/exp_1/oof_predictions.parquet`) — written silently.
+    Now both id and directory are derived from the same `_fallback_iteration`
+    value, so the two entries collide identically and
+    `_validate_base_experiments` rejects the design outright."""
+    _, workspace_instance = mock_workspace_manager
+    workspace_instance.read_json.side_effect = _read_json_router(
+        {"experiments/exp_1/results.json": OSError("no results.json for this experiment")}
+    )
+    state = _build_state(experiments=[{"iteration": 1}, {}])
+    node = EnsembleSpecialistNode()
+
+    with pytest.raises(ValueError, match="both resolve to the same 'oof_path'"):
+        node(state)
+
+    workspace_instance.write_json.assert_not_called()
+
+
+def test_two_legitimately_distinct_degraded_entries_write_successfully(
+    patched_llm_factory, patched_settings, mock_workspace_manager
+) -> None:
+    """Two entries that are both missing `path` but carry distinct recorded
+    `iteration` values degrade to distinct fallback numbers, so their ids and
+    `oof_path`s stay distinct and the design still writes — pins that the
+    duplicate-`oof_path` rejection catches only genuine collisions, not every
+    degraded entry."""
+    _, workspace_instance = mock_workspace_manager
+    workspace_instance.read_json.side_effect = _read_json_router(
+        {
+            "experiments/exp_1/results.json": OSError("no results.json"),
+            "experiments/exp_2/results.json": OSError("no results.json"),
+        }
+    )
+    state = _build_state(experiments=[{"iteration": 1}, {"iteration": 2}])
+    node = EnsembleSpecialistNode()
+
+    node(state)
+
+    written = _written_design(workspace_instance)
+    assert written["base_experiments"] == [
+        {"experiment_id": "experiment_1", "oof_path": "experiments/exp_1/oof_predictions.parquet"},
+        {"experiment_id": "experiment_2", "oof_path": "experiments/exp_2/oof_predictions.parquet"},
+    ]
+
+
+def test_degraded_entry_fallback_id_and_directory_agree(
+    patched_llm_factory, patched_settings, mock_workspace_manager
+) -> None:
+    """The unified-numbering pin: a degraded entry's fallback id
+    (`experiment_{n}`) and the directory used to look up its `results.json`
+    are always the same `n` — here `5`, from the entry's own recorded
+    `iteration` since `path` is absent. If the two ever numbered
+    independently again, this entry's id would say `5` while the lookup would
+    hit a different (unstubbed) directory and raise, instead of resolving the
+    real `oof_path` below."""
+    _, workspace_instance = mock_workspace_manager
+    workspace_instance.read_json.side_effect = _read_json_router(
+        {"experiments/exp_5/results.json": {"oof_path": "experiments/exp_5/preds.parquet"}}
+    )
+    state = _build_state(experiments=[{"iteration": 5}])
+    node = EnsembleSpecialistNode()
+
+    node(state)
+
+    written = _written_design(workspace_instance)
+    assert written["base_experiments"] == [
+        {"experiment_id": "experiment_5", "oof_path": "experiments/exp_5/preds.parquet"}
+    ]
+
+
 # -- frozen folds (Done when: "the design references the frozen folds") --
 
 
@@ -759,14 +840,23 @@ def test_weighted_blend_of_stacked_models_resolves_to_blending(
         "blended stacking",
         "stacking and blending combined",
         "a meta learner that blends the outputs",
+        # Adversarial review Finding 3 — plausible LLM phrasings the prompt's
+        # rejected-examples list did not previously warn against, each naming
+        # two families at once via the qualified multi-word aliases.
+        "super learner blend",
+        "weighted average of blends",
+        "convex combination blend",
+        "holdout blend with learned weights",
+        "a stacked super learner with weighted blend",
     ],
 )
 def test_ambiguous_multiword_phrasings_raise(
     patched_llm_factory, patched_settings, mock_workspace_manager, mock_llm: MagicMock, raw: str
 ) -> None:
-    """These CANNOT be defused by the alias table alone: "blended"/"blend(s)"
-    (aliases of `blending`) and "stacking" (a self-match alias of `stacking`)
-    are both real canonical aliases, so any phrase carrying both words is
+    """These CANNOT be defused by the alias table alone: each phrase carries
+    qualified multi-word aliases from two different families at once (e.g.
+    "blended"/`blending` plus "stacking"/`stacking`, or "weighted blend"/
+    `blending` plus "convex combination"/`weighted_average`), so it is
     structurally ambiguous by design — see the prompt's § model_family section
     and the T-028 entry in context/decisions.md."""
     mock_llm.invoke.return_value = AIMessage(content=_design(model_family=raw))

@@ -1691,3 +1691,71 @@ directly off the injected section rather than having to invent a sanitization sc
 example; the prompt's own worked JSON example intentionally uses a `stacking` design instead (a
 meta-learner's own hyperparameter, `alpha`, needs no per-source naming scheme at all), so the two
 together cover both `model_family` branches' distinct parameter-naming needs.
+
+## 2026-08-18 — T-028 [pipeline-agent]
+**Fallback-numbering collision (adversarial review BLOCKER): unified `_experiment_id`'s fallback
+onto `_fallback_iteration`, and added a duplicate-`oof_path` rejection to
+`_validate_base_experiments` as a genuine schema invariant.** The initial T-028 landing (above) had
+two independent fallback-numbering sources for the same degraded `state["experiments"]` entry:
+`_experiment_id`'s fallback used the entry's raw list **index** (`experiment_{index}`), while
+`_experiment_dir_from_entry`'s fallback (via `_fallback_iteration`) preferred the entry's own
+recorded `iteration`, falling back to the index only when `iteration` was absent or the wrong type.
+For `[{"iteration": 1}, {}]` this produced `experiment_0`/`experiment_1` — two distinct ids — both
+pointing at directory `experiments/exp_1` (the first via its own `iteration`, the second via its
+list position, which happens to equal `1`), and therefore identical `oof_path`s. Nothing rejected
+the collision: `_validate_base_experiments` checked shape only, so `design.json` would have
+shipped two rows under two labels reading the same OOF file, and `coder` (T-029) would fit a
+meta-learner double-counting one real source while silently never reading whichever source the
+colliding entry actually meant — corruption with no error anywhere in the pipeline.
+
+Two defensible fixes were on the table: (a) make `_experiment_id`'s fallback derive from
+`_fallback_iteration(entry, index)` too, so a degraded entry's id and directory always agree, or
+(b) drop the `iteration` preference entirely and number both purely by list position. **(a) was
+chosen** — it is the smaller change (one call site), and it preserves `_fallback_iteration`'s
+original rationale intact: preferring the entry's own recorded `iteration` keeps the fallback
+*directory* pointing at that experiment's real location when entries are read out of order or
+interleaved with entries missing a `path`, and unifying the id onto the same value extends that
+same correctness property to the id rather than discarding it. Both `_fallback_iteration`'s and
+`_experiment_id`'s docstrings were rewritten to state the unified rule explicitly (the old
+`_fallback_iteration` docstring justified the divergence by describing itself as "the value used to
+build the fallback experiment **directory**" only — that framing no longer holds now that
+`_experiment_id` derives from it too).
+
+Unifying the numbering does not, by itself, make a coincidental collision impossible — two entries
+can still each carry their own real, distinct-looking `iteration` values that happen to be equal
+(or one entry's own `iteration` happens to equal another entry's list position), and now that both
+functions share one source, such entries collide on **both** id and directory rather than drifting
+apart. So `_validate_base_experiments` (`src/nodes/llm/_experiment_design.py`) now tracks
+`oof_path`s seen so far and raises `ValueError` naming both colliding `experiment_id`s and the
+shared `oof_path` the moment a second entry resolves to a path already claimed — in the same
+"internal error" phrasing style the function already uses for its other pipeline-injected-data
+violations. This is the correct behavior, not a regression: two `state["experiments"]` entries that
+resolve to the same OOF source are a genuinely ambiguous, unrepresentable ensemble design, and
+failing loudly at design-write time beats writing a `design.json` that silently double-counts one
+source. Two entries with real, distinct fallback numbers (e.g. `{"iteration": 1}` and
+`{"iteration": 2}`) still produce distinct `oof_path`s and write successfully —
+`test_two_legitimately_distinct_degraded_entries_write_successfully` pins that the rejection
+targets the collision specifically, not degraded entries in general.
+
+Test coverage added: the exact reproducer (two degraded entries that previously collided) now
+raising with nothing written
+(`test_two_degraded_entries_with_colliding_fallback_numbers_raise_and_write_nothing`); a direct
+unit-level test of `_validate_base_experiments` rejecting a duplicate `oof_path`
+(`test_validate_base_experiments_rejects_duplicate_oof_path_directly`) and accepting distinct ones
+(`test_validate_base_experiments_accepts_distinct_oof_paths_directly`); two legitimately distinct
+degraded entries still writing successfully
+(`test_two_legitimately_distinct_degraded_entries_write_successfully`); and the unified-numbering
+rule itself, pinning that a degraded entry's fallback id and the directory used to resolve its OOF
+path agree (`test_degraded_entry_fallback_id_and_directory_agree`) — all in
+`tests/unit/nodes/llm/test_ensemble_specialist.py` and
+`tests/unit/nodes/llm/test_experiment_design.py`.
+
+Separately (adversarial review Finding 3, low severity): widened the prompt's § model_family
+rejected-examples list (`config/prompts/ensemble_specialist/v1.md`) with five ambiguous phrasings
+the adversarial reviewer found plausible and unwarned-against (`"super learner blend"`, `"weighted
+average of blends"`, `"convex combination blend"`, `"holdout blend with learned weights"`, `"a
+stacked super learner with weighted blend"`), each verified against the real `_MODEL_FAMILIES`
+table to actually raise `ValueError("ambiguous", ...)` before being added, and pinned by extending
+`test_ambiguous_multiword_phrasings_raise`'s parametrization. `_MODEL_FAMILIES` and the no-retry
+behavior on this node were left unchanged — both remain accepted, documented design decisions, out
+of scope for this fix.

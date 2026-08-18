@@ -94,7 +94,8 @@ precedent; `folders:` deliberately not widened)
   classification table row, the `design.json` contract section (now noting the ninth key),
   and the stale `specialist_selector` paragraph claiming `ensemble_specialist` still falls
   back to `NoOpNode`.
-- `context/decisions.md` — the four non-obvious decisions above.
+- `context/decisions.md` — the four non-obvious decisions above, plus the 2026-08-18
+  review-fix entry below.
 - `context/discoveries.md` — two entries: the sharper `current_iteration` self-overwrite
   hazard, and the OOF-path convention binding on T-029.
 
@@ -103,3 +104,72 @@ precedent; `folders:` deliberately not widened)
 `pytest` 1328 passed, global coverage 95%; `ruff check` + `ruff format --check` clean;
 `mypy src/` clean. `tests/tools/test_rag.py` (13 tests) fails identically on clean `main` —
 `sentence_transformers` is not installed in this environment — and is unrelated to T-028.
+
+## Completed — review fix (2026-08-18)
+
+Adversarial review found a real correctness BLOCKER plus two lower-severity gaps. All three
+fixed in this pass.
+
+**BLOCKER — fallback-numbering collision produced a duplicate `oof_path`.** `_experiment_id`
+numbered its fallback by the entry's raw list **index** (`experiment_{index}`) while
+`_fallback_iteration` (used for the fallback directory) numbered by the entry's own recorded
+**`iteration`**, falling back to the index only when `iteration` was absent or the wrong
+type — two independent numbering sources for the same degraded entry. Reproducer:
+`_build_base_experiments({"experiments": [{"iteration": 1}, {}]}, ws)` (both entries missing
+`path`) produced two distinct ids (`experiment_0`/`experiment_1`) both pointing at
+`experiments/exp_1/oof_predictions.parquet`. `_validate_base_experiments` did not check for
+duplicates, so this would have written verbatim into `design.json`, and `coder` (T-029) would
+fit a meta-learner reading one experiment's OOF predictions twice under two labels while
+silently dropping the real second source — no error anywhere in the pipeline.
+
+Fixed both halves:
+- **Unified the numbering (`src/nodes/llm/ensemble_specialist.py`).** `_experiment_id`'s
+  fallback now derives from `_fallback_iteration(entry, index)` too — the same value
+  `_experiment_dir_from_entry` uses — instead of the raw list index. Chosen over the
+  alternative (drop the `iteration` preference, number both purely by position) because it
+  preserves `_fallback_iteration`'s original correctness property (the fallback directory
+  stays pointed at the entry's own well-known location even when entries are read out of
+  order or interleaved with `path`-less entries) and extends that same property to the id,
+  rather than discarding it for a smaller code change. Both `_fallback_iteration`'s and
+  `_experiment_id`'s docstrings were rewritten to state the unified rule — the old
+  `_fallback_iteration` docstring described itself as only building "the fallback experiment
+  directory," which no longer held once `_experiment_id` started reading it too.
+- **Added a duplicate-`oof_path` rejection to `_validate_base_experiments`
+  (`src/nodes/llm/_experiment_design.py`).** Unifying the numbering does not make a
+  collision impossible by itself (two entries can still carry genuinely coinciding
+  `iteration` values), so `_validate_base_experiments` now tracks `oof_path`s seen so far and
+  raises `ValueError` — in the function's existing "internal error" phrasing style, naming
+  both colliding `experiment_id`s and the shared `oof_path` — the moment a second entry
+  resolves to a path already claimed. With the reproducer above, both entries now resolve to
+  the *same* id (`experiment_1`) and the *same* `oof_path`, and this raises rather than
+  writing. That is correct, not a regression: two `state["experiments"]` entries resolving
+  to the same OOF source is a genuinely unrepresentable ensemble design, and failing loudly
+  at design-write time beats silently double-counting one source. Two entries with real,
+  distinct fallback numbers still produce distinct `oof_path`s and write successfully.
+
+**Test coverage (adversarial Finding 2).** No existing test paired two co-occurring degraded
+entries. Added: the exact reproducer now raising with nothing written
+(`test_two_degraded_entries_with_colliding_fallback_numbers_raise_and_write_nothing`);
+`_validate_base_experiments` rejecting a duplicate `oof_path` directly, unit-level
+(`test_validate_base_experiments_rejects_duplicate_oof_path_directly`) and accepting distinct
+ones (`test_validate_base_experiments_accepts_distinct_oof_paths_directly`); two legitimately
+distinct degraded entries still writing successfully
+(`test_two_legitimately_distinct_degraded_entries_write_successfully`); and the unified
+numbering rule itself, pinning that a degraded entry's fallback id and its resolved directory
+agree (`test_degraded_entry_fallback_id_and_directory_agree`) — plus a matching
+`validate_ensemble_design`-level duplicate test
+(`test_duplicate_oof_path_across_entries_raises`) in `test_experiment_design.py`.
+
+**Prompt rejected-examples widened (adversarial Finding 3, low severity).** Added five
+plausible LLM phrasings the adversarial reviewer found ambiguous but previously unwarned
+against — `"super learner blend"`, `"weighted average of blends"`, `"convex combination
+blend"`, `"holdout blend with learned weights"`, `"a stacked super learner with weighted
+blend"` — to `config/prompts/ensemble_specialist/v1.md`'s `## model_family` rejected-examples
+list, and extended `test_ambiguous_multiword_phrasings_raise`'s parametrization to cover them.
+`_MODEL_FAMILIES` and the no-retry behavior were left unchanged, as directed — both remain
+accepted, documented design decisions.
+
+**Verification (this pass):** `pytest --cov=src --ignore=tests/tools/test_rag.py -q` — 1339
+passed, coverage 95%; `ruff check .` + `ruff format --check .` clean; `mypy src/` clean.
+`tests/tools/test_rag.py` still fails identically on clean `main` (`sentence_transformers` not
+installed) — unrelated, excluded as before.

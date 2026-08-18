@@ -21,6 +21,7 @@ from src.nodes.llm._experiment_design import (
     DESIGN_KEYS,
     ENSEMBLE_DESIGN_KEYS,
     FORBIDDEN_CV_KEYS,
+    _validate_base_experiments,
     extract_json_object,
     normalize_model_family,
     read_fold_summary,
@@ -1111,6 +1112,62 @@ def test_empty_base_experiments_raises() -> None:
 def test_malformed_base_experiments_raises(malformed: Any) -> None:
     with pytest.raises(ValueError, match="base_experiments"):
         _validate_ensemble(_design(model_family="stacking"), base_experiments=malformed)
+
+
+def test_duplicate_oof_path_across_entries_raises() -> None:
+    """Two entries pointing at the same `oof_path` under different
+    `experiment_id` labels is not a representable ensemble design — a `coder`
+    (T-029) meta-learner reading this file would read one real source's OOF
+    predictions twice under two names while never reading whichever source
+    the colliding entry actually meant. See the T-028
+    fallback-numbering-unification entry in context/decisions.md."""
+    with pytest.raises(ValueError) as exc_info:
+        _validate_ensemble(
+            _design(model_family="stacking"),
+            base_experiments=[
+                {"experiment_id": "exp-a", "oof_path": "experiments/exp_1/oof_predictions.parquet"},
+                {"experiment_id": "exp-b", "oof_path": "experiments/exp_1/oof_predictions.parquet"},
+            ],
+        )
+
+    message = str(exc_info.value)
+    assert "exp-a" in message
+    assert "exp-b" in message
+    assert "experiments/exp_1/oof_predictions.parquet" in message
+
+
+def test_validate_base_experiments_rejects_duplicate_oof_path_directly() -> None:
+    """Unit-level: `_validate_base_experiments` itself raises on a duplicate
+    `oof_path`, independent of the `validate_ensemble_design` wrapper."""
+    with pytest.raises(ValueError, match="both resolve to the same 'oof_path'") as exc_info:
+        _validate_base_experiments(
+            [
+                {"experiment_id": "exp-a", "oof_path": "experiments/exp_1/oof_predictions.parquet"},
+                {"experiment_id": "exp-b", "oof_path": "experiments/exp_1/oof_predictions.parquet"},
+            ],
+            ENSEMBLE_SPECIALIST,
+        )
+
+    assert "exp-a" in str(exc_info.value)
+    assert "exp-b" in str(exc_info.value)
+
+
+def test_validate_base_experiments_accepts_distinct_oof_paths_directly() -> None:
+    """Pins that Part A rejects only the collision, not distinct entries in
+    general — `_validate_base_experiments` still accepts (and passes through)
+    two entries with distinct `oof_path` values."""
+    result = _validate_base_experiments(
+        [
+            {"experiment_id": "exp-a", "oof_path": "experiments/exp_1/oof_predictions.parquet"},
+            {"experiment_id": "exp-b", "oof_path": "experiments/exp_2/oof_predictions.parquet"},
+        ],
+        ENSEMBLE_SPECIALIST,
+    )
+
+    assert result == [
+        {"experiment_id": "exp-a", "oof_path": "experiments/exp_1/oof_predictions.parquet"},
+        {"experiment_id": "exp-b", "oof_path": "experiments/exp_2/oof_predictions.parquet"},
+    ]
 
 
 def test_base_experiments_entry_extra_keys_dropped() -> None:

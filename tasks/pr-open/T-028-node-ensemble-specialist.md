@@ -3,12 +3,12 @@ id: T-028
 phase: 2
 agent: pipeline-agent
 depends_on: [T-010]
-status: in-progress
+status: pr-open
 folders: ["src/nodes/llm/", "config/agents/", "config/prompts/"]
 outputs: [ensemble_specialist node, stacking/blending design using OOF predictions]
 size: S
 branch: feature/T-028-node-ensemble-specialist
-pr: ~
+pr: "https://github.com/MarianodelRio/data-science-lab/pull/32"
 ---
 
 ## Node: ensemble_specialist (Pipeline Phase 5)

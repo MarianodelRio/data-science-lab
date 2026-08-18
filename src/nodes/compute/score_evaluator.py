@@ -52,6 +52,21 @@ or `is_improvement`; see `context/decisions.md` for why this comparability
 rule is a new contract this task invents (no landed `coder` output defines
 `results.json`'s `metric` field yet).
 
+## Output iteration and the experiment-resolution warning
+
+The artifact's filename number and its `iteration` field come from
+`_evaluation_common.resolve_output_iteration`, not directly from
+`resolve_iteration` — the report is named after the `experiment_dir` actually
+read, not after whatever an `experiments` entry's `iteration` key claims (they
+can diverge; see that function's docstring). When they diverge because the
+entry's `path` was unusable and the well-known fallback directory was read
+instead, `experiment_resolution_warning` names both — this is adversarial
+review's finding: without it, a stale fallback read could silently produce a
+false-positive `is_improvement` filed under a number that doesn't match what
+was actually read, with nothing downstream able to tell.
+
+## Never non-finite
+
 Writes `reports/score_evaluation_{iteration}.json` unconditionally (both the
 "no valid score" path and the happy path) via `WorkspaceManager.write_json`.
 Per that method's `json.dump` default behavior, a non-finite float written
@@ -59,7 +74,14 @@ into the artifact would serialize as invalid JSON tokens (`Infinity`, `NaN`)
 that flow through the SQLite checkpointer — so every float in the artifact is
 either already known-finite or explicitly downgraded to `None`/JSON `null`
 before being written (see `_coerce_finite_float` and the `best_score_before`/
-`best_score_after` handling in `run`).
+`best_score_after` handling in `run`). This is not just about individual
+inputs: `score_delta` and `delta_vs_baseline` are each a *subtraction* of two
+individually-finite operands, and a subtraction's result is not automatically
+finite (two large finite floats of opposite sign can overflow to `+-inf`) —
+`run` re-checks each result with `math.isfinite` and degrades it explicitly
+(`score_delta` to `0.0`, consistent with the first-evaluation rule;
+`delta_vs_baseline` to `None`, consistent with every other "not comparable"
+path for that field) rather than trusting operand-level finiteness alone.
 """
 
 from __future__ import annotations
@@ -146,10 +168,20 @@ def _is_baseline_comparable_metric(value: Any) -> bool:
 
 
 def _baseline_comparison_reason(
-    raw_score: float | None, metric_field: Any, baseline_score: float | None, *, comparable: bool
+    raw_score: float | None,
+    metric_field: Any,
+    baseline_score: float | None,
+    *,
+    comparable: bool,
+    overflowed: bool,
 ) -> str:
     """Human-readable reason recorded alongside `delta_vs_baseline`, whether or
     not a comparison was actually made."""
+    if overflowed:
+        return (
+            "raw_score and baseline_score are individually finite, but their difference "
+            "overflowed to a non-finite value; delta_vs_baseline omitted"
+        )
     if comparable:
         return (
             f"results.json declares metric {metric_field!r}, matching baseline_score's own "
@@ -174,7 +206,9 @@ class ScoreEvaluatorNode(ComputeNode):
         problem_definition = _evaluation_common.read_json_dict(
             str(state.get("problem_definition_path") or ""), workspace
         )
-        iteration = _evaluation_common.resolve_iteration(dict(state))
+        iteration, experiment_resolution_warning = _evaluation_common.resolve_output_iteration(
+            dict(state), workspace, experiment_dir
+        )
 
         success_metric_raw = problem_definition.get("success_metric")
         success_metric = _normalize_metric_name(success_metric_raw)
@@ -200,6 +234,16 @@ class ScoreEvaluatorNode(ComputeNode):
             score_delta = (
                 (normalized_score - best_score_before) if best_score_before_finite else 0.0
             )
+            if not math.isfinite(score_delta):
+                # Both operands are individually finite (guaranteed by
+                # `_coerce_finite_float`/the raw `-inf` read above), but their
+                # *subtraction* is not re-checked by that alone: two large
+                # finite floats of opposite sign can overflow to `+-inf`.
+                # Degrade to the same `0.0` the first-evaluation branch above
+                # already uses, rather than ever writing a non-finite float
+                # into `LabState` (it would flow into the SQLite checkpointer)
+                # or the artifact (invalid JSON).
+                score_delta = 0.0
             delta = {
                 "last_score": normalized_score,
                 "score_delta": score_delta,
@@ -218,12 +262,24 @@ class ScoreEvaluatorNode(ComputeNode):
             and baseline_score is not None
         )
         delta_vs_baseline: float | None = None
+        baseline_delta_overflowed = False
         if baseline_comparable and raw_score is not None and baseline_score is not None:
-            delta_vs_baseline = raw_score - baseline_score
+            candidate_delta = raw_score - baseline_score
+            # Same overflow guard as `score_delta` above: both operands are
+            # individually finite but their subtraction is not. Degrading to
+            # `None` here (rather than `0.0`) is consistent with every other
+            # "not comparable" path for this field — a `0.0` would falsely
+            # read as "no difference from baseline" rather than "the
+            # difference could not be computed".
+            if math.isfinite(candidate_delta):
+                delta_vs_baseline = candidate_delta
+            else:
+                baseline_delta_overflowed = True
 
         artifact = {
             "iteration": iteration,
             "experiment_dir": experiment_dir,
+            "experiment_resolution_warning": experiment_resolution_warning,
             "evaluated": raw_score is not None,
             "reason": None if raw_score is not None else _score_unavailable_reason(results),
             "raw_score": raw_score,
@@ -239,9 +295,16 @@ class ScoreEvaluatorNode(ComputeNode):
             "iterations_without_improvement_after": delta["iterations_without_improvement"],
             "baseline_score": baseline_score,
             "delta_vs_baseline": delta_vs_baseline,
-            "baseline_comparison_made": baseline_comparable,
+            # Reflects whether a finite delta was actually produced, not mere
+            # eligibility — `baseline_comparable` can be True while the
+            # subtraction itself still overflows (see `baseline_delta_overflowed`).
+            "baseline_comparison_made": delta_vs_baseline is not None,
             "baseline_comparison_reason": _baseline_comparison_reason(
-                raw_score, metric_field, baseline_score, comparable=baseline_comparable
+                raw_score,
+                metric_field,
+                baseline_score,
+                comparable=baseline_comparable,
+                overflowed=baseline_delta_overflowed,
             ),
         }
         workspace.write_json(_OUTPUT_PATTERN.format(iteration=iteration), artifact)

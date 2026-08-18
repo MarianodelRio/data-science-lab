@@ -129,8 +129,12 @@ def test_experiment_dir_pointer_from_state_is_used_and_recorded_in_artifact(tmp_
     delta = ScoreEvaluatorNode().run(state)
 
     assert delta["best_experiment_path"] == "experiments/exp_7"
-    artifact = _read_artifact(tmp_path, iteration=9)
+    # The report is filed under exp_7 (the directory actually read), not
+    # exp_9 (current_iteration) — the pointer was usable, so there is no
+    # fallback and therefore no experiment_resolution_warning either.
+    artifact = _read_artifact(tmp_path, iteration=7)
     assert artifact["experiment_dir"] == "experiments/exp_7"
+    assert artifact["experiment_resolution_warning"] is None
 
 
 def test_baseline_comparable_metric_computes_delta_vs_baseline(tmp_path) -> None:
@@ -458,6 +462,163 @@ def test_run_on_completely_bare_new_state_does_not_raise(tmp_path) -> None:
     artifact = _read_artifact(tmp_path, iteration=0)
     assert artifact["evaluated"] is False
     assert artifact["reason"]
+
+
+# -- boolean coercion (mutation survivor: removing the bool guard is not
+# caught by any test that only feeds numeric scores) --
+
+
+def test_boolean_cv_score_degrades_safely(tmp_path) -> None:
+    workspace = WorkspaceManager(str(tmp_path))
+    workspace.write_json("experiments/exp_0/results.json", {"cv_score": True})
+    state = _build_state(tmp_path)
+
+    delta = ScoreEvaluatorNode().run(state)
+
+    # `isinstance(True, int)` is `True` in Python -- without the explicit
+    # `bool` rejection, `cv_score: true` would coerce to `1.0` and run
+    # through the full improvement logic instead of degrading.
+    assert delta == {"iterations_without_improvement": 1}
+
+
+def test_boolean_best_score_is_treated_as_the_unset_sentinel(tmp_path) -> None:
+    workspace = WorkspaceManager(str(tmp_path))
+    _seed_problem_definition(workspace, "accuracy")
+    _seed_results(workspace, "experiments/exp_0", cv_score=0.5)
+    state = _build_state(tmp_path, best_score=True)
+
+    delta = ScoreEvaluatorNode().run(state)
+
+    # `best_score=True` is rejected the same way `cv_score` is, and treated
+    # as the unset `-inf` sentinel, so any finite score counts as an
+    # improvement.
+    assert delta["best_score"] == pytest.approx(0.5)
+
+
+def test_boolean_baseline_score_omits_delta_vs_baseline(tmp_path) -> None:
+    workspace = WorkspaceManager(str(tmp_path))
+    _seed_problem_definition(workspace, "accuracy")
+    _seed_results(workspace, "experiments/exp_0", cv_score=0.5, metric="accuracy")
+    state = _build_state(tmp_path, baseline_score=True)
+
+    ScoreEvaluatorNode().run(state)
+
+    artifact = _read_artifact(tmp_path, iteration=0)
+    assert artifact["baseline_comparison_made"] is False
+    assert artifact["delta_vs_baseline"] is None
+
+
+# -- non-finite subtraction results (security finding: individually-finite
+# operands whose subtraction overflows to +-inf) --
+
+
+def test_score_delta_overflow_degrades_to_zero_not_infinite(tmp_path) -> None:
+    workspace = WorkspaceManager(str(tmp_path))
+    _seed_problem_definition(workspace, "accuracy")
+    _seed_results(workspace, "experiments/exp_0", cv_score=1.5e308)
+    # Opposite sign, both individually finite; the subtraction overflows.
+    state = _build_state(tmp_path, best_score=-1.5e308)
+
+    delta = ScoreEvaluatorNode().run(state)
+
+    assert delta["score_delta"] == 0.0
+    raw_text = (tmp_path / "reports" / "score_evaluation_0.json").read_text(encoding="utf-8")
+    assert "Infinity" not in raw_text
+
+
+def test_delta_vs_baseline_overflow_degrades_to_none_not_infinite(tmp_path) -> None:
+    workspace = WorkspaceManager(str(tmp_path))
+    _seed_problem_definition(workspace, "accuracy")
+    _seed_results(workspace, "experiments/exp_0", cv_score=1.5e308, metric="accuracy")
+    state = _build_state(tmp_path, baseline_score=-1.5e308)
+
+    ScoreEvaluatorNode().run(state)
+
+    artifact = _read_artifact(tmp_path, iteration=0)
+    assert artifact["delta_vs_baseline"] is None
+    assert artifact["baseline_comparison_made"] is False
+    assert "overflowed" in artifact["baseline_comparison_reason"]
+    raw_text = (tmp_path / "reports" / "score_evaluation_0.json").read_text(encoding="utf-8")
+    assert "Infinity" not in raw_text
+
+
+# -- experiment-dir / output-iteration divergence (adversarial finding: an
+# `experiments` entry's own `iteration` key and the directory actually read
+# can name two different experiments) --
+
+
+def test_output_filename_follows_resolved_directory_not_stale_entry_iteration(tmp_path) -> None:
+    workspace = WorkspaceManager(str(tmp_path))
+    _seed_problem_definition(workspace, "accuracy")
+    _seed_results(workspace, "experiments/exp_7", cv_score=0.9)
+    # The entry's own path is usable and points at exp_7; current_iteration
+    # disagrees. The report must be filed under exp_7 -- the directory
+    # actually read -- not exp_9.
+    state = _build_state(
+        tmp_path,
+        current_iteration=9,
+        experiments=[{"path": "experiments/exp_7"}],
+    )
+
+    ScoreEvaluatorNode().run(state)
+
+    assert (tmp_path / "reports" / "score_evaluation_7.json").is_file()
+    assert not (tmp_path / "reports" / "score_evaluation_9.json").is_file()
+
+
+def test_entry_iteration_key_with_unusable_path_flags_resolution_warning(tmp_path) -> None:
+    """Reproduces the adversarial finding exactly: an `experiments` entry
+    with a valid `iteration` key AND an unusable (here: absent) `path`,
+    while `current_iteration` differs from that entry's `iteration`. Both
+    existing filename tests vary only one of those two axes -- this test
+    exercises both together, the untested combination adversarial flagged.
+
+    Directory resolution itself does not change: the stale well-known
+    fallback (`exp_0`) is still what gets read, `exp_3`'s genuinely
+    different result is never consulted. What changes is that this is no
+    longer silent: the artifact is filed under the number that matches what
+    was actually read (`0`), and carries an explicit warning naming both the
+    entry's claimed iteration (`3`) and the fallback actually used (`0`).
+    """
+    workspace = WorkspaceManager(str(tmp_path))
+    _seed_problem_definition(workspace, "accuracy")
+    _seed_results(workspace, "experiments/exp_0", cv_score=0.10)
+    _seed_results(workspace, "experiments/exp_3", cv_score=0.95)
+    state = _build_state(
+        tmp_path,
+        current_iteration=0,
+        experiments=[{"iteration": 3, "cv_score": 0.95}],  # no "path" key
+    )
+
+    delta = ScoreEvaluatorNode().run(state)
+
+    # Reads the stale fallback, exactly as before this fix -- the directory
+    # resolution rule is untouched.
+    assert delta["last_score"] == pytest.approx(0.10)
+    assert not (tmp_path / "reports" / "score_evaluation_3.json").is_file()
+
+    artifact = _read_artifact(tmp_path, iteration=0)
+    assert artifact["experiment_dir"] == "experiments/exp_0"
+    warning = artifact["experiment_resolution_warning"]
+    assert warning is not None
+    assert "3" in warning
+    assert "0" in warning
+
+
+def test_no_resolution_warning_when_entry_iteration_matches_fallback_directory(tmp_path) -> None:
+    workspace = WorkspaceManager(str(tmp_path))
+    _seed_problem_definition(workspace, "accuracy")
+    _seed_results(workspace, "experiments/exp_0", cv_score=0.5)
+    state = _build_state(
+        tmp_path,
+        current_iteration=0,
+        experiments=[{"iteration": 0, "cv_score": 0.5}],  # no "path" key, but agrees with M
+    )
+
+    ScoreEvaluatorNode().run(state)
+
+    artifact = _read_artifact(tmp_path, iteration=0)
+    assert artifact["experiment_resolution_warning"] is None
 
 
 # -- no-LLM-import invariant: AST-based static check --

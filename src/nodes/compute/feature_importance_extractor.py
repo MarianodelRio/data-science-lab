@@ -42,7 +42,28 @@ skips safely with a clear reason rather than attempting an extraction that
 would silently produce a meaningless ranking.
 
 Experiment-directory resolution and degrade-safe JSON reading are delegated to
-`src.nodes.compute._evaluation_common` — see that module's docstring.
+`src.nodes.compute._evaluation_common` — see that module's docstring. The
+artifact's `iteration`/filename number and `experiment_resolution_warning`
+field come from that module's `resolve_output_iteration` — see
+`score_evaluator`'s module docstring's "Output iteration and the
+experiment-resolution warning" section for why: the same divergence between a
+stale `experiments` entry and the directory actually read applies here too.
+
+## Bounded output
+
+`results.json`'s `feature_importance` payload is LLM/generated-script output,
+not a trusted internal artifact — an unbounded entry count would otherwise
+flow uncapped through the filtered dict, the ranked list, and the serialized
+report (several full-size copies of attacker-controllable size). `_extract_importances`
+caps the survivors at `_MAX_RANKED_FEATURES` (largest by absolute magnitude);
+when that truncates, the artifact's `features_truncated`/`original_feature_count`
+fields record it explicitly, in-band with the report — the same
+"never silently drop data without a marker" precedent `code_critic._truncate`
+set for its own 20 000-character artifact caps, adapted to a list rather than
+a string. Separately, `_rank_importances`'s own `total = sum(...)` can
+overflow to a non-finite value on just two extreme-magnitude entries; that is
+guarded and recorded as `importance_total_overflowed` (see that function's
+docstring) — independent of, and possible even without, truncation.
 """
 
 from __future__ import annotations
@@ -70,6 +91,18 @@ _TREE_MODEL_FAMILIES = frozenset(
 
 _OUTPUT_PATTERN = "reports/feature_importance_{iteration}.json"
 
+# Caps the number of ranked entries written to the artifact, keeping the
+# `_MAX_RANKED_FEATURES` largest by absolute importance. `results.json` is
+# LLM/generated-script output — a malformed or adversarial
+# `feature_importance` payload with an unbounded number of keys would
+# otherwise flow, uncapped, through several full-size copies (the filtered
+# dict, the ranked list, the serialized JSON report) with no size check
+# anywhere in between. A few thousand is generous headroom for real tabular
+# feature engineering — well past what one-hot/target encoding of a
+# realistically wide table produces — so hitting this cap is itself a signal
+# something is off, not an expected outcome for genuine ML output.
+_MAX_RANKED_FEATURES = 3000
+
 
 def _normalize_model_family(value: Any) -> str | None:
     """`value.strip().lower()` for a non-empty `str`, else `None`.
@@ -86,9 +119,13 @@ def _is_feature_name_list(value: Any) -> bool:
     return isinstance(value, list) and all(isinstance(item, str) for item in value)
 
 
-def _extract_importances(payload: Any, feature_names: Any) -> dict[str, float] | None:
+def _extract_importances(payload: Any, feature_names: Any) -> tuple[dict[str, float] | None, int]:
     """Validate and coerce a `results.json` `feature_importance` payload into
-    `{feature: abs(importance)}`, or `None` if nothing usable survives.
+    `{feature: abs(importance)}`, returning `(extracted, original_count)`.
+    `extracted` is `None` if nothing usable survives; `original_count` is the
+    number of entries that passed per-key/value validation, *before* the
+    `_MAX_RANKED_FEATURES` cap below is applied — the caller uses it to detect
+    and report truncation.
 
     `payload` must be a non-empty `dict`. Per `(key, value)` pair: a
     non-`str`/empty key is skipped; if `feature_names` is a valid `list[str]`,
@@ -98,9 +135,13 @@ def _extract_importances(payload: Any, feature_names: Any) -> dict[str, float] |
     `abs(float(value))` — ranking is by magnitude, not by sign (a feature
     that pushes the prediction down is exactly as "important" as one that
     pushes it up).
+
+    When more than `_MAX_RANKED_FEATURES` entries survive validation, only
+    the largest-magnitude `_MAX_RANKED_FEATURES` are kept (see that
+    constant's docstring for why).
     """
     if not isinstance(payload, dict) or not payload:
-        return None
+        return None, 0
 
     allowed_features = feature_names if _is_feature_name_list(feature_names) else None
 
@@ -117,17 +158,36 @@ def _extract_importances(payload: Any, feature_names: Any) -> dict[str, float] |
             continue
         extracted[key] = abs(numeric)
 
-    return extracted or None
+    original_count = len(extracted)
+    if original_count > _MAX_RANKED_FEATURES:
+        largest = sorted(extracted.items(), key=lambda item: item[1], reverse=True)
+        extracted = dict(largest[:_MAX_RANKED_FEATURES])
+
+    return (extracted or None), original_count
 
 
-def _rank_importances(extracted: dict[str, float]) -> list[dict[str, Any]]:
+def _rank_importances(extracted: dict[str, float]) -> tuple[list[dict[str, Any]], bool]:
     """Sort descending by importance and attach a 1-indexed `rank` plus a
-    `normalized_importance` (share of the total; `0.0` for every entry when
-    the total is `0.0`, avoiding a division by zero when every surviving
-    importance happens to be zero)."""
+    `normalized_importance` (share of the total). Returns `(ranked,
+    overflowed)`.
+
+    `total = sum(extracted.values())` can itself overflow to a non-finite
+    value — verified: only *two* entries near `sys.float_info.max` are
+    needed, not thousands. Guarding it explicitly (rather than relying on
+    `float / inf == 0.0` happening to produce the same degraded output) keeps
+    the degradation a documented, deliberate choice instead of an accident of
+    IEEE-754 division: every `normalized_importance` becomes `0.0` — the same
+    fallback already used when `total` is legitimately `0.0` — and
+    `overflowed=True` tells the caller these shares are not a real
+    proportion (individual `importance` magnitudes and the rank order stay
+    correct either way).
+    """
     total = sum(extracted.values())
+    overflowed = not math.isfinite(total)
+    if overflowed:
+        total = 0.0
     ranked_items = sorted(extracted.items(), key=lambda item: item[1], reverse=True)
-    return [
+    ranked = [
         {
             "feature": feature,
             "importance": importance,
@@ -136,6 +196,7 @@ def _rank_importances(extracted: dict[str, float]) -> list[dict[str, Any]]:
         }
         for rank, (feature, importance) in enumerate(ranked_items, start=1)
     ]
+    return ranked, overflowed
 
 
 class FeatureImportanceExtractorNode(ComputeNode):
@@ -148,7 +209,9 @@ class FeatureImportanceExtractorNode(ComputeNode):
             f"{experiment_dir}/{_evaluation_common.DESIGN_FILENAME}", workspace
         )
         model_family = _normalize_model_family(design.get("model_family"))
-        iteration = _evaluation_common.resolve_iteration(dict(state))
+        iteration, experiment_resolution_warning = _evaluation_common.resolve_output_iteration(
+            dict(state), workspace, experiment_dir
+        )
 
         if model_family not in _TREE_MODEL_FAMILIES:
             reason = (
@@ -156,10 +219,17 @@ class FeatureImportanceExtractorNode(ComputeNode):
                 if model_family is None
                 else f"model_family {model_family!r} is not in the tree allow-list"
             )
-            self._write_skip(workspace, iteration, experiment_dir, model_family, reason)
+            self._write_skip(
+                workspace,
+                iteration,
+                experiment_dir,
+                experiment_resolution_warning,
+                model_family,
+                reason,
+            )
             return {}
 
-        ranked_source = _extract_importances(
+        ranked_source, original_feature_count = _extract_importances(
             results.get("feature_importance"), results.get("feature_names")
         )
         if ranked_source is None:
@@ -167,18 +237,24 @@ class FeatureImportanceExtractorNode(ComputeNode):
                 workspace,
                 iteration,
                 experiment_dir,
+                experiment_resolution_warning,
                 model_family,
                 "'feature_importance' payload in results.json is absent or malformed",
             )
             return {}
 
+        features, importance_total_overflowed = _rank_importances(ranked_source)
         artifact = {
             "skipped": False,
             "reason": None,
             "iteration": iteration,
             "experiment_dir": experiment_dir,
+            "experiment_resolution_warning": experiment_resolution_warning,
             "model_family": model_family,
-            "features": _rank_importances(ranked_source),
+            "features": features,
+            "importance_total_overflowed": importance_total_overflowed,
+            "features_truncated": len(features) < original_feature_count,
+            "original_feature_count": original_feature_count,
         }
         workspace.write_json(_OUTPUT_PATTERN.format(iteration=iteration), artifact)
         return {}
@@ -188,6 +264,7 @@ class FeatureImportanceExtractorNode(ComputeNode):
         workspace: WorkspaceManager,
         iteration: int,
         experiment_dir: str,
+        experiment_resolution_warning: str | None,
         model_family: str | None,
         reason: str,
     ) -> None:
@@ -196,7 +273,11 @@ class FeatureImportanceExtractorNode(ComputeNode):
             "reason": reason,
             "iteration": iteration,
             "experiment_dir": experiment_dir,
+            "experiment_resolution_warning": experiment_resolution_warning,
             "model_family": model_family,
             "features": [],
+            "importance_total_overflowed": False,
+            "features_truncated": False,
+            "original_feature_count": 0,
         }
         workspace.write_json(_OUTPUT_PATTERN.format(iteration=iteration), artifact)

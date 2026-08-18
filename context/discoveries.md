@@ -834,6 +834,30 @@ just named as sources, in the same write. This is not fixable inside T-028's `fo
 (`src/nodes/llm/`, `config/agents/`, `config/prompts/`) — it requires the same `current_iteration`
 writer already flagged for T-029/T-031/T-032, which must land before an `ensemble_specialist`
 design and its base experiments' own designs can coexist on disk. Flagged, not fixed here.
+
+**Addendum (2026-08-18, after the T-028 adversarial review fix): the `current_iteration` writer is
+now a hard prerequisite for `ensemble_specialist` running at all, not merely a data-loss hazard.**
+The review fix added a duplicate-`oof_path` invariant to `_validate_base_experiments`
+(`src/nodes/llm/_experiment_design.py`) — two base experiments resolving to the same OOF file is
+rejected outright, because reading one experiment's predictions twice under two labels while
+silently dropping another is not a representable ensemble. But while `current_iteration` stays
+frozen, *every* experiment `coder` (T-029) writes lands in the same `experiments/exp_0/` directory,
+so two fully schema-compliant entries (both carrying a real `id`, `path` and `iteration`, exactly as
+`src/state.py` documents) resolve to the same `experiments/exp_0/oof_predictions.parquet` and the
+new check raises. Verified by direct execution against the landed code:
+
+```
+experiments = [{"id": "exp-0", "path": "experiments/exp_0", "iteration": 0, ...},
+               {"id": "exp-1", "path": "experiments/exp_0", "iteration": 0, ...}]
+-> ValueError: entries 'exp-0' and 'exp-1' both resolve to the same 'oof_path'
+   'experiments/exp_0/oof_predictions.parquet'
+```
+
+This is the intended behavior — these nodes have no retry wrapper, so failing loudly and
+attributably beats writing a design that double-counts one model and drops another — but whoever
+lands the `current_iteration` writer must know that until they do, `ensemble_specialist` cannot
+complete a run even once `state["experiments"]` starts being populated. It is not reachable today
+(nothing writes `state["experiments"]` yet), so this changes nothing that currently runs.
 Status: open
 
 ## NOTE — 2026-08-17 [pipeline-agent (T-028) → pipeline-agent (T-029 coder)]

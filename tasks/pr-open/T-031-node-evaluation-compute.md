@@ -27,3 +27,65 @@ pr: "https://github.com/MarianodelRio/data-science-lab/pull/33"
 - [ ] no LLM import in either module
 - [ ] unit tests cover improve / no-improve / neural-skip
 - [ ] `docs/pipeline.md` invariant (best only-improves) noted
+
+## Completed
+
+Implemented per the human-approved plan (`T-031-plan.md`), which supersedes two bullets above: (1)
+`score_delta` is `0.0`, not `+inf`, on the first evaluation (the `-inf` best_score sentinel would
+otherwise make the delta non-finite); (2) `feature_importance_extractor` **extracts** a pre-computed
+`{feature: value}` payload from `results.json` — it never computes SHAP itself, so "no file for a
+neural model" generalizes to "no ranked-features artifact for any model family outside a curated
+tree-ensemble allow-list" (an allow-list, not a neural-specific deny-list).
+
+**Files added:**
+- `src/nodes/compute/_evaluation_common.py` — private shared module (no class named `_evaluation_common`,
+  so `resolve_node` never mistakes it for a node). Experiment-directory resolution
+  (`experiment_dir_from_state`/`candidate_experiment_dirs`/`read_experiment_results`) is a verbatim
+  port of `code_critic`'s own private helpers (`code_critic.py:99-158`) — ported rather than imported
+  because that module lives in `src/nodes/llm/`, which pulls in `langchain_core`. Also holds
+  `relative_to_workspace`, `read_json_dict` (degrade-to-`{}`), and `resolve_iteration`.
+- `src/nodes/compute/score_evaluator.py` — `ScoreEvaluatorNode`. Sole writer anywhere in `src/` of
+  `last_score`, `score_delta`, `best_score`, `best_experiment_path`, `iterations_without_improvement`.
+  Normalizes minimize-oriented metrics (curated set, separator-normalized name matching) to
+  higher-is-better before any comparison; strict `>` for improvement (a tie never updates the best);
+  `iterations_without_improvement` increments even when no valid score is obtainable (see the liveness
+  decision below); writes `reports/score_evaluation_{iteration}.json` unconditionally, never emitting
+  `inf`/`nan` (downgraded to JSON `null`). `delta_vs_baseline` is informational only, gated on
+  `results.json`'s optional `metric` field normalizing into `{accuracy, r2, rsquared, score}`.
+- `src/nodes/compute/feature_importance_extractor.py` — `FeatureImportanceExtractorNode`. Always
+  returns `{}` (no `LabState` field exists for this artifact). Gated by an explicit tree-ensemble
+  `model_family` allow-list read from `design.json`; extracts and ranks `results.json`'s
+  `feature_importance`/`feature_names` payload by absolute magnitude into
+  `reports/feature_importance_{iteration}.json`. **No `shap` import anywhere** in the module.
+
+**Tests added** (88 new unit tests + 1 integration block, all passing):
+- `tests/unit/nodes/compute/test_evaluation_common.py` (25 tests)
+- `tests/unit/nodes/compute/test_score_evaluator.py` (37 tests, including the mutation-killer set for
+  tie handling, the finite-vs-`-inf` `score_delta` branch, the minimize/maximize sign flip, the
+  `iterations_without_improvement` `+=`/reset/liveness paths, and the never-write-`inf`/`nan` guard)
+- `tests/unit/nodes/compute/test_feature_importance_extractor.py` (26 tests)
+- `tests/integration/phases/test_phase_subgraphs_smoke.py` — added a `phase6_evaluation` assertion
+  block (bare-state run: `evaluated is False`, `best_score` untouched at `-inf`,
+  `iterations_without_improvement == 1`)
+
+**Docs:** `docs/pipeline.md` — new `### Evaluation (Phase 6)` subsection, two `## Node classification`
+rows, the first real `## Invariants` entry (CLAUDE.md invariant #3), and the § State note updated to
+say polarity normalization is implemented rather than merely assigned.
+
+**Decisions logged in `context/decisions.md`** (2026-08-17, T-031): the shared-module rationale, the
+score-direction normalization design, the `delta_vs_baseline` comparability contract, the liveness
+override (**`iterations_without_improvement` increments even when no valid score is obtainable** —
+overrides what the original plan proposed, because `src/graph/supervisor.py:31-33` makes this counter
+the *only* exit from the Phase 6 → Phase 4 loop and not incrementing on "nothing to evaluate" would
+loop the pipeline forever on a permanently-broken `results.json`), the deliberate non-increment of
+`current_iteration`, and why `shap` is never imported.
+
+**Discoveries logged in `context/discoveries.md`** (2026-08-17): an OPEN entry to `coder` (T-029)
+pinning the `results.json` contract this task assumes; a NOTE to T-032 confirming `current_iteration`
+is not incremented here; a RESOLVED entry closing the 2026-08-04 `infra-agent (T-002)` polarity
+discovery.
+
+**Verification:** `pytest --cov=src --cov-fail-under=70` → 1297 passed, 13 pre-existing failures in
+`tests/tools/test_rag.py` (unrelated to this task's folders, confirmed present on `main` before any
+change here), global coverage 96.09%. `score_evaluator.py` alone: 100% coverage (target ≥85%).
+`ruff check .` and `ruff format --check .` both clean. `mypy src/`: no issues in 68 source files.

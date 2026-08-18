@@ -915,3 +915,30 @@ is ever compared against `best_score` or written to `last_score`/`best_score` an
 once, at the single write site, rather than add one (see `context/decisions.md`'s matching 2026-08-17
 entry for the full reasoning).
 Status: resolved
+
+## OPEN — 2026-08-17 [pipeline-agent (T-031) → whoever owns the `LabState` polarity question (protected
+contract, requires human approval)]
+Adversarial review of T-031 (repro3) found a real gap in the resolution the entry directly above
+records as closed: `best_score` is persisted **already normalized** (sign-flipped for minimize
+metrics), with no record anywhere in `LabState` of *which direction produced it*. `score_evaluator`
+re-derives direction fresh every call from `problem_definition.json`'s `success_metric`, defaulting to
+"maximize" when that file is unset or unreadable (its own degrade-safe convention — necessary so a
+missing upstream artifact never crashes the node). Concretely: iteration 0 runs with a readable
+`problem_definition.json` declaring `"success_metric": "rmse"`; the actual RMSE of `2.0` (excellent)
+normalizes to `best_score = -2.0`. If `problem_definition.json` becomes unreadable on a later
+iteration (moved, corrupted, `problem_definition_path` cleared), direction silently defaults to
+"maximize" for that call, and a raw RMSE of `50.0` (far worse) is compared as `50.0 > -2.0` — a false
+improvement. `best_score` flips to `50.0` and `best_experiment_path` flips to the objectively worse
+experiment, with no field anywhere recording that the comparison spanned two different assumed
+directions.
+The real fix is a polarity field on `LabState` (e.g. persisting `direction` alongside `best_score`, so
+a later call can detect a mismatch instead of silently re-assuming "maximize") — `LabState` is a
+protected contract per CLAUDE.md and out of T-031's scope to touch without explicit human approval.
+**Not mitigated in code**: a mitigation that re-reads a previous iteration's `score_evaluation_*.json`
+report to recover the prior direction was considered and deliberately rejected — it would add
+cross-iteration file coupling to a compute node for a case the contract should settle properly, not a
+targeted fix. What T-031 *does* provide: every `reports/score_evaluation_{iteration}.json` records
+`success_metric`, `success_metric_raw`, and `direction` for that call, so a flip like the one above is
+at least **forensically detectable** after the fact by diffing consecutive reports, even though nothing
+currently detects or blocks it automatically.
+Status: open

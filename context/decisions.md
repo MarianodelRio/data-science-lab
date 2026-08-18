@@ -1829,3 +1829,69 @@ written artifacts), and doing so here would collapse `-inf` to `None`, losing th
 specifically" distinction both the `score_delta` finite/`-inf` branch and the artifact's
 `best_score_before` field need. `best_score` is read raw instead, with its own explicit
 `math.isfinite` check.
+
+## 2026-08-18 — T-031 review-response [pipeline-agent]
+
+Six fixes applied in response to adversarial/security review of the evaluation nodes. Recording the
+non-obvious choices, not the mechanical ones.
+
+**Output iteration derived from the resolved directory, not from `resolve_iteration` directly.**
+Adversarial review reproduced a real bug: `resolve_iteration` (naming the output file) and directory
+resolution (`candidate_experiment_dirs`/`read_experiment_results`, naming which file gets *read*) are
+two independent lookups over `state["experiments"][-1]`, and they can disagree — an entry with a valid
+`iteration` key but an unusable/absent `path` makes the node read the well-known fallback directory
+while still filing the report under the entry's claimed number, silently mislabeling which experiment
+the artifact actually describes. Fix: `_evaluation_common.resolve_output_iteration` parses the
+*resolved* `experiment_dir`'s own trailing `exp_<N>` for the output number, falling back to
+`resolve_iteration` only when the directory doesn't match that shape. `resolve_iteration` itself and
+`candidate_experiment_dirs`/`experiment_dir_from_state` (directory-resolution precedence, the verbatim
+`code_critic` match) are unchanged — only refactored to expose `entry_iteration` as a reusable
+sub-check, with identical external behavior confirmed by keeping every pre-existing test for both
+functions green unmodified (bar the one filename test that exercised the exact bug being fixed, which
+was updated to assert the corrected number).
+
+**`experiment_resolution_warning` names the divergence rather than hiding it.** Considered and
+rejected: silently preferring the fallback with no record (status quo, the bug); silently preferring
+the entry's claimed number with no record (files a plausible-looking name over unverified/absent data —
+worse, not better); raising (Phase 6 must stay invokable on incomplete upstream state, same rationale
+as every other degrade-not-raise path in this module). Landed on: keep reading the same directory
+degrade-safety already reads, but say so, in-band, in the artifact — added to both nodes' artifacts
+(not only `score_evaluator`'s, per review's literal ask) since both share the identical divergence risk
+and the field is nearly free to add once `resolve_output_iteration` exists.
+
+**Subtraction-result overflow guards degrade to different sentinels on purpose.** `score_delta` degrades
+to `0.0` (matches the existing first-evaluation-against-`-inf` convention — a `score_delta` the caller
+cannot trust is not meaningfully different from "no prior baseline to diff against"). `delta_vs_baseline`
+degrades to `None` instead of `0.0` — `0.0` there would misread as "tied with baseline" rather than
+"could not be computed," and `None` already means "not comparable" everywhere else that field is unset.
+Consequently `baseline_comparison_made` was redefined from "eligible for comparison" to "a finite delta
+was actually produced" — eligibility can be true while the subtraction still overflows, and reporting
+`baseline_comparison_made: true` alongside `delta_vs_baseline: null` would itself be a small
+contradiction in the artifact.
+
+**`_rank_importances`' `total` overflow guard is explicit, not incidental.** Before this fix, `total =
+inf` already produced `0.0` for every `normalized_importance` — Python's `float / inf == 0.0` for any
+finite numerator — so the *output value* did not change. The fix adds `importance_total_overflowed` as
+an explicit flag rather than relying on that IEEE-754 coincidence remaining silently correct forever,
+and gives a downstream LLM reading the report a way to know the shares are not a real proportion (individual
+magnitudes/rank order stay meaningful; only the normalized shares are degraded).
+
+**`_MAX_RANKED_FEATURES = 3000`.** Chosen as generous headroom past what real one-hot/target-encoded
+tabular feature engineering produces, so hitting the cap is itself a signal of malformed/adversarial
+input rather than an expected outcome for genuine `coder` output. Not derived from any existing
+constant — a new, task-invented bound, same category as the `results.json` contract fields already
+pinned in `context/discoveries.md` for T-029 to conform to or renegotiate.
+
+**`candidate_experiment_dirs` now routes `current_iteration` through `_coerce_iteration`** (was reading
+it raw). Not currently reachable — `current_iteration` is pipeline-internal, not LLM-authored, and
+`WorkspaceManager._resolve` would reject a `..`-bearing formatted string regardless — but a NIT-level
+consistency fix in a security-relevant helper, made because the inconsistency was flagged and costs
+nothing to close.
+
+**Polarity-persistence gap (repro3) intentionally left unfixed.** `best_score` is stored normalized with
+no record of the `direction` that produced it, so a `problem_definition.json` that becomes unreadable
+between iterations can silently flip which experiment counts as "best." The real fix is a polarity
+field on `LabState`, a protected contract requiring explicit human approval — logged as an OPEN entry in
+`context/discoveries.md` (2026-08-17) rather than half-mitigated by reading a previous iteration's own
+report cross-iteration, which review explicitly asked not to do (adds file coupling for a case the
+contract should settle properly).

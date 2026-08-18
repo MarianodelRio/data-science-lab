@@ -401,10 +401,11 @@ agent, step 3).
   `resolve_node(chosen_name)` (`src/graph/node_resolver.py`) and returns that specialist's own
   delta, defensively coerced to `{}` if it isn't a `dict` — the same single-call/merge shape as
   `analysis_critic`'s own `resolve_node(target_node)(...)` retry-target call, minus the
-  retry loop. `classical_ml_specialist` (T-024), `deep_learning_specialist` (T-025),
-  `nlp_specialist` (T-026) and `timeseries_specialist` (T-027) have landed and resolve to their
-  real nodes; only `ensemble_specialist` (T-028) still falls back to `NoOpNode`, which is
-  `resolve_node`'s documented "not implemented yet" behavior, not a bug.
+  retry loop. All five specialists — `classical_ml_specialist` (T-024),
+  `deep_learning_specialist` (T-025), `nlp_specialist` (T-026), `timeseries_specialist` (T-027)
+  and `ensemble_specialist` (T-028) — have now landed and resolve to their real nodes; the
+  `NoOpNode` fallback `resolve_node` documents for "not implemented yet" is no longer reachable
+  via any name `specialist_selector` can select.
 
 - **`classical_ml_specialist`** (`src/nodes/llm/classical_ml_specialist.py`, `LLMNode` subclass,
   `model_role: reasoning`) — `specialist_selector`'s *default* route, for tabular problems.
@@ -525,6 +526,62 @@ agent, step 3).
   it there is a **pipeline convention stated in the prompt**, not a schema rejection, so that `coder`
   (T-029) has one encoding to parse rather than two; the string convention itself is unvalidated
   (see `context/discoveries.md`).
+
+- **`ensemble_specialist`** (`src/nodes/llm/ensemble_specialist.py`, `LLMNode` subclass,
+  `model_role: reasoning`, T-028) — `specialist_selector`'s route once `>= 2` prior experiments
+  exist and `solution_plan.json`'s `ensembling_strategy` doesn't say "no ensembling"
+  (`_should_ensemble`, checked independently of the 4-branch keyword precedence above). Like its
+  four siblings it injects `## Solution plan`, `## Frozen CV folds` and `## Feature spec
+  reference` as part of the same extra `HumanMessage`, using the shared `read_solution_plan`/
+  `read_fold_summary`/`resolve_feature_spec_ref` helpers and the same instance-stash mechanism for
+  the feature-spec reference — but it also injects a fourth section, `## Base experiments
+  (out-of-fold predictions)`, that none of the other four specialists have.
+
+  **`base_experiments` is node-injected, never read from the LLM response** — the same convention
+  `feature_spec_ref`/`cv_strategy_ref` already use. `_build_base_experiments` walks **every**
+  entry of `state["experiments"]`, in order (never filtered, reordered, or influenced by the
+  LLM), and resolves for each one:
+  - `experiment_id` — the entry's own `id` when it's a non-empty string, else `experiment_{i}`.
+  - `oof_path` — the entry's own experiment directory's `results.json`, using its `oof_path`
+    field when present and it re-relativizes cleanly (rejecting `..`/absolute-outside-workspace),
+    else falling back to the well-known `oof_predictions.parquet` file in that same directory.
+    Binding on whoever writes `results.json` (`coder`, T-029) — see `context/discoveries.md`.
+
+  The experiment directory itself is resolved per entry (`_experiment_dir_from_entry`) by the same
+  normalization `code_critic._experiment_dir_from_state` applies to `state["experiments"][-1]`
+  — relativize, a value with a suffix is treated as a file pointer and its parent taken, reject
+  `..` — duplicated locally rather than imported, because sibling LLM node modules never import
+  from each other (`context/decisions.md` T-022/T-024/T-025). It falls back to
+  `experiments/exp_{iteration}` (the entry's own recorded `iteration` when usable, else its list
+  position) whenever the entry's `path` is missing, absolute-outside-workspace, or contains `..`.
+
+  This node never self-gates on ensembling eligibility either: `specialist_selector` is the sole
+  gate, and by the time this node runs the `>= 2` decision has already been made. The shared
+  schema itself only requires a **non-empty** `base_experiments` (mirroring `search_space`'s "must
+  not be empty" floor) — an ensemble over zero sources is unrepresentable, but a single-source one
+  is degenerate-yet-representable, and re-deriving the `>= 2` eligibility rule here would duplicate
+  `specialist_selector._should_ensemble`'s routing decision.
+
+  It picks one `model_family` out of `stacking`, `blending` and `weighted_average` — its own
+  three-family table, again passed to `normalize_model_family` as a parameter. Deliberately no bare
+  `"weighted"`, `"weight"`, `"stack"` or `"stacked"` alias — only qualified multi-word forms — the
+  same "bare generic modifier not aliased" technique `timeseries_specialist` uses for a bare
+  `"linear"`. This defuses "weighted blend of stacked models" to `blending` alone, but it cannot
+  defuse "blended stacking": both "blended" and "stacking" are real canonical self-match aliases of
+  different families, so that phrase is structurally ambiguous by design and the prompt states the
+  rejection explicitly (`context/decisions.md`, cross-referencing the T-026 "no longest-match-wins"
+  discovery). A pure equal-weight average is unrepresentable — `search_space` must be non-empty —
+  so the prompt requires tuning per-source weights (or a temperature) for `weighted_average`, or the
+  meta-learner's hyperparameters for `stacking`/`blending`. Per-source weight parameter names use
+  the **positional index** in `## Base experiments` (`weight_0`, `weight_1`, ...), never the raw
+  `experiment_id`, which may not be a valid Python identifier.
+
+  **Runtime-unreachable today.** Nothing in `src/` writes `state["experiments"]` yet (`coder`, its
+  only producer, is T-029 and is blocked), so `specialist_selector` can never actually satisfy its
+  own `>= 2` check in a real run and this node is never dispatched to in practice — fully
+  implemented and tested against a directly-constructed `state`, the same scoping `code_critic`
+  (T-030) documents for its own well-known-path reads.
+
 - **`code_critic`** (`src/nodes/llm/code_critic.py`, `LLMNode` subclass, `model_role:
   implementation`, T-030) — the phase's **last** node, and its critic (`critic: {node: code_critic,
   targets: [coder], max_retries: 3}` in `config/phases/phase5_implementation.yaml`). Like
@@ -623,10 +680,10 @@ agent, step 3).
 #### The `design.json` contract (shared by all Phase 5 specialists)
 
 `src/nodes/llm/_experiment_design.py` is the single source of truth for the shape of
-`experiments/exp_{iteration}/design.json` — imported by `classical_ml_specialist` (T-024) and
-`nlp_specialist` (T-026), landed, and as they land, by `deep_learning_specialist` (T-025),
-`timeseries_specialist` (T-027) and `ensemble_specialist` (T-028), and read by `coder` (T-029).
-Like `_research_common.py`, it declares no class whose `name` equals its own module stem, so
+`experiments/exp_{iteration}/design.json` — imported by all five landed Phase 5 specialists
+(`classical_ml_specialist` T-024, `deep_learning_specialist` T-025, `nlp_specialist` T-026,
+`timeseries_specialist` T-027, `ensemble_specialist` T-028) and read by `coder` (T-029). Like
+`_research_common.py`, it declares no class whose `name` equals its own module stem, so
 `resolve_node` never mistakes it for a node module.
 
 `validate_experiment_design` is a **whitelist rebuild**: it returns a fresh dict with exactly these
@@ -673,6 +730,14 @@ integer for `int` parameters. `categorical` requires a non-empty `choices` list 
 no duplicates and no nested objects/lists. Unknown inner keys are dropped silently. Finally, a
 parameter name may not appear in both `search_space` and `fixed_params`.
 
+**`ensemble_specialist` alone extends the contract with a ninth key.** `ENSEMBLE_DESIGN_KEYS =
+DESIGN_KEYS + ("base_experiments",)`, and `validate_ensemble_design` is a thin wrapper around
+`validate_experiment_design` — it calls the eight-key validator unchanged and then appends a
+whitelist-rebuilt `base_experiments` (a non-empty list of `{"experiment_id", "oof_path"}`,
+node-injected from `state["experiments"]`, never read from the LLM response) as the ninth and
+last key. The other four specialists' eight-key `validate_experiment_design` path, and `coder`'s
+(T-029) reads of their `design.json` files, are entirely unaffected by this addition.
+
 ## Node classification
 
 > Skeleton — table of LLM nodes vs pure Python nodes vs tools, populated as each node lands.
@@ -690,6 +755,7 @@ parameter name may not appear in both `search_space` and `fixed_params`.
 | `deep_learning_specialist` | LLM (`LLMNode`) | 5 — Implementation | Landed (T-025) |
 | `nlp_specialist` | LLM (`LLMNode`) | 5 — Implementation | Landed (T-026) |
 | `timeseries_specialist` | LLM (`LLMNode`) | 5 — Implementation | Landed (T-027) |
+| `ensemble_specialist` | LLM (`LLMNode`) | 5 — Implementation | Landed (T-028) |
 | `code_critic` | LLM (`LLMNode`) | 5 — Implementation | Landed (T-030) |
 
 ### ComputeNode base class

@@ -1,8 +1,14 @@
 """Shared `design.json` contract for the Pipeline Phase 5 specialist nodes —
 `classical_ml_specialist` (T-024), `deep_learning_specialist` (T-025),
-`nlp_specialist` (T-026) and `timeseries_specialist` (T-027) landed; plus
-`ensemble_specialist` (T-028) as it lands, and their downstream consumer `coder`
-(T-029), which reads the file this module shapes.
+`nlp_specialist` (T-026), `timeseries_specialist` (T-027) and
+`ensemble_specialist` (T-028), all landed — and their downstream consumer
+`coder` (T-029), which reads the file this module shapes.
+
+`ensemble_specialist` alone extends the eight-key contract with a ninth key,
+`base_experiments`, via `ENSEMBLE_DESIGN_KEYS`/`validate_ensemble_design`: a
+thin wrapper around `validate_experiment_design` rather than a parameter
+widening it, so `DESIGN_KEYS` and the four other specialists' eight-key path
+stay byte-for-byte unchanged (see the T-028 entry in context/decisions.md).
 
 This module declares no class matching its own filename stem
 (`_experiment_design`), so `src/graph/node_resolver.py`'s `_find_node_class`
@@ -58,6 +64,13 @@ DESIGN_KEYS = (
     "feature_spec_ref",
     "cv_strategy_ref",
 )
+
+# `ensemble_specialist` (T-028) is the only specialist whose `design.json` names the
+# other experiments it combines. `base_experiments` is appended last, after the eight
+# `DESIGN_KEYS` — see `validate_ensemble_design`, which builds this contract as a thin
+# wrapper around `validate_experiment_design` rather than widening it with a parameter
+# the four other specialists would have to keep not passing.
+ENSEMBLE_DESIGN_KEYS = DESIGN_KEYS + ("base_experiments",)
 
 # The Optuna parameter kinds a `search_space` entry may declare.
 PARAM_TYPES = ("int", "float", "categorical")
@@ -582,6 +595,84 @@ def validate_experiment_design(
         "feature_spec_ref": feature_spec_ref,
         "cv_strategy_ref": CV_STRATEGY_REF,
     }
+
+
+def _validate_base_experiments(value: Any, specialist: str) -> list[dict[str, str]]:
+    """Whitelist-rebuild `ensemble_specialist`'s node-injected `base_experiments`.
+
+    This is an internal shape assertion on **pipeline-injected** data —
+    `ensemble_specialist._build_base_experiments` builds `value` from
+    `state["experiments"]` before this function ever runs, the LLM never
+    supplies it (see `validate_ensemble_design`) — not third-party input
+    validation. It still raises `ValueError` rather than asserting, because a
+    malformed `state["experiments"]` entry (e.g. a non-string `id`) must fail
+    loudly and attributably rather than write a `design.json` an ensemble
+    `coder` step cannot resolve back to its sources.
+
+    Requires a **non-empty** list (an ensemble over zero sources is
+    unrepresentable — the same floor `_validate_search_space` applies to an
+    empty search space), each entry an object with a non-empty string
+    `experiment_id` and `oof_path`. Extra keys on an entry are dropped by the
+    rebuild.
+    """
+    if not isinstance(value, list) or not value:
+        raise ValueError(
+            f"{specialist} internal error: 'base_experiments' must be a non-empty list, "
+            f"got {value!r}"
+        )
+    validated: list[dict[str, str]] = []
+    for index, entry in enumerate(value):
+        if not isinstance(entry, dict):
+            raise ValueError(
+                f"{specialist} internal error: 'base_experiments[{index}]' must be an object, "
+                f"got {entry!r}"
+            )
+        experiment_id = entry.get("experiment_id")
+        oof_path = entry.get("oof_path")
+        if not isinstance(experiment_id, str) or not experiment_id:
+            raise ValueError(
+                f"{specialist} internal error: 'base_experiments[{index}].experiment_id' must "
+                f"be a non-empty string, got {experiment_id!r}"
+            )
+        if not isinstance(oof_path, str) or not oof_path:
+            raise ValueError(
+                f"{specialist} internal error: 'base_experiments[{index}].oof_path' must be a "
+                f"non-empty string, got {oof_path!r}"
+            )
+        validated.append({"experiment_id": experiment_id, "oof_path": oof_path})
+    return validated
+
+
+def validate_ensemble_design(
+    data: dict[str, Any],
+    *,
+    specialist: str,
+    allowed_families: dict[str, tuple[str, ...]],
+    feature_spec_ref: str,
+    base_experiments: Any,
+) -> dict[str, Any]:
+    """`validate_experiment_design` plus a node-injected `base_experiments` key.
+
+    A thin wrapper, not a parameter widening `validate_experiment_design`
+    itself: calls it unchanged (so `DESIGN_KEYS` and the four other
+    specialists' eight-key contract stay untouched), then appends
+    `base_experiments` — rebuilt from `base_experiments`, never from `data` —
+    as the ninth key. Returns a fresh dict whose keys are exactly
+    `ENSEMBLE_DESIGN_KEYS`, in that order. Whatever the LLM sends under
+    `base_experiments` in its own response is silently discarded by the
+    rebuild `validate_experiment_design` already performs.
+
+    Raises `ValueError` naming `specialist` on any violation, including an
+    empty or malformed `base_experiments`.
+    """
+    validated = validate_experiment_design(
+        data,
+        specialist=specialist,
+        allowed_families=allowed_families,
+        feature_spec_ref=feature_spec_ref,
+    )
+    validated["base_experiments"] = _validate_base_experiments(base_experiments, specialist)
+    return validated
 
 
 def read_fold_summary(state: LabState, workspace: WorkspaceManager) -> str:

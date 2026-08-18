@@ -19,12 +19,14 @@ import pytest
 from src.nodes.llm._experiment_design import (
     CV_STRATEGY_REF,
     DESIGN_KEYS,
+    ENSEMBLE_DESIGN_KEYS,
     FORBIDDEN_CV_KEYS,
     extract_json_object,
     normalize_model_family,
     read_fold_summary,
     read_solution_plan,
     resolve_feature_spec_ref,
+    validate_ensemble_design,
     validate_experiment_design,
 )
 from src.nodes.llm.classical_ml_specialist import _MODEL_FAMILIES as FAMILIES
@@ -1009,3 +1011,124 @@ def test_resolve_feature_spec_ref_falls_back_on_non_string_path(tmp_path: Path) 
     state["feature_spec_path"] = 42  # type: ignore[typeddict-item]
 
     assert resolve_feature_spec_ref(state, workspace) == "design/iteration_0/feature_spec.json"
+
+
+# -- ENSEMBLE_DESIGN_KEYS / validate_ensemble_design (T-028, ensemble_specialist) --
+
+ENSEMBLE_SPECIALIST = "ensemble_specialist"
+_ENSEMBLE_FAMILIES = {"stacking": ("stacking",), "blending": ("blending",)}
+_VALID_BASE_EXPERIMENTS = [
+    {"experiment_id": "exp-0", "oof_path": "experiments/exp_0/oof_predictions.parquet"},
+    {"experiment_id": "exp-1", "oof_path": "experiments/exp_1/oof_predictions.parquet"},
+]
+
+
+def _validate_ensemble(
+    data: dict[str, Any],
+    *,
+    base_experiments: Any = _VALID_BASE_EXPERIMENTS,
+    feature_spec_ref: str = FEATURE_SPEC_REF,
+) -> dict[str, Any]:
+    return validate_ensemble_design(
+        data,
+        specialist=ENSEMBLE_SPECIALIST,
+        allowed_families=_ENSEMBLE_FAMILIES,
+        feature_spec_ref=feature_spec_ref,
+        base_experiments=base_experiments,
+    )
+
+
+def test_design_keys_length_and_order_regression_guard() -> None:
+    """Tripwire for the hard backward-compat constraint this task must not
+    violate: the four landed specialists still rely on exactly these eight
+    keys, in this order."""
+    assert len(DESIGN_KEYS) == 8
+    assert DESIGN_KEYS == (
+        "specialist",
+        "model_family",
+        "search_space",
+        "fixed_params",
+        "preprocessing",
+        "rationale",
+        "feature_spec_ref",
+        "cv_strategy_ref",
+    )
+
+
+def test_ensemble_design_keys_is_design_keys_plus_base_experiments() -> None:
+    assert ENSEMBLE_DESIGN_KEYS == DESIGN_KEYS + ("base_experiments",)
+
+
+def test_validate_ensemble_design_returns_exactly_ensemble_design_keys_in_order() -> None:
+    result = _validate_ensemble(_design(model_family="stacking"))
+
+    assert tuple(result) == ENSEMBLE_DESIGN_KEYS
+
+
+def test_validate_ensemble_design_appends_base_experiments_verbatim() -> None:
+    result = _validate_ensemble(_design(model_family="stacking"))
+
+    assert result["base_experiments"] == _VALID_BASE_EXPERIMENTS
+
+
+def test_validate_ensemble_design_ignores_llm_sent_base_experiments() -> None:
+    """`base_experiments` is node-injected — whatever the LLM sends under that
+    key in `data` must never reach the written design."""
+    result = _validate_ensemble(
+        _design(model_family="stacking", base_experiments=[{"experiment_id": "x", "oof_path": "y"}])
+    )
+
+    assert result["base_experiments"] == _VALID_BASE_EXPERIMENTS
+
+
+def test_validate_ensemble_design_extra_keys_still_dropped() -> None:
+    """The underlying `validate_experiment_design` whitelist rebuild still
+    applies unchanged — this wrapper only appends one key on top of it."""
+    result = _validate_ensemble(_design(model_family="stacking", n_trials=500))
+
+    assert "n_trials" not in result
+
+
+def test_empty_base_experiments_raises() -> None:
+    """An ensemble over zero sources is unrepresentable — mirrors
+    `search_space`'s "must not be empty" floor."""
+    with pytest.raises(ValueError, match="base_experiments"):
+        _validate_ensemble(_design(model_family="stacking"), base_experiments=[])
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        "not-a-list",
+        [{"experiment_id": "exp-0"}],  # missing oof_path
+        [{"oof_path": "x"}],  # missing experiment_id
+        [{"experiment_id": "", "oof_path": "x"}],  # empty experiment_id
+        [{"experiment_id": "exp-0", "oof_path": ""}],  # empty oof_path
+        [{"experiment_id": "exp-0", "oof_path": "x"}, "not-a-dict"],
+        [123],
+    ],
+)
+def test_malformed_base_experiments_raises(malformed: Any) -> None:
+    with pytest.raises(ValueError, match="base_experiments"):
+        _validate_ensemble(_design(model_family="stacking"), base_experiments=malformed)
+
+
+def test_base_experiments_entry_extra_keys_dropped() -> None:
+    result = _validate_ensemble(
+        _design(model_family="stacking"),
+        base_experiments=[{"experiment_id": "exp-0", "oof_path": "x", "cv_score": 0.9}],
+    )
+
+    assert result["base_experiments"] == [{"experiment_id": "exp-0", "oof_path": "x"}]
+
+
+def test_validate_ensemble_design_still_rejects_forbidden_cv_keys() -> None:
+    """The wrapped `validate_experiment_design` call still runs its own checks
+    first — this wrapper does not weaken them."""
+    with pytest.raises(ValueError, match="n_splits"):
+        _validate_ensemble(_design(model_family="stacking", n_splits=5))
+
+
+def test_validate_ensemble_design_still_rejects_empty_search_space() -> None:
+    with pytest.raises(ValueError, match="search_space"):
+        _validate_ensemble(_design(model_family="stacking", search_space={}))

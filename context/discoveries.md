@@ -818,3 +818,36 @@ responses do not reuse ids, and the window only feeds prompt context), but it is
 between node-local and graph-level state semantics, and the `base.py` critic hoist proposed above is
 the natural place to settle it.
 Status: open
+
+## OPEN — 2026-08-17 [pipeline-agent (T-028) → whoever lands the `current_iteration` writer (T-029 coder / T-031 score_evaluator / T-032 iteration loop)]
+**`ensemble_specialist`'s `design.json` write is a sharper instance of the already-OPEN
+"`current_iteration` never increments" hazard (2026-08-11 T-024 entry above).** That entry
+documents every `experiments/exp_{iteration}/design.json` write silently overwriting the previous
+iteration's design because nothing increments `state["current_iteration"]`. For the four other
+landed specialists that is a self-inflicted loss — an experiment overwrites *its own*
+predecessor's design record. For `ensemble_specialist` it is worse: its write also references,
+via `base_experiments`, the *other* experiments it combines — and today those base experiments
+necessarily share the very same `experiments/exp_{iteration}/design.json` path (per the "one
+specialist per iteration" invariant recorded at the 2026-08-12 T-024/T-025 entry above), so
+writing the ensemble's own design silently destroys the design record of the base experiment(s) it
+just named as sources, in the same write. This is not fixable inside T-028's `folders:`
+(`src/nodes/llm/`, `config/agents/`, `config/prompts/`) — it requires the same `current_iteration`
+writer already flagged for T-029/T-031/T-032, which must land before an `ensemble_specialist`
+design and its base experiments' own designs can coexist on disk. Flagged, not fixed here.
+Status: open
+
+## NOTE — 2026-08-17 [pipeline-agent (T-028) → pipeline-agent (T-029 coder)]
+**The OOF-path resolution convention `ensemble_specialist` relies on is binding on `coder`.** For
+each `state["experiments"]` entry, `_oof_path_for_experiment` reads that experiment's own
+`results.json` and uses its `oof_path` field (a workspace-relative path to the experiment's
+out-of-fold predictions) when present and it re-relativizes cleanly; otherwise it falls back to a
+well-known `oof_predictions.parquet` file in that same experiment's directory. Nothing in `src/`
+writes `results.json` yet — `coder` (T-029) is its only planned producer, and it is currently
+blocked — so this convention is speculative until T-029 lands. Whoever implements `coder` must
+either write `results.json["oof_path"]` pointing at the real out-of-fold predictions file it
+produces, or name that file `oof_predictions.parquet` inside the experiment's own directory (the
+fallback `ensemble_specialist` silently assumes when `oof_path` is absent or invalid) — otherwise
+every `ensemble_specialist` design references a predictions file that was never written, and
+`coder`'s own downstream consumption of that design (fitting a meta-learner on
+`base_experiments[i]["oof_path"]`) fails at read time rather than at design time.
+Status: open (binding convention for T-029)

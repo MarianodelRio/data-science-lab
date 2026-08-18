@@ -1616,3 +1616,78 @@ record file exists — the assertion fails loudly instead of quietly covering no
 no writer); hoisting the critic retry loop into `src/nodes/llm/base.py` (reserved for a separate
 refactor task — logged in `context/discoveries.md` instead); a `{phase}` placeholder in
 `output_file_pattern` (this node runs in exactly one phase, so `{iteration}` alone disambiguates).
+
+## 2026-08-17 — T-028 [pipeline-agent]
+**`ENSEMBLE_DESIGN_KEYS`/`validate_ensemble_design` is a thin wrapper, not a parameter widening
+`validate_experiment_design`.** `ensemble_specialist` is the only Phase 5 specialist whose
+`design.json` needs a ninth key (`base_experiments`), so the alternative — adding a keyword-only
+`base_experiments: Any | None = None` parameter to `validate_experiment_design` itself — was
+rejected: it would force the four landed siblings (`classical_ml_specialist`,
+`deep_learning_specialist`, `nlp_specialist`, `timeseries_specialist`) to keep *not* passing a
+parameter that means nothing to them, and it would put `DESIGN_KEYS`'s frozen
+`assert tuple(result) == DESIGN_KEYS` test one accidental default-value change away from breaking.
+Instead `ENSEMBLE_DESIGN_KEYS = DESIGN_KEYS + ("base_experiments",)` and
+`validate_ensemble_design(...)` calls `validate_experiment_design(...)` unchanged, then appends a
+whitelist-rebuilt `base_experiments` as the last key. `DESIGN_KEYS`,
+`validate_experiment_design`'s signature, and `tests/unit/nodes/llm/test_experiment_design.py`'s
+`assert tuple(result) == DESIGN_KEYS` are all byte-for-byte untouched — verified by running that
+exact test unmodified before touching anything else in `_experiment_design.py` (implementation
+order 1 in the task plan). `_validate_base_experiments` requires a **non-empty** list, mirroring
+`_validate_search_space`'s "must not be empty" floor: an ensemble over zero sources is
+unrepresentable. It deliberately requires only `>= 1`, not `>= 2` — the `>= 2` eligibility rule is
+`specialist_selector._should_ensemble`'s routing decision (already made before this node ever
+runs), not this shared schema's to re-derive; a single-source ensemble is degenerate but
+representable, and `test_exactly_one_experiment_still_writes` pins that boundary rather than
+merely documenting it.
+
+**Alias table: three canonical families, with a bare-modifier defusing technique borrowed from
+`timeseries_specialist`'s `"linear"` precedent — and one case it cannot defuse.**
+`normalize_model_family` still has no longest-match-wins rule (2026-08-12 T-026 discovery,
+unchanged by this task), so `ensemble_specialist`'s own `_MODEL_FAMILIES` table
+(`stacking`/`blending`/`weighted_average`) deliberately carries no bare `"weighted"`, `"weight"`,
+`"stack"` or `"stacked"` alias — only qualified multi-word forms (`"weighted blend"`, `"weighted
+average"`, `"stacked ensemble"`, ...). This defuses the realistic phrasing "weighted blend of
+stacked models" to `blending` alone (verified: `"blending"`'s "weighted blend" alias matches;
+"stacked" matches nothing, so `stacking` never enters the candidate set) — pinned by
+`test_weighted_blend_of_stacked_models_resolves_to_blending`. It structurally **cannot** defuse
+`"blended stacking"`: "blended" is `blending`'s own self-match alias and "stacking" is
+`stacking`'s own self-match alias, so any phrase containing both words matches two families no
+matter how the table is tuned — removing either alias would make the bare canonical token
+unreachable for its own family, which is worse. This is accepted as structurally ambiguous by
+design, not a bug: `test_ambiguous_multiword_phrasings_raise` parametrizes over `"blended
+stacking"`, `"stacking and blending combined"` and `"a meta learner that blends the outputs"`, all
+of which raise `ValueError("ambiguous")` rather than silently resolving to one family. The
+prompt's `## model_family — exactly one of three literal tokens` section states the rejection
+explicitly with these same examples and tells the LLM to put the nuance in `rationale` instead —
+same push-the-ambiguity-into-prose approach the T-026 discovery entry recommends for a table with
+no precedence rule.
+
+**`_experiment_dir_from_entry` is a local duplication of `code_critic._experiment_dir_from_state`'s
+normalization, not an import.** Both functions relativize a `state`-recorded path, treat a
+suffixed value as a file pointer (take its parent), and reject a `..` component — but
+`code_critic`'s version operates on `state["experiments"][-1]` (the *last* entry only, for its own
+single-experiment review), while `ensemble_specialist` needs the same normalization applied to
+*every* entry independently (`_build_base_experiments` calls it once per entry, by index). Sibling
+LLM node modules never import from each other — established at T-022/T-024/T-025 and restated in
+`code_critic`'s own module docstring — so this task duplicates the four-step normalization locally
+(`src/nodes/llm/ensemble_specialist.py:_experiment_dir_from_entry`) rather than importing from
+`code_critic.py` or hoisting a shared helper, consistent with that precedent. One deliberate
+divergence: the fallback directory uses the entry's own recorded `iteration` field when it is a
+real (non-bool) int, falling back to the entry's list position only when that field is missing or
+the wrong type (`_fallback_iteration`) — `code_critic`'s single-entry version has no need for this
+because it only ever has one candidate entry to fall back for.
+
+**Per-source weight parameters are named by positional index, never by `experiment_id`.**
+`base_experiments[i]["experiment_id"]` is free text carried over from `state["experiments"]`'s own
+`id` field (or a synthesized `experiment_{i}` fallback) and is not guaranteed to be a valid Python
+identifier — `exp-3`, `exp 07`, and similar are all plausible values `coder`-adjacent tooling might
+produce, and `_PARAM_NAME_RE` requires `^[A-Za-z_][A-Za-z0-9_]{0,63}$`. Using the entry's
+*positional index* in `## Base experiments` instead (`weight_0`, `weight_1`, ...) sidesteps that
+entirely: the index is always available, always a valid identifier suffix, and is the same value
+`_render_base_experiments` already lists the entries in order by — so the prompt's instruction
+("use the positional index, never the raw `experiment_id`") points at something the LLM can read
+directly off the injected section rather than having to invent a sanitization scheme of its own.
+`test_weighted_average_design_with_index_named_weights_accepted` pins the shape as a passing
+example; the prompt's own worked JSON example intentionally uses a `stacking` design instead (a
+meta-learner's own hyperparameter, `alpha`, needs no per-source naming scheme at all), so the two
+together cover both `model_family` branches' distinct parameter-naming needs.

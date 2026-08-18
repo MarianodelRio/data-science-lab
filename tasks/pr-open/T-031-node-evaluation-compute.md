@@ -3,12 +3,12 @@ id: T-031
 phase: 2
 agent: pipeline-agent
 depends_on: [T-011]
-status: in-progress
+status: pr-open
 folders: ["src/nodes/compute/", "config/phases/"]
 outputs: [score_evaluator node, feature_importance_extractor node, feature_importance_N.json]
 size: M
 branch: feature/T-031-node-evaluation-compute
-pr: ~
+pr: "https://github.com/MarianodelRio/data-science-lab/pull/33"
 ---
 
 ## Nodes: score_evaluator + feature_importance_extractor (Pipeline Phase 6, compute)

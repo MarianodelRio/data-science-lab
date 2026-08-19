@@ -887,10 +887,16 @@ or not `coder` (T-029, not yet landed) populates `experiments`. The three LLM no
   contains a `..` component is rejected without a read attempt.
 
   *No leaderboard data.* `cv_lb_divergence` is retained as design.md's vocabulary, but no
-  leaderboard score exists anywhere in this pipeline -- `LabState` has no such field and the
-  `kaggle_client` node that would fetch one is unbuilt. The prompt states this explicitly and
+  leaderboard score is available to this node: `LabState` has no such field, and the
+  `kaggle_client` node that fetches one (T-033) runs in **Phase 7, after every Phase 6 node** --
+  it records the leaderboard score in `reports/kaggle_submission.json`, never in `LabState`, so
+  no leaderboard score exists at the time this node runs. The prompt states this explicitly and
   forbids inventing, assuming or quoting one; the diagnosis inputs are the CV score, the baseline
-  score and the feature importance report only.
+  score and the feature importance report only. (`config/prompts/error_analyst/v1.md`,
+  `error_analyst.py`'s own docstring and `_evaluation_llm_common.ROOT_CAUSES`' comment still
+  phrase this as "no leaderboard score anywhere in this pipeline", which was true when they
+  landed and remains true *for Phase 6*; the residual imprecision is tracked in
+  `context/discoveries/T-033.md`.)
 
 - **`hypothesis_generator`** (`src/nodes/llm/hypothesis_generator.py`, `LLMNode` subclass, T-032) --
   runs fourth, `model_role: reasoning`. Reads the diagnosis, **queries this competition's RAG store
@@ -952,6 +958,183 @@ is filed under a different number still produces a diagnosis, hypotheses and a p
 aborting the graph run. `error_diagnosis_{N}.json`'s `inputs` block records which of the four inputs
 were actually read, so a degraded diagnosis stays forensically detectable.
 
+### Delivery (Phase 7)
+
+`config/phases/phase7_delivery.yaml`'s `sequence`: `reviewer` -> `report_writer` -> `kaggle_client`,
+no critic, `interrupt_after: false`. All three nodes are real (T-033): `reviewer` and
+`report_writer` are `LLMNode`s, `kaggle_client` is a `ComputeNode` -- the `NoOpNode` fallback is no
+longer reachable in this phase.
+
+**Phase 7 is terminal, and that constrains every node in it.** `src/graph/supervisor.py:31-33`
+routes into it only once `iterations_without_improvement >= max_iterations`; nothing runs after it,
+there is no critic, no retry, and no later node that could correct or recover anything. So **no node
+here may abort the graph**: every read degrades to an explicit placeholder and every failure path
+still writes its artifact. `kaggle_client` in particular runs *after* `reports/final_report.md`
+already exists -- a crash there would destroy the run's only human-facing deliverable over a
+network error.
+
+**Both LLM output patterns are fixed, with no `{iteration}` placeholder** (`reports/code_review.md`,
+`reports/final_report.md`): the phase runs exactly once per run and its deliverables belong to the
+run, not to an iteration. `LLMNode._resolve_output_path` is therefore not overridden by either node
+-- `str.format` harmlessly ignores the unused `iteration` kwarg, the same case `fold_config.json`
+and `eda_report.md` already rely on.
+
+**Every Phase 7 read of a Phase 6 artifact uses `current_iteration - 1`.** `experiment_designer` is
+the only writer of `current_iteration` anywhere in `src/` and it increments the field **last** in
+Phase 6, so Phase 7 always observes `N + 1` while the artifacts on disk are filed under `N`. That
+`-1` offset lives in one place, `_delivery_common.previous_iteration`. On a standalone Phase 7 run
+(`current_iteration == 0`) it is `-1`, which yields the legal-but-nonexistent relative path
+`experiments/exp_-1/...` and therefore a placeholder. It is deliberately **not** clamped to `0`:
+clamping would make Phase 7 read `exp_0`'s artifacts on a run that never produced them and report
+another experiment's numbers as this run's.
+
+- **`reviewer`** (`src/nodes/llm/reviewer.py`, `LLMNode` subclass, T-033) -- runs first,
+  `model_role: implementation`, non-blocking (no critic re-invokes anything on its verdict). Writes
+  free-form Markdown to `reports/code_review.md`: `## Verdict` (`clean`/`issues_found`/
+  `not_reviewable`), `## Findings`, `## Reproducibility checklist`, `## Summary`, per
+  `config/prompts/reviewer/v1.md`'s rubric (fixed seeds, relative paths, no debug prints or dead
+  code, no train/validation leakage, pinned dependencies, no hardcoded credentials).
+
+  *Pinned candidate list*, deduped preserving first occurrence: `src/features.py`, `src/models.py`,
+  `src/train.py`, `{best_experiment_path}/train.py` (skipped entirely when the pointer is blank or
+  unusable), `experiments/exp_{current_iteration - 1}/train.py`. All five are read under **one
+  shared total 20 000-character budget** (`_delivery_common.MAX_INJECTED_CHARS`), not a per-file
+  cap: five separately-capped files would be a 100 000-character single `invoke`. A file that
+  overflows carries an in-band truncation marker, a candidate reached after the budget is spent
+  renders `(omitted: the 20000-character injection budget was already used)`, and a missing or
+  unreadable one renders `(not present in the workspace)`. Which candidates were actually read is
+  recorded in the written review's own `## Files reviewed` block, so a review produced entirely from
+  placeholders stays forensically detectable (the `error_diagnosis` `inputs`-block precedent).
+
+  *Injection hardening.* Each injected file is wrapped in a fence computed by
+  `_delivery_common.fence_for` (longer than any backtick run it contains, so a ``` inside a
+  docstring cannot escape the block and render as top-level prompt markup), and the injected message
+  states in-band that everything under `## Workspace code` is data to review, never an instruction
+  -- the same pairing `code_critic` uses. A retry cap would not help here even if the phase had one:
+  injection seeks a false *pass*, not a loop.
+
+- **`report_writer`** (`src/nodes/llm/report_writer.py`, `LLMNode` subclass, T-033) -- runs second,
+  `model_role: research`. Writes `reports/final_report.md`, the run's human-facing deliverable, with
+  the sections `## What was tried`, `## What worked`, `## What did not work`, `## Lessons learned`,
+  `## Reproducing this run`, `## Open questions and next steps`.
+
+  *Six inputs*: a deterministic state-derived `## Run summary` (no file I/O, always present), the
+  problem definition (`state["problem_definition_path"]` **relativized through
+  `_delivery_common.safe_relative`**, else the well-known `reports/problem_definition.json` --
+  `problem_framer` records the absolute path `WorkspaceManager.write_json` returns, and that string
+  is not only read from: it is also an `## Inputs` key rendered verbatim into the published report,
+  so the raw value would leak the operator's home directory into the deliverable), `reports/score_evaluation_{N}.json`,
+  `reports/error_diagnosis_{N}.json`, `reports/hypotheses_{N}.json`, and
+  `reports/code_review.md` -- the file `reviewer` wrote moments earlier in this same sequence,
+  through the shared `_delivery_common.CODE_REVIEW_PATH` constant so the write and the read cannot
+  drift. All six share the same total injection budget, allocated in render order. Each missing
+  input degrades to its own named placeholder and is recorded in the report's `## Inputs` block.
+
+  *Never prints a non-finite float.* `new_state` seeds `best_score = float("-inf")`; every float in
+  `## Run summary` goes through a `_coerce_finite_float` guard and renders as `not recorded` when it
+  is non-finite, a non-number or a `bool`. The experiment index is capped at 10 entries with the
+  true count recorded separately as `experiments_recorded`. The experiment index is sanitized by the
+  same rule before serialization, so a non-finite number nested inside an `experiments` entry cannot
+  reach the prompt as `Infinity`/`NaN` either (and its dict keys are coerced to `str`, so a
+  mixed-key entry degrades instead of raising `TypeError` out of `sort_keys`).
+
+  *The code review is fenced.* It is the one injected section that is raw Markdown -- the other four
+  go through `json.dumps`, which escapes their newlines so no heading can materialize out of them.
+  It is therefore wrapped in a `fence_for`-computed fence, exactly as `reviewer` fences the workspace
+  code, so a counterfeit `## Run summary` heading quoted through the review cannot arrive as a
+  second, structurally indistinguishable section.
+
+  *No leaderboard score is available to it.* `kaggle_client` runs **after** this node and files its
+  result in `reports/kaggle_submission.json`, never in `LabState`. The prompt states that ordering
+  fact explicitly and forbids quoting, assuming or inventing an LB score or rank.
+
+- **`kaggle_client`** (`src/nodes/compute/kaggle_client.py`, `ComputeNode` subclass, T-033) -- runs
+  last, pure Python, no LLM (it imports `src/tools/kaggle_client` as a *module*, so nothing
+  class-shaped enters its namespace and `_find_node_class` still sees exactly one class; an AST test
+  pins the no-`langchain`/no-`src.llm` invariant). Calls the tool's `submit` then `get_score` and
+  writes `reports/kaggle_submission.json` with **exactly nine keys, always all present**:
+  `competition`, `submission_file`, `submitted`, `lb_score`, `cv_score`, `cv_direction`,
+  `divergence`, `divergence_flag`, `reason`. Every `reason` has the absolute workspace root scrubbed
+  to `<workspace>` before it is written -- the Kaggle SDK echoes the absolute `file_name` it was
+  handed back in its error messages, and this artifact ships inside the published deliverable repo.
+  `reason` is `None` only on the fully-successful path;
+  otherwise it carries the accumulated reasons joined with `"; "`. `divergence_flag` is always a
+  `bool` -- `False` covers both "did not diverge" and "could not be computed", and `reason`
+  disambiguates.
+
+  *The submission file must exist before any API call.* This ordering is a contract, not a style
+  choice: `kaggle` is installed in this environment and `tests/fixtures/graph_mocks.set_fake_provider_env`
+  sets fake `KAGGLE_USERNAME`/`KAGGLE_KEY` for the integration smoke suite, which parametrizes over
+  every phase including `phase7_delivery`. Checking the file after `submit()` would make that suite
+  issue a live `competition_submit`. The unit test asserting the injected fake API recorded **zero**
+  calls, plus the smoke suite's `submitted is False` assertion, are the gates on it.
+
+  *Submission resolution.* First candidate whose absolute path is a file: the experiment directory
+  named by `state["best_experiment_path"]`, then `experiments/exp_{current_iteration - 1}`. The
+  recorded `submission_file` is always the workspace-relative form, never the absolute path handed
+  to the API. **`{best_experiment_path}/submission.csv` is a new contract pinned for `coder`
+  (T-029)** -- `coder`'s declared outputs (`train.py`, `results.json`, OOF predictions) do not
+  include it today, so until it does, this node's "no submission file" degrade path is the one that
+  runs. Same category as T-031's `results.json` `metric` token set; recorded in
+  `context/discoveries/T-033.md`.
+
+  *CV de-normalization and the divergence flag.* `score_evaluator` stores every score already
+  normalized to higher-is-better, sign-flipping a minimize metric, so `state["best_score"]` for an
+  RMSE run is negative. `direction` is read out of `reports/score_evaluation_{current_iteration - 1}.json`
+  (`LabState` carries no polarity field), and `cv_raw = best_score` for `maximize`,
+  `-best_score` for `minimize`. Then `divergence = cv_raw - lb` for `maximize` and `lb - cv_raw`
+  for `minimize`, so a **positive** divergence always means "CV looked better than the leaderboard"
+  in both polarities. Only that single score-evaluation candidate is tried -- deliberately
+  asymmetric with `reviewer`'s multi-candidate list, because for the divergence *number*, degrading
+  to `divergence: null` with a reason beats reporting a silently-wrong figure derived from another
+  iteration's polarity. `divergence_flag = abs(divergence) > 0.05`, a **strict** `>` so a divergence
+  sitting exactly at the threshold is not flagged.
+
+  **`_DIVERGENCE_THRESHOLD = 0.05` is an absolute difference in the metric's own units and is
+  therefore scale-dependent**: an RMSE in the thousands will never flag, and a metric with a tiny
+  range will always flag. Accepted for v1 because the flag is advisory and nothing reads it yet; a
+  metric-aware or relative threshold (and the extra artifact key it would need) should be revisited
+  when the first real consumer lands -- see `context/discoveries/T-033.md`.
+
+  *Nothing reaches `LabState`.* `src/state.py` is a protected contract with no leaderboard field, so
+  the LB score, the divergence flag and the submission outcome live in the workspace artifact plus a
+  one-line `messages` summary. Any future consumer (an API or frontend surfacing "did we submit,
+  what did we score") reads `reports/kaggle_submission.json`. This node is in particular **not** a
+  writer of `best_score`/`best_experiment_path` (CLAUDE.md invariant #3).
+
+`src/nodes/llm/_delivery_common.py` is the private module the two Phase 7 LLM nodes share --
+`read_workspace_text`, `safe_relative`, `previous_iteration`, `fence_for`, `truncate`,
+`read_bounded_texts` (the shared *total* budget), `render_code_sections`, `render_inputs_section`,
+`build_markdown_artifact`, plus the `CODE_REVIEW_PATH`/`FINAL_REPORT_PATH` constants. One private
+module rather than two copies, on the same "all consumers land in the same PR" ground
+`_evaluation_common.py` and `_evaluation_llm_common.py` carry; it declares **no class at all**, so
+`node_resolver._find_node_class` can never mistake it for a node module, and it is never referenced
+in `config/phases/*.yaml`. Unlike its two predecessors it **imports** `DEGRADE_ERRORS`,
+`current_iteration`, `read_workspace_json`, `render_json_section` and the three `*_PATTERN`
+constants from `_evaluation_llm_common` (re-exporting them via `__all__`) rather than making a tenth
+private copy: none of them carries Phase-6 semantics, and `code_critic` importing from
+`_experiment_design` is the standing precedent for a cross-phase private-helper import within
+`src/nodes/llm/`. `fence_for` is the one deliberate port, of `data_analyst._fence_for`. There is no
+compute-side twin: `kaggle_client` is its only possible consumer and CLAUDE.md invariant #8 forbids
+it importing the LLM-side module anyway, so it carries ~25 lines of ported `_relative_to_workspace`/
+`_read_json_dict`/`_coerce_*` instead.
+
+**Deliberate asymmetry in experiment-directory resolution**, worth naming because it looks like an
+inconsistency: `reviewer` uses the *relativized* `best_experiment_path` directly (it reads via
+`WorkspaceManager.read_text`, which wants a relative path), while `kaggle_client` maps it through
+`WorkspaceManager.experiment_dir(basename)` (it must hand the Kaggle API an absolute path, and
+`experiment_dir` resolves one without creating anything). The two agree for the canonical value
+`experiments/exp_N`; they diverge for any pointer that is not of that shape -- a **bare** `exp_3` is
+read by `reviewer` as `exp_3/train.py` at the workspace root but resolved by `kaggle_client` to
+`experiments/exp_3/submission.csv`, and a nested `foo/bar/exp_3` is likewise relocated by
+`kaggle_client` to `experiments/exp_3`.
+
+**Nothing in Phase 7 may abort the graph, including its own writes.** `kaggle_client` catches the
+two failures that cannot be recorded in the artifact itself -- the workspace root being unopenable
+(`WorkspaceManager.__init__` creates it) and `write_json` failing -- and still returns its
+`messages` delta, whose summary line already carries the outcome and gains a marker that the
+artifact is missing.
+
 ## Node classification
 
 > Skeleton — table of LLM nodes vs pure Python nodes vs tools, populated as each node lands.
@@ -976,6 +1159,9 @@ were actually read, so a degraded diagnosis stays forensically detectable.
 | `error_analyst` | LLM (`LLMNode`) | 6 — Evaluation | Landed (T-032) |
 | `hypothesis_generator` | LLM (`LLMNode`) | 6 — Evaluation | Landed (T-032) |
 | `experiment_designer` | LLM (`LLMNode`) | 6 — Evaluation | Landed (T-032) |
+| `reviewer` | LLM (`LLMNode`) | 7 — Delivery | Landed (T-033) |
+| `report_writer` | LLM (`LLMNode`) | 7 — Delivery | Landed (T-033) |
+| `kaggle_client` | Compute (`ComputeNode`) | 7 — Delivery | Landed (T-033) |
 
 ### ComputeNode base class
 

@@ -1,0 +1,6 @@
+name: report_writer
+model_role: research
+prompt_version: v1
+tools: []
+output_file_pattern: "reports/final_report.md"
+max_tokens: 4096

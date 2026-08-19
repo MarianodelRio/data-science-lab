@@ -1,0 +1,6 @@
+name: reviewer
+model_role: implementation
+prompt_version: v1
+tools: []
+output_file_pattern: "reports/code_review.md"
+max_tokens: 4096

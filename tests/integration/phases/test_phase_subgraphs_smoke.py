@@ -168,6 +168,43 @@ def test_phase_subgraph_compiles_and_runs(stem: str, tmp_path) -> None:
         # last in `config/phases/phase6_evaluation.yaml`'s sequence.
         assert result["current_iteration"] == 1
 
+    if stem == "phase7_delivery":
+        # All three T-033 nodes are real now. They run on a bare, unseeded
+        # workspace, which is the standalone-run degrade path each documents:
+        # `current_iteration` is 0, so `previous_iteration` is -1 and every
+        # Phase 6 artifact read resolves to a file that does not exist.
+        review_path = tmp_path / "reports" / "code_review.md"
+        assert review_path.is_file()
+        review = review_path.read_text(encoding="utf-8")
+        assert review.startswith("# Code Review")
+        # The inputs block is the machine-readable trace of the degrade: every
+        # candidate was missing, so none may be recorded as read.
+        assert "## Files reviewed" in review
+        assert "— read" not in review.split("## Files reviewed", 1)[1]
+
+        report_path = tmp_path / "reports" / "final_report.md"
+        assert report_path.is_file()
+        report = report_path.read_text(encoding="utf-8")
+        assert report.startswith("# Final Report")
+        # `reviewer` ran first in the same sequence, so its output is the one
+        # input `report_writer` did read — this pins the live intra-phase edge.
+        assert "- `reports/code_review.md` — read" in report
+
+        # `kaggle_client` is the load-bearing one: `kaggle` is installed here
+        # and `set_fake_provider_env` above sets fake credentials, so a node
+        # that touched the Kaggle API before checking for the submission file
+        # would make a live `competition_submit` call from this suite. The
+        # `submitted is False` + "no submission file" reason IS the proof that
+        # it did not.
+        submission_path = tmp_path / "reports" / "kaggle_submission.json"
+        assert submission_path.is_file()
+        submission = json.loads(submission_path.read_text(encoding="utf-8"))
+        assert submission["submitted"] is False
+        assert "no submission file found" in submission["reason"]
+        assert submission["submission_file"] == "experiments/exp_-1/submission.csv"
+        assert submission["divergence"] is None
+        assert submission["divergence_flag"] is False
+
 
 def test_phase5_subgraph_routes_neural_plan_to_deep_learning_specialist(tmp_path) -> None:
     """The parametrized phase-5 case above runs on an unseeded workspace, so

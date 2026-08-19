@@ -3,7 +3,7 @@ id: T-033
 phase: 2
 agent: pipeline-agent
 depends_on: [T-010, T-007]
-status: pr-open
+status: done
 folders: ["src/nodes/llm/", "src/nodes/compute/", "config/agents/", "config/prompts/"]
 outputs: [reviewer node, report_writer node, kaggle_client node, final_report.md]
 size: M

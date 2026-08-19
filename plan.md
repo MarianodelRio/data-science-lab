@@ -15,7 +15,7 @@ parallel tasks.
 | Agent | Owns | Tasks |
 |---|---|---|
 | `infra-agent` | `src/state.py`, `src/config/`, `src/llm/`, `src/tools/`, `src/workspace/`, `src/memory/`, `src/observability/`, root scaffold, `docker/`, CI | T-001..T-008, T-012, T-043, T-044 |
-| `pipeline-agent` | `src/graph/`, `src/nodes/`, `config/agents/`, `config/phases/`, `config/prompts/` | T-009..T-011, T-013..T-033, T-045, T-046 |
+| `pipeline-agent` | `src/graph/`, `src/nodes/`, `config/agents/`, `config/phases/`, `config/prompts/` | T-009..T-011, T-013..T-033, T-045, T-046, T-047 |
 | `api-agent` | `src/api/` | T-034..T-037 |
 | `frontend-agent` | `frontend/` | T-038..T-042 |
 
@@ -75,6 +75,7 @@ Shared contracts. Small but they block most of the tree.
 | T-031 | score_evaluator + feature_importance_extractor | M | T-011 |
 | T-032 | error_analyst + hypothesis_generator + experiment_designer | M | T-010, T-008 |
 | T-033 | reviewer + report_writer + kaggle_client node | M | T-010, T-007 |
+| T-047 | feature_spec.json v2 — single primitive + `fit_scope` | M | T-022 |
 
 ## Build Phase 3 — API
 
@@ -127,6 +128,7 @@ T-001 → T-003 → T-004 → T-010 → T-029 (coder) → T-046 (smoke)
 - **Wave 4:** T-010, T-034 → T-035, T-036, T-037
 - **Wave 5:** T-013..T-033 (21 pipeline nodes, fully parallel)
 - **Wave 6:** T-043, T-046
+- **Post-wave (added mid-project):** T-047 (follow-up on T-022)
 
 **Parallel-but-sequenced check:** none — the dependency graph is already
 optimally parallel. All same-wave tasks share no dependency between them.
@@ -147,6 +149,7 @@ T-008 → T-017, T-018, T-019, T-021, T-032
 T-009 → T-034
 T-010 → T-013..T-022, T-024..T-030, T-032, T-033, T-036
 T-011 → T-020, T-023, T-031
+T-022 → T-047
 T-034 → T-035, T-036, T-037, T-043
 T-038 → T-039, T-040, T-041, T-042, T-043
 (T-013..T-033, T-034, T-035) → T-046

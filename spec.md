@@ -1,21 +1,20 @@
 # Data Science Lab — Specification
 
-> **Brownfield spec.** Generated from the existing codebase (33 tasks merged), not
-> from an ideal design. It documents **what the code actually does today**. Where
-> `design.md` and the implementation disagree, this file follows the implementation
-> and says so.
+> **Brownfield spec.** Generated from the existing codebase, not from an ideal
+> design. It documents **what the code actually does today**. Where `design.md` and
+> the implementation disagree, this file follows the implementation and says so.
+>
+> **This document carries no task status.** Where a module is not built yet, its
+> section says so under *Out of scope (not yet built)* and names the task id as a
+> pointer only. Whether that task is available, blocked, in progress or in review
+> lives in `tasks/` — the board is the single source of truth for status.
 >
 > Companion documents: `design.md` (intended architecture), `plan.md` (task graph),
 > `docs/pipeline.md` (node-level reference). Edit this file only via `/refine`.
 
 **Stack:** Python ≥3.10 · LangGraph + LangChain · ChromaDB · MLflow · Optuna ·
-FastAPI · React 19 + Vite + TypeScript. Tests: pytest (45 test modules) +
-Vitest. Lint/type: ruff + mypy.
-
-**Implementation status:** infrastructure and Pipeline Phases 1–6 (compute side)
-are landed; 7 graph nodes, the whole FastAPI backend, 5 frontend components,
-Docker and CI are not yet implemented — each is called out under
-*Out of scope (not yet built)* in its section.
+FastAPI · React 19 + Vite + TypeScript. Tests: pytest + Vitest.
+Lint/type: ruff + mypy.
 
 ---
 
@@ -79,9 +78,9 @@ node of the LangGraph graph, plus `new_state()` which builds a fresh instance fo
   derives paths from it rather than recomputing them.
 
 **Interface**
-- Inputs: `config/settings.yaml`, `config/agents/*.yaml` (18 files),
-  `config/phases/*.yaml` (7 files), `config/prompts/{agent}/v1.md` (18 files),
-  environment variables for API keys.
+- Inputs: `config/settings.yaml`, `config/agents/*.yaml` and
+  `config/prompts/{agent}/{version}.md` (one per LLM agent),
+  `config/phases/*.yaml` (one per pipeline phase), environment variables for API keys.
 - Outputs: `Settings`, `AgentConfig`, `PhaseConfig`, `CriticConfig` (all frozen
   dataclasses), prompt strings.
 - Errors: `ConfigError` for a missing env var, missing file, missing field, or an
@@ -304,7 +303,7 @@ modules by convention, and attaches the SQLite checkpointer.
   fail discovery — loudly, with `GraphBuilderError`.
 - **A missing node module is not an error.** `resolve_node` falls back to `NoOpNode`,
   which returns `{}` and never touches state. This is what lets the full 7-phase graph
-  compile today while 7 nodes are still unimplemented. A module that *exists* but is
+  compile while some node modules are still unimplemented. A module that *exists* but is
   broken (ambiguous class, missing class, bad transitive import) raises
   `GraphBuilderError` and fails the whole build.
 - Phase subgraph wiring lives **once** in `phases/generic.py`, driven entirely by
@@ -503,6 +502,17 @@ the current iteration.
   (encodings, null handling, interactions). It degrades to `{}` on a missing or
   unreadable upstream artifact rather than raising — a partially-completed upstream
   phase must not crash the graph.
+- **Fold-aware target encoding is enforced here, not merely requested.** Every
+  `encodings` entry whose `method` matches the target-encoding family
+  (`_TARGET_ENCODING_KEYWORDS` — whole phrases, word boundaries, matched against a
+  separator-normalized lowercase copy, so `target_encoding` / `target-encoding` /
+  `Target Encoding` all hit, while `frequency_encoding_excluding_target_leak` does
+  not) is **rejected with `ValueError`** unless it carries `fold_aware: true`. Plain
+  target encoding leaks the target across CV folds; this is the Phase-4 counterpart
+  of Phase 5's `FORBIDDEN_CV_KEYS`.
+- The three fixed transformation lists are a v1 schema: T-047 replaces them with a
+  single open-vocabulary `features` primitive carrying a required `fit_scope`, and
+  generalizes the guard above to several leakage-prone operation families.
 - `analysis_critic` gates both, same `pass`/`iterate` + forced-pass mechanics as Phase 1.
 - Both plans are **per-iteration paths**, so a later iteration never overwrites an
   earlier one's design.
@@ -567,7 +577,7 @@ experiment design, generates the training script, and critiques it.
   `src/train.py`, `src/features.py`, `src/models.py` in the workspace.
 - Errors: `ValueError` for any design-contract violation.
 
-**Out of scope (not yet built)** — **`coder` is not implemented** (T-029, blocked).
+**Out of scope (not yet built)** — **`coder` is not implemented** (T-029).
 `resolve_node` currently substitutes `NoOpNode`, so Phase 5 produces a design but no
 training script, and `code_critic` has nothing real to review.
 
@@ -621,8 +631,8 @@ decides what to try next.
   "score unavailable" reasons.
 
 **Out of scope (not yet built)** — `error_analyst`, `hypothesis_generator` and
-`experiment_designer` are **not implemented** (T-032, available); `NoOpNode` stands in,
-so the iteration loop currently has no LLM-driven "what to try next" step.
+`experiment_designer` are **not implemented** (T-032); `NoOpNode` stands in, so the
+iteration loop currently has no LLM-driven "what to try next" step.
 
 ---
 
@@ -634,8 +644,8 @@ Nodes: `reviewer` → `report_writer` → `kaggle_client`. Sequential. Reached w
 **What it does** — Intended to review the final repository, write the final report, and
 submit to Kaggle.
 
-**Out of scope (not yet built)** — **none of the three nodes is implemented** (T-033,
-available). All three resolve to `NoOpNode` today. The `kaggle_client` *tool*
+**Out of scope (not yet built)** — **none of the three nodes is implemented**
+(T-033). All three resolve to `NoOpNode` today. The `kaggle_client` *tool*
 (`src/tools/kaggle_client.py`) exists and is tested; the *node* that would call it in
 Phase 7 does not.
 
@@ -646,9 +656,9 @@ Phase 7 does not.
 **What it does** — Intended FastAPI backend: run management, SSE event stream, chat
 explainer, Kaggle/MLflow proxying.
 
-**Out of scope (not yet built)** — `src/api/` contains **only an empty `__init__.py`**.
-T-034 (run management) is available; T-035 (SSE), T-036 (chat explainer) and T-037
-(Kaggle/MLflow) are blocked. `design.md` § UI architecture documents the intended
+**Out of scope (not yet built)** — `src/api/` contains **only an empty `__init__.py`**:
+run management (T-034), the SSE event stream (T-035), the chat explainer (T-036) and
+the Kaggle/MLflow endpoints (T-037). `design.md` § UI architecture documents the intended
 endpoint contract but **no JSON response schemas**, which is why the frontend's types
 are provisional.
 
@@ -669,9 +679,12 @@ experiments table, file viewer, chat.
   `openMlflow`. `fetch` is **injected** (`FetchLike`), which is what makes it testable
   with no network.
 - `API_BASE` comes from `import.meta.env.VITE_API_BASE`, defaulting to `''` (same origin).
-- `Layout.tsx` (97 lines) and `Sidebar.tsx` are the only real components; `Chat.tsx`,
-  `ExperimentsTable.tsx`, `FileViewer.tsx` and `PipelineView.tsx` are **8-line
-  placeholders**.
+- `Layout.tsx` is the only functional component. `Sidebar.tsx` renders a static
+  "No runs yet." shell and is **not wired to `listRuns()`** — a deliberate T-038
+  scoping call (`context/decisions/T-038.md`), not an oversight.
+- `Chat.tsx`, `ExperimentsTable.tsx`, `FileViewer.tsx` and `PipelineView.tsx` are
+  **8-line placeholders**; `ActionBar` (submit-to-Kaggle / open-MLflow controls) has
+  **no file at all**.
 - npm is the package manager (`package-lock.json` committed) — see
   `context/decisions/T-038.md`.
 
@@ -680,8 +693,9 @@ experiments table, file viewer, chat.
 - Outputs: rendered UI; run-control calls.
 - Errors: fetch/SSE failures surface through the client's handlers.
 
-**Out of scope (not yet built)** — the four placeholder components (T-039, T-040,
-T-041, T-042, all available).
+**Out of scope (not yet built)** — the four placeholder components and `ActionBar`
+(T-039, T-040, T-041; T-042 covers `FileViewer` *and* `ActionBar`), plus wiring
+`Sidebar` to the API — no task currently owns that.
 
 ### Untested behavior
 > **WARNING: only `api/client.ts` and `Layout.tsx` have tests**
@@ -776,5 +790,9 @@ These hold across modules and are enforced by tests and review, not by types:
 - No node runs untrusted third-party code outside `code_executor`'s subprocess, and
   `code_executor` provides **no real sandbox** — no container, no seccomp, no resource caps.
 - No cross-competition RAG retrieval (structurally prevented by per-competition collections).
-- No Docker image and no CI workflow exist yet (T-043 blocked, T-044 available):
-  `docker/` and `.github/workflows/` are absent from the repo.
+- No Docker image and no CI workflow exist yet (T-043, T-044): `docker/` and
+  `.github/workflows/` are absent from the repo.
+- **No end-to-end pipeline test exists** (T-046): `tests/smoke/` holds only a
+  `.gitkeep`. The closest coverage is
+  `tests/integration/phases/test_phase_subgraphs_smoke.py`, which exercises the phase
+  subgraphs, not a full iteration-0-to-delivery run.

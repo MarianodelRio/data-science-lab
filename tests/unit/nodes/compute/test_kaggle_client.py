@@ -25,6 +25,7 @@ from typing import Any
 import pytest
 from langgraph.graph.message import add_messages
 
+import src.nodes.compute.base as compute_base_module
 import src.nodes.compute.kaggle_client as kaggle_client_module
 from src.graph.node_resolver import resolve_node
 from src.nodes.compute.kaggle_client import KaggleClientNode
@@ -159,7 +160,13 @@ def test_module_does_not_import_llm_or_langchain() -> None:
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported.append(node.module)
 
-    forbidden = ("src.llm", "langchain")
+    # `src.nodes.llm` is in the set for the same reason the four newer compute
+    # guards carry it (`test_score_evaluator.py`, `test_specialist_selector.py`,
+    # `test_evaluation_common.py`, `test_feature_importance_extractor.py`): this
+    # node's LLM-side twins (`_delivery_common`, `_evaluation_llm_common`) are
+    # the imports actually within reach here, and they pull `langchain_core` in
+    # transitively through `src.nodes.llm.base`.
+    forbidden = ("src.llm", "src.nodes.llm", "langchain")
     assert [
         name
         for name in imported
@@ -520,6 +527,29 @@ def test_get_score_type_error_from_a_null_date_records_a_contextual_reason(
     assert "date" in artifact["reason"]
 
 
+def test_get_score_type_error_from_an_unscored_submission_does_not_blame_date_ordering(
+    workspace: WorkspaceManager,
+) -> None:
+    """One submission, `public_score` unset — the normal state in the window
+    right after `competition_submit`, which is exactly when this node calls.
+    `float(None)` raises `TypeError`, and with a single submission `max` never
+    invokes the `date` key comparison at all, so the reason must not diagnose a
+    date-ordering bug."""
+    api = _FakeApi(submissions=[_FakeSubmission(datetime(2026, 8, 19), None)])
+    _seed_submission(workspace, "exp_0")
+    _seed_score_evaluation(workspace, 0)
+
+    KaggleClientNode(api=api)(_state(workspace, current_iteration=1, best_score=0.9))
+
+    artifact = _artifact(workspace)
+    assert artifact["submitted"] is True
+    assert artifact["lb_score"] is None
+    reason = artifact["reason"]
+    assert "public_score" in reason
+    assert "not yet a number" in reason
+    assert "whose 'date' is None or otherwise unorderable" not in reason
+
+
 def test_get_score_runtime_error_with_no_submissions_records_a_reason(
     workspace: WorkspaceManager,
 ) -> None:
@@ -549,6 +579,76 @@ def test_unexpected_api_exception_never_aborts_the_graph(workspace: WorkspaceMan
     assert artifact["submitted"] is False
     assert "503 Service Unavailable" in artifact["reason"]
     assert set(delta) == {"messages"}
+
+
+def test_unwritable_workspace_still_returns_a_messages_delta(
+    workspace: WorkspaceManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Phase 7 is terminal: an artifact write that fails must not abort the
+    graph after `reviewer` and `report_writer` already produced the
+    deliverables. The failure cannot be recorded in the file that failed to be
+    written, so it rides the `messages` summary line instead."""
+    api = _FakeApi()
+    _seed_submission(workspace, "exp_0")
+    _seed_score_evaluation(workspace, 0)
+    state = _state(workspace, current_iteration=1, best_score=0.9)
+
+    def _refuse(self: WorkspaceManager, relative_path: str, data: dict) -> str:
+        raise PermissionError(f"[Errno 13] Permission denied: '{self.workspace_path}'")
+
+    monkeypatch.setattr(WorkspaceManager, "write_json", _refuse)
+
+    delta = KaggleClientNode(api=api)(state)
+
+    assert set(delta) == {"messages"}
+    content = delta["messages"][0]["content"]
+    assert ARTIFACT_PATH in content
+    assert "could not be written" in content
+    assert "PermissionError" in content
+    assert str(workspace.workspace_path) not in content
+
+
+def test_unopenable_workspace_still_returns_a_messages_delta(
+    workspace: WorkspaceManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`WorkspaceManager.__init__` creates the root directory, so an unwritable
+    workspace raises before there is anywhere to record it — the other terminal
+    path that must still return normally."""
+
+    def _refuse(path: Any) -> WorkspaceManager:
+        raise PermissionError(f"[Errno 13] Permission denied: '{path}'")
+
+    monkeypatch.setattr(compute_base_module, "WorkspaceManager", _refuse)
+
+    delta = KaggleClientNode(api=_FakeApi())(_state(workspace, current_iteration=1))
+
+    assert set(delta) == {"messages"}
+    content = delta["messages"][0]["content"]
+    assert "PermissionError" in content
+    assert str(workspace.workspace_path) not in content
+
+
+def test_absolute_workspace_paths_never_reach_the_artifact_reason(
+    workspace: WorkspaceManager,
+) -> None:
+    """The SDK is handed an absolute `file_name` and echoes it back in its error
+    messages; `reports/kaggle_submission.json` ships inside the published
+    deliverable repository, so the workspace root is scrubbed out of `reason`."""
+
+    class _KaggleApiError(Exception):
+        pass
+
+    absolute = workspace.workspace_path / "experiments" / "exp_0" / "submission.csv"
+    api = _FakeApi(submit_error=_KaggleApiError(f"400 Bad Request while reading {absolute}"))
+    _seed_submission(workspace, "exp_0")
+    _seed_score_evaluation(workspace, 0)
+
+    KaggleClientNode(api=api)(_state(workspace, current_iteration=1, best_score=0.9))
+
+    artifact = _artifact(workspace)
+    assert str(workspace.workspace_path) not in artifact["reason"]
+    assert "<workspace>/experiments/exp_0/submission.csv" in artifact["reason"]
+    assert "400 Bad Request" in artifact["reason"]
 
 
 def test_non_finite_lb_score_is_recorded_as_null(workspace: WorkspaceManager) -> None:

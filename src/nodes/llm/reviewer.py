@@ -40,9 +40,11 @@ node uses the *relativized* `best_experiment_path` directly, because it reads
 through `WorkspaceManager.read_text`, which wants a workspace-relative path.
 `src/nodes/compute/kaggle_client.py` instead maps it through
 `WorkspaceManager.experiment_dir(basename)`, because it needs an absolute path
-to hand the Kaggle API. The two agree for every well-formed value
-(`experiments/exp_N`); they diverge only for a nested pointer like
-`foo/bar/exp_3`, which `kaggle_client` relocates to `experiments/exp_3`.
+to hand the Kaggle API. The two agree for the canonical value
+`experiments/exp_N`; they diverge for any pointer that is not of that shape — a
+**bare** `exp_3` is read here as `exp_3/train.py` at the workspace root, while
+`kaggle_client` resolves it to `experiments/exp_3/submission.csv`, and a nested
+`foo/bar/exp_3` is likewise relocated there to `experiments/exp_3`.
 
 ## Degradation and the inputs block
 

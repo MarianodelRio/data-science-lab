@@ -8,7 +8,11 @@ terminal and is reached only when `iterations_without_improvement >=
 max_iterations` (`src/graph/supervisor.py:31-33`), so **nothing here may abort
 the graph**: by the time this node runs, `reports/final_report.md` already
 exists and a crash would take the whole run's deliverable down with it. Every
-failure path writes the artifact and returns normally.
+failure path returns normally, and every failure path that *can* write the
+artifact does. The two that cannot are the workspace root itself being
+unopenable and the artifact write failing — a failure that by definition cannot
+be recorded in the file it failed to write. Both are caught and reported through
+the `messages` summary line instead, which already carries the outcome.
 
 ## The ordering rule — check the submission file before touching the API
 
@@ -79,8 +83,10 @@ an **absolute** path, and `experiment_dir` is the sanctioned public API for that
 (it resolves without creating anything). `src/nodes/llm/reviewer.py` instead
 uses the *relativized* path directly, because it reads through
 `WorkspaceManager.read_text`, which wants a workspace-relative path. The two
-agree for every well-formed value (`experiments/exp_N`); they diverge only for
-a nested pointer such as `foo/bar/exp_3`, which this node relocates to
+agree for the canonical value `experiments/exp_N`; they diverge for any pointer
+that is not of that shape — a **bare** `exp_3` resolves here to
+`experiments/exp_3/submission.csv` but to `exp_3/train.py` at the workspace root
+for `reviewer`, and a nested `foo/bar/exp_3` is likewise relocated here to
 `experiments/exp_3`.
 
 ## No LLM import (CLAUDE.md invariant #8)
@@ -144,6 +150,28 @@ def _coerce_finite_float(value: Any) -> float | None:
     return coerced if math.isfinite(coerced) else None
 
 
+# What an absolute workspace path is replaced with inside `reason`. The
+# artifact ships inside the generated deliverable repository, so it must never
+# carry `/home/<user>/...` — the same rule this phase's `reviewer` rubric grades
+# the workspace code against.
+_WORKSPACE_PLACEHOLDER = "<workspace>"
+
+
+def _scrub_workspace_paths(text: str, workspace: WorkspaceManager) -> str:
+    """Replace the absolute workspace root inside `text` with `<workspace>`.
+
+    The Kaggle SDK is handed an absolute `file_name` and its exception messages
+    echo it back, so `{e!r}` in a `reason` can otherwise put the operator's home
+    directory into `reports/kaggle_submission.json`. Replacing only the root
+    keeps every diagnostic (the failing filename, the error type, the API's own
+    words) intact.
+    """
+    root = str(workspace.workspace_path)
+    if not root:
+        return text
+    return text.replace(root, _WORKSPACE_PLACEHOLDER)
+
+
 def _relative_to_workspace(path: str, workspace: WorkspaceManager) -> str:
     """Port of `_evaluation_common.relative_to_workspace` — an already-relative
     path passes through unchanged; an absolute path outside the workspace root
@@ -172,9 +200,10 @@ def _experiment_basename(candidate: Any, workspace: WorkspaceManager) -> str | N
     `WorkspaceManager.experiment_dir` takes an *id*, not a path, and joins it
     under `experiments/`. So a recorded pointer is relativized, rejected if it
     is absolute-outside-root or traverses, and then reduced to its final
-    component. A pointer nesting the directory elsewhere (`foo/bar/exp_3`) is
-    therefore relocated to `experiments/exp_3` — see the module docstring's
-    asymmetry note.
+    component. So any pointer that is not the canonical `experiments/exp_N` is
+    relocated under `experiments/`: both a nested `foo/bar/exp_3` and a bare
+    `exp_3` become `experiments/exp_3` — see the module docstring's asymmetry
+    note.
     """
     if not isinstance(candidate, str) or not candidate.strip():
         return None
@@ -329,7 +358,28 @@ class KaggleClientNode(ComputeNode):
         self._api = api
 
     def run(self, state: LabState) -> dict[str, Any]:
-        workspace = self.workspace(state)
+        try:
+            workspace = self.workspace(state)
+        except OSError as e:
+            # `WorkspaceManager.__init__` creates the root directory, so an
+            # unwritable or vanished workspace raises here — before there is
+            # anywhere to record it. Phase 7 is terminal and `final_report.md`
+            # may already exist, so the run must still end cleanly: the outcome
+            # goes into the `messages` delta, this node's other trace. The
+            # exception repr is deliberately not interpolated — it carries the
+            # absolute workspace path (see `_scrub_workspace_paths`).
+            return {
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": (
+                            "kaggle_client: no submission made — the workspace could not be "
+                            f"opened ({type(e).__name__}), so neither the submission file nor "
+                            f"{_OUTPUT_PATH} was reachable."
+                        ),
+                    }
+                ]
+            }
         reasons: list[str] = []
 
         raw_competition = state.get("competition_name")
@@ -434,21 +484,33 @@ class KaggleClientNode(ComputeNode):
     def _read_leaderboard_score(self, competition: str, reasons: list[str]) -> float | None:
         """The latest submission's `public_score`, or `None` plus a reason.
 
-        `TypeError` is caught **first and named specifically**: the tool picks
-        the latest submission with `max(submissions, key=lambda s: s.date)`, and
-        a submission whose `date` is `None` (or otherwise unorderable) makes
-        that comparison raise — the open T-007 discovery. A generic
-        "call failed" reason would leave that indistinguishable from a network
-        error. Note it takes **two** submissions for `max` to invoke the key
-        comparison at all.
+        `TypeError` is caught **first and named specifically**, because two
+        distinct shapes of malformed submission raise it and neither is an error
+        in this pipeline:
+
+        - `max(submissions, key=lambda s: s.date)` with a `date` of `None` or
+          otherwise unorderable — the open T-007 discovery. It takes **two**
+          submissions for `max` to invoke the key comparison at all, so a
+          single-submission run can never be this case;
+        - `float(latest.public_score)` with `public_score` still unset, which is
+          the **normal** state in the seconds-to-minutes window right after
+          `competition_submit` — precisely when this node calls — because Kaggle
+          has accepted the submission but has not scored it yet.
+
+        The reason names both causes rather than diagnosing one: from the
+        outside this node cannot tell them apart, and `reason` is the only trace
+        it leaves. A generic "call failed" would in turn leave this
+        indistinguishable from a network error.
         """
         try:
             result = kaggle_tool.get_score(competition, api=self._api)
         except TypeError as e:
             reasons.append(
                 f"could not read the leaderboard score for competition {competition!r}: "
-                f"comparing submission 'date' values raised TypeError ({e}) — the Kaggle API "
-                "returned a submission whose 'date' is None or otherwise unorderable"
+                f"the Kaggle API returned an unreadable submission (TypeError: {e}) — either "
+                "its 'date' is None or otherwise unorderable, or its 'public_score' is not yet "
+                "a number, which is normal for a submission Kaggle has accepted but not yet "
+                "scored"
             )
             return None
         except Exception as e:  # Phase 7 is terminal - see the module docstring
@@ -483,6 +545,10 @@ class KaggleClientNode(ComputeNode):
         divergence, divergence_flag, divergence_reason = _divergence(cv_raw, lb, direction)
         if divergence_reason is not None:
             reasons = [*reasons, divergence_reason]
+        # The Kaggle SDK echoes the absolute `file_name` it was handed back in
+        # its error messages, and this artifact ships inside the published
+        # deliverable repository.
+        reasons = [_scrub_workspace_paths(reason, workspace) for reason in reasons]
 
         artifact: dict[str, Any] = {
             "competition": competition,
@@ -495,5 +561,17 @@ class KaggleClientNode(ComputeNode):
             "divergence_flag": divergence_flag,
             "reason": "; ".join(reasons) if reasons else None,
         }
-        workspace.write_json(_OUTPUT_PATH, artifact)
-        return {"messages": [{"role": "assistant", "content": _summary_line(artifact)}]}
+        summary = _summary_line(artifact)
+        try:
+            workspace.write_json(_OUTPUT_PATH, artifact)
+        except OSError as e:
+            # The failure genuinely cannot be recorded in the file that failed
+            # to be written — but Phase 7 is terminal, so the run must still end
+            # cleanly. The summary line already carries the outcome; it gains a
+            # marker that the artifact is absent. `type(e).__name__` rather than
+            # `{e!r}`, which would carry the absolute path.
+            summary = (
+                f"{summary} WARNING: {_OUTPUT_PATH} could not be written "
+                f"({type(e).__name__}), so this line is the run's only record of it."
+            )
+        return {"messages": [{"role": "assistant", "content": summary}]}

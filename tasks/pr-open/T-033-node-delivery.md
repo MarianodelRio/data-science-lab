@@ -53,7 +53,7 @@ longer reachable in this phase):
   `config/prompts/reviewer/v1.md`, `config/prompts/report_writer/v1.md`. No YAML/prompt for
   `kaggle_client` — it is a `ComputeNode`.
 - Tests: `tests/unit/nodes/llm/test_delivery_common.py` (31), `test_reviewer.py` (21),
-  `test_report_writer.py` (19), `tests/unit/nodes/compute/test_kaggle_client.py` (34), plus Phase 7
+  `test_report_writer.py` (42), `tests/unit/nodes/compute/test_kaggle_client.py` (66), plus Phase 7
   assertions added to `tests/integration/phases/test_phase_subgraphs_smoke.py`. No network in any of
   them.
 - Docs: two rows in `docs/agents.md`; in `docs/pipeline.md` a new `### Delivery (Phase 7)` section,
@@ -105,5 +105,75 @@ because it also injects already-rendered JSON, not only file candidates — both
   API needs). Stated in both module docstrings and in `docs/pipeline.md`.
 - **`{best_experiment_path}/submission.csv` is a new contract pinned for `coder` (T-029)** — flagged
   as an open discovery, since nothing writes that file today.
+
+### Review fixes
+
+Applied after two independent reviews (1 blocker, 5 warnings, 6 cheap wins). Counts above are the
+post-fix collected totals (`test_report_writer.py` 32 → 42, `test_kaggle_client.py` 62 → 66; the
+pre-fix numbers recorded here were wrong — parametrized cases had been counted for two files and
+not the other two).
+
+- **B1 (blocker) — the absolute host path could reach the published report.**
+  `state["problem_definition_path"]` holds what `WorkspaceManager.write_json` returned, i.e.
+  `/home/<user>/competitions/<name>/reports/problem_definition.json`. `read_workspace_json`
+  relativized it only *internally*; the raw string was the `read_map` key rendered verbatim into
+  `final_report.md`'s `## Inputs` block and the `truncate` label embedded in the prompt. It now goes
+  through `_delivery_common.safe_relative` (falling back to the well-known path when unusable),
+  making `report_writer` consistent with `reviewer`. Covered by
+  `test_absolute_problem_definition_path_never_reaches_the_report`, whose path assertion is general
+  ("no line of the artifact contains the workspace root") so it guards the other input keys too.
+- **W1 — an accepted-but-unscored submission was misreported as a date-ordering bug.**
+  `float(latest.public_score)` on a `None` score raises `TypeError`, which the branch written for
+  the T-007 `max(..., key=.date)` hazard swallowed and diagnosed as a `date` problem. The reason now
+  names both causes honestly (the node cannot tell them apart from outside), and the docstring
+  records that a one-submission `TypeError` is always the `public_score` one. Covered by
+  `test_get_score_type_error_from_an_unscored_submission_does_not_blame_date_ordering`.
+- **W2 — the injected code review is now fenced.** It is the only injected section that is raw
+  Markdown (the four JSON ones go through `json.dumps`), so a counterfeit `## Run summary` quoted
+  through `reviewer` from an attacker-controlled docstring could arrive as a second, structurally
+  indistinguishable section. `_render_code_review` wraps it in a `fence_for`-computed fence, as
+  `render_code_sections` already does for `reviewer`. Covered by
+  `test_injected_code_review_is_fenced_longer_than_its_own_backtick_run`.
+- **W3 — the two terminal paths that could still raise.** `self.workspace(state)`
+  (`WorkspaceManager.__init__` creates the root) and `write_json` in `_finish` both propagated
+  `OSError`, aborting the graph *after* `reviewer` and `report_writer` had produced the deliverables.
+  Both are caught; the run still returns its `messages` delta, whose summary line already carries the
+  outcome and now gains a marker when the artifact is missing. The module docstring's "every failure
+  path writes the artifact" claim was corrected rather than left untrue. Covered by
+  `test_unwritable_workspace_still_returns_a_messages_delta` and
+  `test_unopenable_workspace_still_returns_a_messages_delta`.
+- **W4 — `_render_experiment_entry` hardening.** `sort_keys=True` over mixed-type keys raises
+  `TypeError` (not in `DEGRADE_ERRORS`), and a non-finite float rendered as `Infinity` — the one hole
+  in the otherwise-complete "never print a non-finite number" guard. `_sanitize_for_json` coerces
+  keys to `str` and maps non-finite floats to `not recorded`, `allow_nan=False` makes any residue
+  loud, and the guard is widened to `_RENDER_ERRORS = (TypeError, *DEGRADE_ERRORS)`. Covered by
+  `test_experiment_entry_with_mixed_type_keys_does_not_raise` and
+  `test_non_finite_experiment_value_never_renders_as_a_json_non_number`.
+- **W5 — the invariant-#8 AST guard was a subset.** `forbidden` was the oldest guard's
+  `("src.llm", "langchain")`; it is now `("src.llm", "src.nodes.llm", "langchain")`, matching the
+  four newer compute guards — `src.nodes.llm` is the prefix this task actually made reachable
+  (`_delivery_common` pulls `langchain_core` in transitively).
+- **N1** — a code review dropped for budget is no longer relabelled "(code review not available)";
+  `BUDGET_EXHAUSTED` passes through, keeping the two facts distinct in the audit trail
+  (`test_budget_exhausted_code_review_is_not_reported_as_missing`).
+- **N2** — every real report had two H1s (`build_markdown_artifact` prepends `# Final Report`, the
+  prompt asked for `# Final Report — {competition}`). Fixed prompt-side: it now forbids a top-level
+  heading and asks for the competition name in the first sentence
+  (`test_written_report_has_exactly_one_top_level_heading`,
+  `test_prompt_forbids_a_second_top_level_heading`).
+- **N3** — the dead `any(...)`-over-an-empty-list assertion in `test_delivery_common.py` now checks
+  something real: no *class in the module namespace* (imports included) is named `_delivery_common`.
+- **N4** — both docstrings and `docs/pipeline.md` said the two nodes diverge "only for a nested
+  pointer"; they also diverge for a bare `exp_3`. Corrected in all three places.
+- **N5** — the Kaggle SDK echoes the absolute `file_name` it was handed, so `{e!r}` could put
+  `/home/...` into the artifact's `reason`. `_scrub_workspace_paths` replaces the workspace root with
+  `<workspace>` in every reason, preserving the rest of the diagnostic
+  (`test_absolute_workspace_paths_never_reach_the_artifact_reason`).
+- **N6** — test counts corrected above.
+
+Out of scope by Orchestrator ruling and deliberately untouched: the absolute `0.05` threshold and
+its scale-dependence, the single score-evaluation candidate, `previous_iteration` returning `-1`,
+`_delivery_common`'s `__all__` re-export and `report_writer`'s `_Budget`, the dead defensive
+branches in `kaggle_client`, and `test_no_labstate_score_or_checkpoint_field_is_written`.
 
 **Dependencies added:** None.

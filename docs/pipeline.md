@@ -1019,8 +1019,11 @@ another experiment's numbers as this run's.
   `## Reproducing this run`, `## Open questions and next steps`.
 
   *Six inputs*: a deterministic state-derived `## Run summary` (no file I/O, always present), the
-  problem definition (`state["problem_definition_path"]` when set, else the well-known
-  `reports/problem_definition.json`), `reports/score_evaluation_{N}.json`,
+  problem definition (`state["problem_definition_path"]` **relativized through
+  `_delivery_common.safe_relative`**, else the well-known `reports/problem_definition.json` --
+  `problem_framer` records the absolute path `WorkspaceManager.write_json` returns, and that string
+  is not only read from: it is also an `## Inputs` key rendered verbatim into the published report,
+  so the raw value would leak the operator's home directory into the deliverable), `reports/score_evaluation_{N}.json`,
   `reports/error_diagnosis_{N}.json`, `reports/hypotheses_{N}.json`, and
   `reports/code_review.md` -- the file `reviewer` wrote moments earlier in this same sequence,
   through the shared `_delivery_common.CODE_REVIEW_PATH` constant so the write and the read cannot
@@ -1030,7 +1033,16 @@ another experiment's numbers as this run's.
   *Never prints a non-finite float.* `new_state` seeds `best_score = float("-inf")`; every float in
   `## Run summary` goes through a `_coerce_finite_float` guard and renders as `not recorded` when it
   is non-finite, a non-number or a `bool`. The experiment index is capped at 10 entries with the
-  true count recorded separately as `experiments_recorded`.
+  true count recorded separately as `experiments_recorded`. The experiment index is sanitized by the
+  same rule before serialization, so a non-finite number nested inside an `experiments` entry cannot
+  reach the prompt as `Infinity`/`NaN` either (and its dict keys are coerced to `str`, so a
+  mixed-key entry degrades instead of raising `TypeError` out of `sort_keys`).
+
+  *The code review is fenced.* It is the one injected section that is raw Markdown -- the other four
+  go through `json.dumps`, which escapes their newlines so no heading can materialize out of them.
+  It is therefore wrapped in a `fence_for`-computed fence, exactly as `reviewer` fences the workspace
+  code, so a counterfeit `## Run summary` heading quoted through the review cannot arrive as a
+  second, structurally indistinguishable section.
 
   *No leaderboard score is available to it.* `kaggle_client` runs **after** this node and files its
   result in `reports/kaggle_submission.json`, never in `LabState`. The prompt states that ordering
@@ -1042,7 +1054,10 @@ another experiment's numbers as this run's.
   pins the no-`langchain`/no-`src.llm` invariant). Calls the tool's `submit` then `get_score` and
   writes `reports/kaggle_submission.json` with **exactly nine keys, always all present**:
   `competition`, `submission_file`, `submitted`, `lb_score`, `cv_score`, `cv_direction`,
-  `divergence`, `divergence_flag`, `reason`. `reason` is `None` only on the fully-successful path;
+  `divergence`, `divergence_flag`, `reason`. Every `reason` has the absolute workspace root scrubbed
+  to `<workspace>` before it is written -- the Kaggle SDK echoes the absolute `file_name` it was
+  handed back in its error messages, and this artifact ships inside the published deliverable repo.
+  `reason` is `None` only on the fully-successful path;
   otherwise it carries the accumulated reasons joined with `"; "`. `divergence_flag` is always a
   `bool` -- `False` covers both "did not diverge" and "could not be computed", and `reason`
   disambiguates.
@@ -1108,9 +1123,17 @@ it importing the LLM-side module anyway, so it carries ~25 lines of ported `_rel
 inconsistency: `reviewer` uses the *relativized* `best_experiment_path` directly (it reads via
 `WorkspaceManager.read_text`, which wants a relative path), while `kaggle_client` maps it through
 `WorkspaceManager.experiment_dir(basename)` (it must hand the Kaggle API an absolute path, and
-`experiment_dir` resolves one without creating anything). The two agree for every well-formed value
-(`experiments/exp_N`); they diverge only for a nested pointer like `foo/bar/exp_3`, which
-`kaggle_client` relocates to `experiments/exp_3`.
+`experiment_dir` resolves one without creating anything). The two agree for the canonical value
+`experiments/exp_N`; they diverge for any pointer that is not of that shape -- a **bare** `exp_3` is
+read by `reviewer` as `exp_3/train.py` at the workspace root but resolved by `kaggle_client` to
+`experiments/exp_3/submission.csv`, and a nested `foo/bar/exp_3` is likewise relocated by
+`kaggle_client` to `experiments/exp_3`.
+
+**Nothing in Phase 7 may abort the graph, including its own writes.** `kaggle_client` catches the
+two failures that cannot be recorded in the artifact itself -- the workspace root being unopenable
+(`WorkspaceManager.__init__` creates it) and `write_json` failing -- and still returns its
+`messages` delta, whose summary line already carries the outcome and gains a marker that the
+artifact is missing.
 
 ## Node classification
 

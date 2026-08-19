@@ -51,7 +51,13 @@ def test_module_declares_no_class_matching_its_own_stem() -> None:
         if inspect.isclass(obj) and obj.__module__ == delivery_common.__name__
     ]
     assert classes == []
-    assert not any(getattr(obj, "name", None) == "_delivery_common" for obj in classes)
+    # `_find_node_class` scans the module namespace, not only what the module
+    # defines, so the re-exported/imported names must not be class-shaped either.
+    # (Asserting this over `classes` would be dead: `any([])` is always False.)
+    namespace_classes = [obj for obj in vars(delivery_common).values() if inspect.isclass(obj)]
+    assert [
+        obj for obj in namespace_classes if getattr(obj, "name", None) == "_delivery_common"
+    ] == []
 
 
 # -- read_workspace_text --------------------------------------------------

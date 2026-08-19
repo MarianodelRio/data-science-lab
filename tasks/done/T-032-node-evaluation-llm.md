@@ -7,7 +7,7 @@ status: done
 folders: ["src/nodes/llm/", "config/agents/", "config/prompts/"]
 outputs: [error_analyst node, hypothesis_generator node, experiment_designer node]
 size: M
-branch: feature/T-032-node-evaluation-llm
+branch: ~
 pr: https://github.com/MarianodelRio/data-science-lab/pull/34
 ---
 

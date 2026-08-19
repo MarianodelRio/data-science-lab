@@ -21,3 +21,13 @@
 **Folders:** src/nodes/llm/, config/agents/, config/prompts/
 **Lesson:** Approving a task that ships producers with no consumer is legitimate incremental delivery, but the missing read side must be logged as an open discovery in the same PR or it will never be wired.
 **Signal:** "**The three Phase 6 LLM artifacts have no in-code consumer.**" *(source: context/discoveries)*
+
+## L-005 | T-033 | 2026-08-19 | Weight: 3
+**Folders:** src/nodes/llm/, src/nodes/compute/, config/agents/, config/prompts/
+**Lesson:** Approving a consumer whose producer does not exist is the mirror of shipping a producer with no consumer — check the named input against the producing task's declared outputs, because a filename the consumer pins is one the producer does not yet know about.
+**Signal:** "as things stand every real run will take the "no submission file" degrade path and nothing will ever be submitted." *(source: context/discoveries)*
+
+## L-006 | T-033 | 2026-08-19 | Weight: 3
+**Folders:** src/nodes/llm/, src/nodes/compute/, config/agents/, config/prompts/
+**Lesson:** Routing data to a workspace artifact because the state contract is protected also routes it out of the checkpointer — say so explicitly when approving, since a resumed run cannot recover what never entered state.
+**Signal:** "Nothing in `LabState`, and therefore nothing in the SQLite checkpointer, records whether a run submitted or what it scored." *(source: context/discoveries)*

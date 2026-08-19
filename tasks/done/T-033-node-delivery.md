@@ -7,7 +7,7 @@ status: done
 folders: ["src/nodes/llm/", "src/nodes/compute/", "config/agents/", "config/prompts/"]
 outputs: [reviewer node, report_writer node, kaggle_client node, final_report.md]
 size: M
-branch: feature/T-033-node-delivery
+branch: ~
 pr: https://github.com/MarianodelRio/data-science-lab/pull/35
 ---
 

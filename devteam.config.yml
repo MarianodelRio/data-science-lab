@@ -3,7 +3,7 @@
 # Edit this file to customize how the framework works for your project.
 # All settings have sensible defaults — you only need to change what you want different.
 
-devteam_version: "1.5.0"     # Framework version
+devteam_version: "1.6.0"     # Framework version
 
 # ─────────────────────────────────────────
 # PROJECT
@@ -74,8 +74,10 @@ workflow:
   cleanup_merged_branches: true
 
   # Auto-merge (not yet implemented — keep off):
-  #   off — never auto-merge; you merge every PR manually on GitHub
-  auto_merge: off
+  #   "off" — never auto-merge; you merge every PR manually on GitHub
+  # Quoted on purpose: bare `off` is a YAML 1.1 boolean, so it would parse as False
+  # instead of the string "off" any reader compares against.
+  auto_merge: "off"
 
 # ─────────────────────────────────────────
 # ORCHESTRATION
@@ -97,6 +99,9 @@ orchestration:
   # Maximum tasks that may be in-progress at once. The Orchestrator refuses to
   # claim a new task when this cap is reached.
   max_parallel_tasks: 5
+
+  # Minutes to wait at a human checkpoint before escalating. Any positive integer.
+  checkpoint_timeout_minutes: 30
 
   # Timeout per task size before /restart is suggested (in minutes)
   # The orchestrator warns if a sub-agent exceeds this without reporting.
@@ -150,7 +155,7 @@ quality:
   # Match by folder or module path, e.g. [libs/auth/, apps/api/payments/]
   critical_modules:
     - src/state.py
-    - src/workspace/manager.py
+    - src/workspace/workspace_manager.py
     - src/llm/factory.py
     - src/graph/phases/phase1_understanding.py
     - src/nodes/compute/score_evaluator.py
@@ -204,9 +209,8 @@ batteries:
 # TASKS
 # ─────────────────────────────────────────
 tasks:
-  # Organize tasks in subfolders by status (recommended)
-  # If false, all tasks stay in tasks/ as flat files
-  status_folders: true
+  # Note: the 7 status folders are fixed and not configurable — the former
+  # `status_folders` key was removed in dev-team v1.6 (see .claude/commands/status.md).
 
   # Maximum task size the Orchestrator will pick without asking — XL tasks should be split
   # S = ~2h | M = ~4h | L = ~8h | XL = very large, consider splitting into smaller tasks

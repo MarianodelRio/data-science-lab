@@ -45,8 +45,8 @@ Each agent writes **only** inside its folders (defined in `.claude/agents/`).
 
 Cross-cutting rules for the framework agents live in `.claude/steering/`, injected
 per-agent by scope (`always.md` and `task-format.md` → all; `context-formats.md` →
-orchestrator/architect/coder/planner; `coder-complete.md` → coder). `.claude/AGENTS.md`
-is only a stub pointing there.
+orchestrator/architect/coder/planner/review-coordinator; `coder-complete.md` → coder).
+`.claude/AGENTS.md` is only a stub pointing there.
 
 **Protected contracts** (require explicit human approval before change):
 `src/state.py` (LabState), `src/config/` dataclasses, `LLMFactory.get` signature,
@@ -193,9 +193,10 @@ Create the file if it doesn't exist; `git pull origin main --ff-only` before app
 The exact entry formats live in `.claude/steering/context-formats.md` — that file is the
 source of truth and the Orchestrator injects it into the agents that need it.
 
-**Agents do not read `context/` directly.** The Orchestrator pre-selects the relevant
-entries (decisions filtered by folder, discoveries filtered to open) and passes them in
-the prompt.
+**Sub-agents never read `context/` directly** — architect, planner, coder, advisor and
+every reviewer receive only what was handed to them in their prompt. **The Orchestrator is
+the exception:** it reads `context/decisions/` and `context/discoveries/` itself to perform
+that pre-selection (decisions filtered by folder, discoveries filtered to open entries).
 
 History note: entries predating the v1.4 migration live in `context/decisions/` under
 their task id, plus `general.md` (entries with no task id) and `legacy-header.md`. All

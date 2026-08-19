@@ -605,3 +605,68 @@ def test_module_path_is_not_absolute_in_the_artifact(workspace: WorkspaceManager
     assert api.submitted_file == str(
         workspace.workspace_path / "experiments" / "exp_0" / "submission.csv"
     )
+
+
+# -- defensive helpers ----------------------------------------------------
+
+
+@pytest.mark.parametrize("value", [None, "3", 3.0, True, [], {}])
+def test_coerce_iteration_defaults_to_zero_for_a_non_int(value: Any) -> None:
+    assert kaggle_client_module._coerce_iteration(value) == 0
+
+
+@pytest.mark.parametrize("value", [None, "0.5", True, float("nan"), float("-inf"), []])
+def test_coerce_finite_float_rejects_everything_but_a_finite_number(value: Any) -> None:
+    assert kaggle_client_module._coerce_finite_float(value) is None
+
+
+@pytest.mark.parametrize("value", [None, "", "   ", 7, []])
+def test_read_json_dict_degrades_for_a_non_string_path(
+    value: Any, workspace: WorkspaceManager
+) -> None:
+    assert kaggle_client_module._read_json_dict(value, workspace) == {}
+
+
+@pytest.mark.parametrize(
+    "value", [None, "", "   ", 7, "..", "../evil", "/elsewhere/exp_1", "/", "."]
+)
+def test_experiment_basename_rejects_unusable_pointers(
+    value: Any, workspace: WorkspaceManager
+) -> None:
+    assert kaggle_client_module._experiment_basename(value, workspace) is None
+
+
+def test_best_experiment_path_equal_to_the_fallback_is_only_tried_once(
+    workspace: WorkspaceManager,
+) -> None:
+    """Both candidates resolve to `experiments/exp_0/submission.csv`; the dedupe
+    keeps the resolved path stable rather than producing a duplicate entry."""
+    api = _FakeApi()
+    _seed_submission(workspace, "exp_0")
+    _seed_score_evaluation(workspace, 0)
+
+    KaggleClientNode(api=api)(
+        _state(
+            workspace,
+            current_iteration=1,
+            best_score=0.9,
+            best_experiment_path="experiments/exp_0",
+        )
+    )
+
+    assert _artifact(workspace)["submission_file"] == "experiments/exp_0/submission.csv"
+
+
+def test_divergence_is_null_when_the_subtraction_overflows(workspace: WorkspaceManager) -> None:
+    """Both operands are individually finite, but their difference is not —
+    `score_evaluator`'s overflow precedent."""
+    api = _FakeApi(submissions=[_FakeSubmission(datetime(2026, 8, 19), -1.7e308)])
+    _seed_submission(workspace, "exp_0")
+    _seed_score_evaluation(workspace, 0, "maximize")
+
+    KaggleClientNode(api=api)(_state(workspace, current_iteration=1, best_score=1.7e308))
+
+    artifact = _artifact(workspace)
+    assert artifact["divergence"] is None
+    assert artifact["divergence_flag"] is False
+    assert "overflowed" in artifact["reason"]

@@ -30,6 +30,8 @@ Each agent-adding task appends one row to the table below. Do not remove or reor
 | `error_analyst` | Phase 6 — Evaluation | `reasoning` | `reports/error_diagnosis_{iteration}.json` |
 | `hypothesis_generator` | Phase 6 — Evaluation | `reasoning` | `reports/hypotheses_{iteration}.json` |
 | `experiment_designer` | Phase 6 — Evaluation | `reasoning` | `reports/experiment_plan_{iteration}.json` |
+| `reviewer` | Phase 7 — Delivery | `implementation` | `reports/code_review.md` |
+| `report_writer` | Phase 7 — Delivery | `research` | `reports/final_report.md` |
 
 ## Adding an agent
 

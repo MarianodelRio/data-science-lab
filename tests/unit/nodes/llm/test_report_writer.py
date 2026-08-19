@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
+import src.nodes.llm.report_writer as report_writer_module
 from src.config.loaders import load_agent_config
 from src.config.prompts import PromptLoader
 from src.config.settings import ContextConfig, Settings
@@ -357,3 +358,34 @@ def test_injected_text_is_capped(
     message = _injected_message(mock_llm)
     assert f"characters of {CODE_REVIEW_PATH}" in message
     assert len(message) < common.MAX_INJECTED_CHARS + 5_000
+
+
+# -- defensive helpers ----------------------------------------------------
+
+
+@pytest.mark.parametrize("value", [None, "0.5", True, float("nan"), float("inf"), []])
+def test_render_float_degrades_to_not_recorded(value: Any) -> None:
+    assert report_writer_module._render_float(value) == "not recorded"
+
+
+@pytest.mark.parametrize("value", [None, "3", 3.0, True, []])
+def test_render_int_degrades_to_not_recorded(value: Any) -> None:
+    assert report_writer_module._render_int(value) == "not recorded"
+
+
+def test_unrenderable_experiment_entry_degrades() -> None:
+    class _Hostile:
+        def __str__(self) -> str:
+            raise ValueError("cannot stringify")
+
+    assert (
+        report_writer_module._render_experiment_entry({"id": _Hostile()})
+        == "(unrenderable experiment entry)"
+    )
+
+
+def test_budget_returns_the_exhausted_marker_once_spent() -> None:
+    budget = report_writer_module._Budget(total=4)
+
+    assert budget.spend("abcd", "src/x.py") == "abcd"
+    assert budget.spend("more", "src/y.py") == common.BUDGET_EXHAUSTED

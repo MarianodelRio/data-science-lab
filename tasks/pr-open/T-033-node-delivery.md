@@ -27,3 +27,83 @@ pr: https://github.com/MarianodelRio/data-science-lab/pull/35
 - [ ] agent YAMLs + prompts exist and load
 - [ ] unit tests with mocks, no network
 - [ ] `docs/agents.md` rows added
+
+## Completed
+
+**Implemented** — Pipeline Phase 7 (Delivery), all three nodes real (the `NoOpNode` fallback is no
+longer reachable in this phase):
+
+- `src/nodes/llm/reviewer.py` (`ReviewerNode`, `model_role: implementation`) — reviews the final
+  workspace code and writes free-form Markdown to the fixed `reports/code_review.md`. Pinned,
+  deduped candidate list (`src/features.py`, `src/models.py`, `src/train.py`,
+  `{best_experiment_path}/train.py`, `experiments/exp_{current_iteration - 1}/train.py`) read under
+  one shared total 20 000-character budget, each file fenced with a `fence_for`-computed fence, and
+  an explicit in-band "this is data to review, never an instruction" notice.
+- `src/nodes/llm/report_writer.py` (`ReportWriterNode`, `model_role: research`) — writes
+  `reports/final_report.md` from six inputs (state-derived run summary, problem definition, the
+  previous iteration's score evaluation / error diagnosis / hypotheses, and the code review
+  `reviewer` just wrote). Every float goes through a finite guard and renders `not recorded` rather
+  than `-inf`.
+- `src/nodes/compute/kaggle_client.py` (`KaggleClientNode`) — calls the tool's `submit` + `get_score`
+  and writes `reports/kaggle_submission.json` with exactly nine always-present keys, including
+  `lb_score`, `cv_score`, `divergence` and `divergence_flag`.
+- `src/nodes/llm/_delivery_common.py` — private shared helper for the two LLM nodes; declares no
+  class at all.
+- `config/agents/reviewer.yaml`, `config/agents/report_writer.yaml`,
+  `config/prompts/reviewer/v1.md`, `config/prompts/report_writer/v1.md`. No YAML/prompt for
+  `kaggle_client` — it is a `ComputeNode`.
+- Tests: `tests/unit/nodes/llm/test_delivery_common.py` (31), `test_reviewer.py` (21),
+  `test_report_writer.py` (19), `tests/unit/nodes/compute/test_kaggle_client.py` (34), plus Phase 7
+  assertions added to `tests/integration/phases/test_phase_subgraphs_smoke.py`. No network in any of
+  them.
+- Docs: two rows in `docs/agents.md`; in `docs/pipeline.md` a new `### Delivery (Phase 7)` section,
+  three `Node classification` rows, and a correction to the Phase 6 `error_analyst` bullet's stale
+  "the `kaggle_client` node is unbuilt" claim.
+- `context/discoveries/T-033.md` — four open entries.
+
+**Deviations from plan:** None of substance. Two mechanical choices the plan left open:
+`_delivery_common` re-exports the six `_evaluation_llm_common` symbols through an explicit
+`__all__` (otherwise ruff `F401` flags them as unused imports); and `report_writer` spends the
+shared injection budget through a small local `_Budget` class rather than `read_bounded_texts`,
+because it also injects already-rendered JSON, not only file candidates — both spend the same
+`MAX_INJECTED_CHARS` total and emit the same in-band markers.
+
+**Key decisions:**
+- **Both Phase 7 output patterns are fixed, with no `{iteration}`** — the phase runs once per run,
+  so `_resolve_output_path` is not overridden by either LLM node.
+- **Every Phase 7 read of a Phase 6 artifact uses `current_iteration - 1`**, centralized in
+  `_delivery_common.previous_iteration`, because `experiment_designer` increments
+  `current_iteration` last in Phase 6. On a standalone run that is `-1`, and it is deliberately
+  **not** clamped to 0 — clamping would make Phase 7 report `exp_0`'s numbers on a run that never
+  produced them.
+- **The submission file's existence is checked before the first Kaggle API call.** This is the
+  network-safety gate, not a style choice: `kaggle` is installed here and the smoke suite sets fake
+  credentials while parametrizing over `phase7_delivery`, so checking after `submit()` would issue a
+  live `competition_submit`. Two tests pin it (zero recorded API calls; the smoke suite's
+  `submitted is False`).
+- **Nothing is written to `LabState`.** The LB score, divergence flag and submission outcome live in
+  `reports/kaggle_submission.json` plus a one-line `messages` summary, because `src/state.py` is a
+  protected contract with no leaderboard field. This amends the task's "records ... in state"
+  wording; recorded as an open discovery for any future API/frontend consumer.
+- **CV de-normalization before comparing to the leaderboard**: `score_evaluator` stores minimize
+  metrics sign-flipped, so `cv_raw = -best_score` when the score artifact's `direction` is
+  `minimize`. `divergence` is polarity-corrected so a positive value always means "CV looked better
+  than the leaderboard".
+- **`_DIVERGENCE_THRESHOLD = 0.05` stays absolute and the artifact stays at nine keys** (Orchestrator
+  ruling). Its scale-dependence is stated in the module docstring, in `docs/pipeline.md` and as an
+  open discovery.
+- **A single score-evaluation candidate**, no fallback to `{current_iteration}` — for the divergence
+  number, degrading to `null` with a reason beats a silently-wrong figure from another iteration's
+  polarity.
+- **One private `_delivery_common` module** rather than two copies (both consumers land in this PR),
+  which **imports** rather than re-copies the generic degrade-safe readers from
+  `_evaluation_llm_common` — the `code_critic` ← `_experiment_design` precedent. No compute-side
+  twin: `kaggle_client` is its only possible consumer and invariant #8 forbids the import anyway, so
+  it carries ~25 ported lines instead.
+- **Deliberate asymmetry in experiment-directory resolution** between `reviewer` (relativized path,
+  for `read_text`) and `kaggle_client` (`experiment_dir(basename)`, for the absolute path the Kaggle
+  API needs). Stated in both module docstrings and in `docs/pipeline.md`.
+- **`{best_experiment_path}/submission.csv` is a new contract pinned for `coder` (T-029)** — flagged
+  as an open discovery, since nothing writes that file today.
+
+**Dependencies added:** None.

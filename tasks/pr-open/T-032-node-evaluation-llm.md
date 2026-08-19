@@ -3,12 +3,12 @@ id: T-032
 phase: 2
 agent: pipeline-agent
 depends_on: [T-010, T-008]
-status: in-progress
+status: pr-open
 folders: ["src/nodes/llm/", "config/agents/", "config/prompts/"]
 outputs: [error_analyst node, hypothesis_generator node, experiment_designer node]
 size: M
 branch: feature/T-032-node-evaluation-llm
-pr: ~
+pr: https://github.com/MarianodelRio/data-science-lab/pull/34
 ---
 
 ## Nodes: error_analyst + hypothesis_generator + experiment_designer (Pipeline Phase 6)

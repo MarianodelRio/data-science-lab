@@ -65,6 +65,11 @@ EXPECTED: dict[str, dict] = {
         "critic": CriticConfig(node="code_critic", targets=("coder",), max_retries=3),
         "interrupt_after": False,
     },
+    # The node ORDER here is load-bearing, not just the membership:
+    # `experiment_designer` must stay last because it increments
+    # `current_iteration` in `_build_output_state`, which `LLMNode.__call__` runs
+    # *after* `_resolve_output_path`. Reordering it would desync every earlier
+    # Phase 6 artifact from the `exp_{N}` directory just scored (T-032).
     "phase6_evaluation": {
         "name": "evaluation",
         "nodes": (

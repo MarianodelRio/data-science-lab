@@ -21,6 +21,7 @@ import pytest
 
 from src.graph.node_resolver import resolve_node
 from src.graph.phases import PHASE_ORDER
+from src.nodes.llm._evaluation_llm_common import ROOT_CAUSES
 from src.state import new_state
 from tests.fixtures.graph_mocks import graph_llm_mocks, seed_raw_train_csv, set_fake_provider_env
 
@@ -136,6 +137,36 @@ def test_phase_subgraph_compiles_and_runs(stem: str, tmp_path) -> None:
         assert fi_path.is_file()
         fi_artifact = json.loads(fi_path.read_text(encoding="utf-8"))
         assert fi_artifact["skipped"] is True
+
+        # The three Phase 6 `LLMNode`s (T-032) run next, on the same bare
+        # workspace: every input they read degrades to its documented
+        # placeholder, so this asserts the whole tail of the sequence produces
+        # real artifacts rather than raising on the missing upstream reports.
+        diagnosis_path = tmp_path / "reports" / "error_diagnosis_0.json"
+        assert diagnosis_path.is_file()
+        diagnosis = json.loads(diagnosis_path.read_text(encoding="utf-8"))
+        assert diagnosis["root_cause"] in ROOT_CAUSES
+        assert diagnosis["inputs"]["experiment_results"] is None
+
+        hypotheses_path = tmp_path / "reports" / "hypotheses_0.json"
+        assert hypotheses_path.is_file()
+        hypotheses = json.loads(hypotheses_path.read_text(encoding="utf-8"))
+        assert [h["priority"] for h in hypotheses["hypotheses"]] == [1]
+        assert hypotheses["prior_attempts_considered"] == 0
+
+        plan_path = tmp_path / "reports" / "experiment_plan_0.json"
+        assert plan_path.is_file()
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        assert [c["order"] for c in plan["changes"]] == [1]
+
+        # The load-bearing one: `experiment_designer` is the only
+        # `current_iteration` writer anywhere in `src/`, and this is the only
+        # place that increment runs through a real compiled subgraph. Note the
+        # three artifacts above all landed under the PRE-increment number 0 —
+        # `LLMNode.__call__` resolves the output path before
+        # `_build_output_state`, which is why `experiment_designer` must stay
+        # last in `config/phases/phase6_evaluation.yaml`'s sequence.
+        assert result["current_iteration"] == 1
 
 
 def test_phase5_subgraph_routes_neural_plan_to_deep_learning_specialist(tmp_path) -> None:

@@ -309,6 +309,12 @@ surface to `base.py` and leaving the duplication anyway. Note for whoever picks 
 salvages a brace-delimited slice when the whole-text parse fails — see the 2026-08-12 T-024
 decision-log entry), so a naive merge would either regress that tolerance or silently extend it to
 five nodes that were reviewed on the stricter behavior. Preserve the difference explicitly.
+2026-08-18 (T-032): the copy count went **8 → 9, not 8 → 11**. The three Phase 6 LLM nodes
+(`error_analyst`, `hypothesis_generator`, `experiment_designer`) share ONE copy inside the new
+private `src/nodes/llm/_evaluation_llm_common.py` rather than carrying one each. That copy is the
+permissive (brace-salvage) variant, for the same reason `_experiment_design`'s is —
+`config/phases/phase6_evaluation.yaml` declares `critic: null`, so those three nodes have no retry
+wrapper at all. `base.py` was deliberately not touched.
 Status: open
 
 ## RESOLVED — 2026-08-12 [pipeline-agent (T-024) → pipeline-agent (T-025, T-026, T-027, T-028)]
@@ -386,6 +392,10 @@ than touched from a node task.
 Whoever picks up the `base.py` hoist proposed in the entry above should fix these at the same time
 — the same PR is already migrating all seven call sites, and `DEGRADE_ERRORS` is the natural thing
 to hoist alongside the extractor trio.
+2026-08-18 (T-032): `src/nodes/llm/_evaluation_llm_common.py` ships with the full
+`DEGRADE_ERRORS = (OSError, ValueError, RecursionError)` tuple, the `isinstance(path, str)` guard
+and the `json.dumps` guard from day one, so the three Phase 6 LLM nodes add no new under-catching
+readers. The sibling modules named above are still unfixed.
 Status: open
 
 ## OPEN — 2026-08-12 [pipeline-agent (T-025) → pipeline-agent (T-029 coder, T-031 score_evaluator), cross-ref T-047]

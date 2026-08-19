@@ -1,0 +1,6 @@
+name: error_analyst
+model_role: reasoning
+prompt_version: v1
+tools: []
+output_file_pattern: "reports/error_diagnosis_{iteration}.json"
+max_tokens: 4096

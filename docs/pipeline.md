@@ -415,14 +415,24 @@ sends — including v1's `fold_aware`, `column`, `method`, `strategy` and `type`
 
 | Key | Source | Contents |
 |---|---|---|
-| `columns` | LLM (validated) | non-empty list of non-empty column-name strings — one or many |
-| `operation` | LLM (validated) | non-empty free-form string naming the transformation |
+| `columns` | LLM (validated) | non-empty list of non-empty column-name strings — one or many, no repeats |
+| `operation` | LLM (validated) | non-empty free-form string naming the transformation, stripped |
 | `params` | LLM (validated) | finite JSON scalars or flat lists of them; required even when `{}` |
 | `fit_scope` | LLM (validated) | exactly `per_fold` or `global` |
-| `rationale` | LLM (validated) | non-empty string |
+| `rationale` | LLM (validated) | non-empty string, stripped |
 
 Unlike `design.json`, nothing here is node-injected — every field comes from the LLM and is
-validated, never supplied.
+validated, never supplied. `operation` and `rationale` are written **stripped**: both pass the
+non-empty check with surrounding whitespace, and `coder` (T-029) string-matches `operation`.
+
+**Two structural rules beyond the per-field ones.** A single entry may not name the same column
+twice (`["amount", "amount"]` with `operation: "ratio"` is a constant-1 column, which reads
+downstream as a modeling problem rather than as the specification bug it is — `solution_architect`
+rejects normalized-duplicate `model_families` on the same reasoning). And no two entries may share
+a `(columns, operation)` pair, since `coder` derives one column per entry and the pair is its name:
+differing `params` change the values but not the name, so the check keys on the pair rather than on
+full-entry equality. `columns` is ordered, so `["a","b"]` and `["b","a"]` are two different ratios
+and remain two legal entries.
 
 **One primitive, not three categories.** A per-column transform and a multi-column interaction are
 the same shape: one entry with one column in `columns`, or one entry with several. There is no
@@ -440,19 +450,35 @@ on data and is therefore *required* to declare `per_fold`:
 
 | Family | Representative recognized terms |
 |---|---|
-| Target encoding | `target_encoding`, `target_mean`, `mean_encoding`, `leave_one_out`, `WOE`, `CatBoost`, `James-Stein`, `M-estimate`, `impact_encoding` |
-| Statistical imputation | `median_impute`, `mean_imputation`, `mode_imputer`, `knn_impute`, `iterative_impute`, `simple_imputer`, `MICE` |
-| Scaling / normalization | `standard_scale`, `min_max_scaler`, `robust_scale`, `z_score`, `quantile_transform`, `power_transform`, `yeo_johnson`, `box_cox` |
+| Target encoding | `target_encoding`/`target_encode`/`target_encoder`, `target_mean`, `mean_encoding`, `leave_one_out`, `WOE`, `CatBoost`, `James-Stein`, `M-estimate`, `impact_encoding` |
+| Statistical imputation | `median_impute`, `mean_imputation`, `mode_imputer`, `impute_median`, `fillna_median`, `median_fill`, `knn_impute`, `iterative_impute`, `simple_impute`/`simple_imputer`, `MICE` |
+| Scaling / normalization | `standard_scale`, `standardize`/`standardization`, `min_max_scaler`, `minmax`, `robust_scale`, `max_abs_scale`/`maxabs`, `z_score`/`zscore`, `quantile_transform`, `power_transform`, `yeo_johnson`, `box_cox` |
 | Binning / discretization | `quantile_bin`, `kbins`, `equal_width_bin`, `binning`, `discretize` |
 | Dimensionality reduction | `pca`, `truncated_svd`, `umap`, `tsne`, `nmf`, `latent_dirichlet` |
 | Frequency / count encoding | `frequency_encoding`, `count_encode`, `value_counts_encoding` |
 
-Matching is **whole-phrase with word boundaries** against a separator-normalized lowercase copy of
-`operation` — the mechanism T-022 introduced for target encoding, generalized to six families in
-T-047. So `standard-scale`, `standard_scale` and `Standard Scale` all match, while an operation that
-merely contains a family word (`log_transform`, `count_distinct_categories`,
-`mean_of_last_3_orders`) does not. No bare stem (`scale`, `transform`, `encoding`, `impute`, `mean`,
-`count`) is ever a keyword, for exactly that reason.
+Matching is **whole-phrase with word boundaries** against a normalized copy of `operation` —
+`-`/`_` collapsed to spaces, case folded, and camelCase split — the mechanism T-022 introduced for
+target encoding, generalized to six families in T-047. So `standard-scale`, `standard_scale`,
+`Standard Scale` and `StandardScaler` all match, while an operation that merely contains a family
+word (`log_transform`, `count_distinct_categories`, `mean_of_last_3_orders`) does not. No bare stem
+(`scale`, `transform`, `encoding`, `impute`, `mean`, `count`) is ever a keyword, for exactly that
+reason.
+
+The camelCase split exists because sklearn's own class names — `TargetEncoder`, `StandardScaler`,
+`MinMaxScaler`, `KNNImputer`, `SimpleImputer` — are probable `operation` values and were reachable
+by no keyword without it. An uppercase run followed by a capitalized word splits after the acronym
+(`KNNImputer` → `knn imputer`, not `k n n imputer`), and a bare all-caps token is left whole
+(`PCA` → `pca`). Matching runs against both the split and the unsplit normalization, so a keyword
+carried concatenated in a tuple (`catboost`) still matches a camelCase spelling of the same name.
+An unseparated all-lowercase run (`targetencoder`) cannot be split by any rule that does not guess
+word breaks, and matches nothing.
+
+**Row-wise normalization is deliberately excluded** from the scaling family. `l2_normalize` /
+`unit_norm` (sklearn's `Normalizer`) rescales each sample by its own norm and learns nothing from
+any other row, so it is stateless and `global` is the *correct* declaration for it — the one the
+prompt asks for. Flagging it made a conforming response raise, and `LLMNode.__call__` does not
+catch `ValueError`, so a correct spec aborted the Phase 4 run.
 
 **Severity is deliberately not uniform.** Target encoding is *target* leakage: the value for a row
 is derived from the target column, so a CV score computed with it is not merely optimistic, it is

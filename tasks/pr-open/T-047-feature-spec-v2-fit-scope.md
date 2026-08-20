@@ -165,7 +165,110 @@ does not reach them. Only the stale prose in their prompt is touched — see bel
 - **`fit_scope` matching is exact-token**, deliberately not case-folded or separator-normalized, unlike *operation* matching. `coder` branches on this value, so only `per_fold`/`global` may reach the artifact. `value not in _FIT_SCOPES` also rejects `True`/`False`/`None`/missing in one branch, so no `isinstance(bool)` special case is needed here.
 - **`frequency_encoding_excluding_target_leak` is now flagged** — T-022's canonical false positive. This is deliberate, not a regression: it is still not matched as *target* encoding (T-022's actual property), it simply belongs to the frequency/count family v2 added, and frequency encoding does learn global category counts. The old false-positive test was converted into a positive-flag test and the false-positive done-when is served by seven different examples.
 - **`tests/fixtures/graph_mocks.py` touched only for `_MOCK_FEATURE_SPEC` and its comment block**, per Adjustment 4. Its `_make_llm_side_effect` docstring still references `config/prompts/{name}/v1.md` generically, which is now imprecise for `feature_engineer` — left deliberately, so a reviewer does not read it as an oversight.
-- **Scope held.** `LabState`, `spec.md`, `design.json`/`preprocessing`/`_PREPROCESSING_STEP_RE`/`DESIGN_KEYS`, the `_strip_outer_fence`/`_extract_json` duplication (still 9 copies) and the T-032 Phase-4-reads-Phase-6 discovery were all left untouched. `spec.md:502-512` is knowingly stale — the Orchestrator runs `/refine` post-merge.
+- **Scope held.** `LabState`, `spec.md`, `design.json`/`preprocessing`/`_PREPROCESSING_STEP_RE`/`DESIGN_KEYS`, the `_strip_outer_fence`/`_extract_json` duplication (8 fence copies + 8 extractors across 8 files — unchanged by this PR; the count is corrected in the discovery, see the review fix round below) and the T-032 Phase-4-reads-Phase-6 discovery were all left untouched. `spec.md:502-512` is knowingly stale — the Orchestrator runs `/refine` post-merge.
 - **Discoveries:** the B-001 → T-047 entry in `context/discoveries/legacy.md` is marked `resolved in T-047`. `context/discoveries/T-047.md` carries three open entries — the v2 contract and the `fit_scope`-beats-`preprocessing` tie-break for T-029; the T-024 reader discovery closed for this module only (still open for `baseline_designer`/`solution_architect`/`_research_common`); and the accepted residual risk that an unmatched operation may declare `global`, with `code_critic`'s rubric named as the only downstream net.
 
 **Dependencies added:** None.
+
+### Review fix round
+
+Review returned **WARNINGS, no blockers**. All findings addressed; the Orchestrator revoked ruling
+Q2 ("ship the tuples exactly as written") on the strength of the review's executed evidence, so the
+tuples themselves changed — in these ways and no others.
+
+**Keyword-guard corrections (the four WARNINGs).** Every claim was verified by running
+`_matched_fit_scope_family` against the real code, before and after.
+
+- [CQ-f4dda81e] `_SCALER_KEYWORDS` **lost** `"unit norm"` and `"l2 normalize"`. sklearn's
+  `Normalizer` scales each sample by its own norm and learns nothing from any other row: it is
+  stateless, so `global` is the declaration the v2 prompt asks for. Flagging it made a *correct*
+  response raise, and `LLMNode.__call__` (`src/nodes/llm/base.py`) has no `try/except`, so that
+  terminated the Phase 4 run. A comment in their place records the exclusion as deliberate.
+- [CQ-b2a0b5bc] `_SCALER_KEYWORDS` **gained** `maxabs`, `max abs scaling`, `zscore`, `standardize`,
+  `standardization` (`max abs scale` was already there). `standardize`, `maxabs_scale` and
+  `zscore_normalization` all returned `None` and were written `global`. This also closes the
+  tuple's own asymmetry — it carried the concatenated `minmax` but not `maxabs`, `z score` but not
+  `zscore`.
+- [CQ-67bf82eb] `_STATISTICAL_IMPUTATION_KEYWORDS` **gained** the verb-first and pandas phrasings:
+  `impute median/mean/mode`, `fillna median/mean/mode`, `median/mean/mode fill`, `simple impute`.
+  The tuple tripled every `median impute/imputation/imputer` variant while missing `fillna_median`,
+  the single most probable name an LLM emits for this transformation.
+- [CQ-6e404ca1] `_TARGET_ENCODING_KEYWORDS` **gained** `target encode` and `target encoder`. This
+  tuple is therefore **no longer carried byte-for-byte from T-022** (the bullet above, written for
+  the pre-review commits, is superseded on that point). Highest severity of the six — actual target
+  leakage — and the gap exists on `main` too; fixed here because this PR promotes the tuple to the
+  sole floor for that family, and because this PR's own `_FREQUENCY_ENCODING_KEYWORDS` already
+  lists the noun *and* verb form.
+- **camelCase normalization**, required to actually close the one above. `_normalize_operation` now
+  inserts a space at a lowercase/digit→uppercase boundary and after an uppercase run followed by a
+  capitalized word, before lowercasing: `TargetEncoder` → `target encoder`, `MinMaxScaler` →
+  `min max scaler`, `KNNImputer` → `knn imputer` (not `k n n imputer`), `TruncatedSVD` →
+  `truncated svd`, while `PCA` → `pca` and `WOE` → `woe` are untouched. These are sklearn's real
+  class names and were reachable by **no** keyword in any tuple. `_matched_fit_scope_family` now
+  matches against **both** the split and the unsplit normalization: splitting alone would have
+  broken a pre-existing match, since `CatBoost encoding` splits to `cat boost encoding` and no
+  longer hits the concatenated `catboost` keyword. Matching both adds the class-name shapes without
+  trading anything away, and cannot introduce a false positive the unsplit form did not already
+  have. Documented non-coverage, stated rather than assumed: an unseparated all-lowercase run
+  (`targetencoder`) and a digit-run boundary (`Top10Encoder` → `top10 encoder`).
+- **Regression check, explicitly:** the "merely mentions a family word" suite (`log_transform`,
+  `standard_deviation_ratio`, `mean_of_last_3_orders`, `count_distinct_categories`, `target_lag_1`,
+  `datetime_part_extraction`, `text_length`) and the "unrecognized operation accepted with global"
+  suite (`groupby_user_mean_amount`, `winsorize_clip_outliers`, `quantile_clip_outliers`,
+  `rolling_ratio_v3`) both stay green. Those two done-whens are in direct tension with every
+  keyword added, and neither moved.
+
+**Two new validation rules** (human-approved from the adversarial findings).
+
+- [ADV-ed8fe4df] duplicate column names within one entry are rejected. `["amount","amount"]` with
+  `operation: "ratio"` validated before and produced a constant-1 feature at T-029 that would read
+  as a modeling problem. `solution_architect` sets the precedent with normalized-duplicate
+  `model_families`.
+- [ADV-0497d105] two entries sharing a `(tuple(columns), operation)` pair are rejected, naming both
+  indices. The key is the pair, **not** full-entry equality: differing `params` change the values
+  but not the derived column's name, so that is a collision too. `columns` stays ordered, so
+  `["a","b"]` and `["b","a"]` remain two legal entries.
+
+**Nitpicks.**
+
+- [CQ-157f757d] `_validate_text_field` now returns `value.strip()`. `operation: "  target_encoding  "`
+  passed the truthiness check and reached the artifact padded, and `coder` string-matches
+  `operation`. Stripping happens before the family guard sees it, so padding cannot slip a fitted
+  operation past the check either — there is a test for that.
+- [CQ-74912f39] the family parametrization now carries `(operation, expected_family)` and both
+  directions assert the family **label**, not just `match="per_fold"` (every family's message
+  contains that string, so a keyword relocated into the wrong tuple would have passed all 56
+  cases). Still one shared `_FAMILY_OPERATIONS` list driving accept and reject together.
+- [CQ-2ee8c605] `context/discoveries/T-047.md`'s "unchanged at 9" corrected. The *unchanged* part
+  was right; the number was copied forward from the T-024 discovery text. Measured on this branch:
+  **8 `_strip_outer_fence` definitions and 8 JSON extractors across 8 files** — and the extractors
+  are not one function eight times (five `_extract_json`, two `extract_json_object`, one
+  `extract_json_array`, with the shared ones taking a `node_name`/`specialist` parameter the
+  node-private ones hard-code), which the hoist will have to reconcile.
+
+**Records and docs.** `context/discoveries/T-047.md`'s T-029 entry gained three items the review
+surfaced: `schema_version` was considered and deliberately **not** added (human ruling — it would
+add a key to the just-pinned contract; no live path breaks, since `analysis_critic` reads the file
+as raw text and `resolve_feature_spec_ref` always points at the current iteration, but several
+`design/iteration_{N}/` generations coexist in a workspace); [SEC-4114715b] `columns` entries are
+unconstrained free strings originating in the user's Kaggle dataset and must be **escaped** in
+`coder`'s codegen; [SEC-cb459b3c] no size or cardinality bound exists, low-risk because
+`max_tokens: 4096` bounds it in practice, but noted against `_delivery_common.MAX_INJECTED_CHARS`'s
+convention since the artifact is re-injected verbatim into `analysis_critic`'s prompt.
+`context/decisions/T-047.md` gained one entry recording the tuple change, the camelCase extension
+and both deferrals. `config/prompts/feature_engineer/v2.md` and `docs/pipeline.md` were updated to
+match the tuples exactly — the added terms, the removed row-wise normalizers (with a short note
+telling the LLM that `l2_normalize` is correctly `global`), the camelCase note, and the two new
+structural rules. Prompt and validator vocabulary must not drift; that is what T-022's decision
+record exists for.
+
+**Not fixed, deliberately:** the `schema_version` key and the size/cardinality bounds — both ruled
+out by the human and recorded as discoveries for T-029 instead. `spec.md:502-512` stays knowingly
+stale (`/refine` runs post-merge).
+
+**Verification after the fix round:** full suite **2080 passed** (285 in
+`test_feature_engineer.py`), total coverage 97.61%; `src/nodes/llm/feature_engineer.py` at **99%**
+(140 statements, 1 missed — the same pre-existing unreachable `"fence has no closing delimiter"`
+branch), against the task's 85% bar. `ruff check .`, `ruff format --check .` and `mypy src/` clean.
+`tests/integration/phases/test_phase_subgraphs_smoke.py` + `tests/unit/graph/test_checkpointer.py`
+green (12 passed).

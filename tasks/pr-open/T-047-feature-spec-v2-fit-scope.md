@@ -272,3 +272,66 @@ stale (`/refine` runs post-merge).
 branch), against the task's 85% bar. `ruff check .`, `ruff format --check .` and `mypy src/` clean.
 `tests/integration/phases/test_phase_subgraphs_smoke.py` + `tests/unit/graph/test_checkpointer.py`
 green (12 passed).
+
+#### Round 2 — five precise fixes, one of them reversing round 1
+
+A second review pass, again all findings verified by executing `_matched_fit_scope_family`.
+
+- [CQ-4033aa95] `_SCALER_KEYWORDS` **loses** `standardize` and `standardization` — the two terms
+  round 1 added above. They are bare stems in exactly the sense the module comment already
+  excludes `normalize`/`normalization` for: "standardize" means "make uniform" at least as often as
+  it means z-scoring. `standardize_address_format`, `standardize_text_case`,
+  `standardize_country_codes`, `StandardizePhoneNumber` and `standardize_units_to_metric` all
+  matched and therefore **aborted the run**. Both terms are now named in the excluded-bare-stem
+  comment so nobody re-adds them; z-scoring stays covered by `standard scale(r)`, `zscore`,
+  `z score`, `minmax`, `maxabs`. The severity comment was rewritten with the reason this matters:
+  the guard's conservatism is **not symmetric**. It raises `ValueError` rather than coercing
+  `fit_scope`, and nothing catches it — so over-matching is a dead run with nothing behind it,
+  while under-matching is a silent leak with three layers behind it (the prompt's general rule,
+  `code_critic`'s rubric, the family's other keywords). Round 1's "over-matching is cheap" premise
+  was simply false for this guard.
+- [ADV-4acdc3c6] `_TARGET_ENCODING_KEYWORDS` **gains** `cat boost`. The tuple carries `catboost`
+  concatenated, so the camel split turned `category_encoders`' real class name `CatBoostEncoder`
+  into `cat boost encoder`, which matched nothing — in the target-leakage family, the most severe
+  of the six. `catboostencoder` (unseparated lowercase run) remains the documented non-coverage.
+- [CQ-2bc3fb49] `_STATISTICAL_IMPUTATION_KEYWORDS` **gains** `most frequent imputer`. The prompt
+  promised "the same three forms for `mean_`, `mode_` and `most_frequent_`" but the tuple had only
+  two for `most_frequent_`. Fixed on the tuple side, not by weakening the prompt —
+  `SimpleImputer(strategy="most_frequent")` is real sklearn. All four stems now carry all three
+  forms, re-verified by execution, so the prompt's claim is true; no other combination over-claims.
+- [ADV-7a7ea912] `_normalized_operation_variants`' docstring no longer claims the dual-variant
+  match "cannot introduce a false positive the unsplit form did not already have". It keeps the
+  half that is provable — the tuple always contains the plain separator-collapsed form, so the
+  match set is a strict **superset** and nothing is lost — and states plainly that it matches
+  strictly more strings and can therefore surface a new false positive (`StandardizeTextCase`,
+  `ModeFillColorFlag`, `ImputeMeanFlagOnly`, `FillnaMeanIndicator`, `TargetEncoderFreeBaseline` all
+  match split, none unsplit). Every such case has a snake_case twin that false-positives under both
+  forms, so the mitigation is keyword discipline, not a property of the splitting.
+- [CQ-819a2a50] `context/discoveries/T-047.md`'s arithmetic corrected a second time: "four
+  `_common`/shared" + "five node-private" summed to 9 against a stated total of 8. Measured from
+  the `grep` line: **three** parameterized extractors + five node-private = 8, and the eight
+  `_strip_outer_fence` copies split the same way. All three parameterized ones are now named
+  inline.
+
+`config/prompts/feature_engineer/v2.md` and `docs/pipeline.md`'s family table track all three tuple
+changes; the prompt additionally tells the LLM to name z-scoring `standard_scale`/`z_score` rather
+than a bare `standardize`, and the docs' severity paragraph carries the asymmetry argument.
+`context/decisions/T-047.md` gained a round-2 entry whose substance is that asymmetry; under
+Discarded it records that keeping `standardize` behind a qualifier (`standardize numeric`) was
+rejected as relying on phrasing the LLM has no reason to produce, and that the round-1 entry's
+"discarded: adding `cat boost`" is reversed — matching both variants and carrying `cat boost` are
+complementary, not alternatives.
+
+**Tests.** `_FAMILY_OPERATIONS` drops the two `standardize` rows and gains `CatBoostEncoder`,
+`cat_boost_encoder`, `most_frequent_imputer`, `MostFrequentImputer` — still one shared
+`(operation, expected_family)` list driving both directions. A new
+`test_standardize_prefixed_stateless_operation_with_global_is_accepted` pins the six removed false
+positives as **accepted** with `global`. The two tension suites gained camelCase twins of every
+case (`LogTransform`, `MeanOfLast3Orders`, `GroupbyUserMeanAmount`, `RollingRatioV3`, …), since the
+split normalization is the mechanism that could break them.
+
+**Verification after round 2:** full suite **2104 passed** (+24 cases), total coverage 97.61%;
+`src/nodes/llm/feature_engineer.py` at **99%** (140 statements, 1 missed — the same unreachable
+fence branch), `test_feature_engineer.py` **309 passed**. `ruff check .`, `ruff format --check .`
+and `mypy src/` clean. `tests/integration/phases/test_phase_subgraphs_smoke.py` +
+`tests/unit/graph/test_checkpointer.py` green (12 passed).

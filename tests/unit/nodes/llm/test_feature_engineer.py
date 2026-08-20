@@ -768,6 +768,8 @@ _FAMILY_OPERATIONS = [
     ("WOE", _TARGET_ENCODING),
     ("weight of evidence", _TARGET_ENCODING),
     ("CatBoost encoding", _TARGET_ENCODING),
+    ("CatBoostEncoder", _TARGET_ENCODING),
+    ("cat_boost_encoder", _TARGET_ENCODING),
     ("James-Stein encoding", _TARGET_ENCODING),
     ("M-estimate encoding", _TARGET_ENCODING),
     ("impact_encoding", _TARGET_ENCODING),
@@ -778,6 +780,8 @@ _FAMILY_OPERATIONS = [
     ("median-imputation", _IMPUTATION),
     ("Mean Imputer", _IMPUTATION),
     ("mode_impute", _IMPUTATION),
+    ("most_frequent_imputer", _IMPUTATION),
+    ("MostFrequentImputer", _IMPUTATION),
     ("knn_impute", _IMPUTATION),
     ("iterative_imputation", _IMPUTATION),
     ("mice", _IMPUTATION),
@@ -799,8 +803,6 @@ _FAMILY_OPERATIONS = [
     ("standard-scale", _SCALING),
     ("Standard Scale", _SCALING),
     ("StandardScaler", _SCALING),
-    ("standardize", _SCALING),
-    ("standardization", _SCALING),
     ("min_max_scaler", _SCALING),
     ("MinMaxScaler", _SCALING),
     ("robust_scaling", _SCALING),
@@ -957,8 +959,9 @@ def test_row_wise_normalizer_with_global_is_accepted(
     ("operation", "expected_family"),
     [
         # A2 — the concatenated scaler spellings. The tuple already carried `minmax` but not
-        # `maxabs`, and `z score` but not `zscore`; `standardize` is the plain-English verb.
-        ("standardize", _SCALING),
+        # `maxabs`, and `z score` but not `zscore`. (`standardize`/`standardization` were added
+        # here too and removed again in round 2 — see
+        # `test_standardize_prefixed_stateless_operation_with_global_is_accepted`.)
         ("maxabs_scale", _SCALING),
         ("zscore_normalization", _SCALING),
         # A3 — verb-first and pandas phrasings. `fillna_median` is the most probable name of all.
@@ -970,6 +973,13 @@ def test_row_wise_normalizer_with_global_is_accepted(
         ("target_encode", _TARGET_ENCODING),
         ("target_encoder", _TARGET_ENCODING),
         ("TargetEncoder", _TARGET_ENCODING),
+        # Round 2 — `CatBoostEncoder` is `category_encoders`' real class name and the camelCase
+        # split reaches it only via the separated `cat boost` keyword; `most_frequent_imputer` is
+        # the third form `config/prompts/feature_engineer/v2.md` promised and the tuple lacked.
+        ("CatBoostEncoder", _TARGET_ENCODING),
+        ("cat_boost_encoder", _TARGET_ENCODING),
+        ("most_frequent_imputer", _IMPUTATION),
+        ("MostFrequentImputer", _IMPUTATION),
     ],
 )
 def test_review_round_keyword_additions_are_flagged(
@@ -999,6 +1009,41 @@ def test_review_round_keyword_additions_are_flagged(
 @pytest.mark.parametrize(
     "operation",
     [
+        "standardize_address_format",
+        "standardize_text_case",
+        "standardize_country_codes",
+        "standardize_units_to_metric",
+        "StandardizePhoneNumber",
+        "StandardizeTextCase",
+    ],
+)
+def test_standardize_prefixed_stateless_operation_with_global_is_accepted(
+    patched_llm_factory, patched_settings, mock_workspace_manager, operation: str
+) -> None:
+    """Regression for the false positive round 1 of the T-047 review introduced and round 2
+    removed. `standardize`/`standardization` were added to `_SCALER_KEYWORDS` as "the
+    plain-English verb for z-scoring", but the word means "make uniform" at least as often, so
+    every one of these stateless operations matched and raised.
+
+    That is not a harmlessly-conservative outcome: the guard raises `ValueError` rather than
+    coercing `fit_scope`, and `LLMNode.__call__` does not catch it — a false positive aborts the
+    Phase 4 run on a correct response. Genuine z-scoring stays covered by `standard_scale`,
+    `z_score` and `zscore`, pinned in `_FAMILY_OPERATIONS`."""
+    _respond(
+        patched_llm_factory,
+        {"features": [_entry(operation=operation, params={}, fit_scope="global")]},
+    )
+    _, workspace_instance = mock_workspace_manager
+    node = FeatureEngineerNode()
+
+    node(_build_state())
+
+    assert _written_features(workspace_instance)[0]["fit_scope"] == "global"
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
         "log_transform",
         "standard_deviation_ratio",
         "mean_of_last_3_orders",
@@ -1006,6 +1051,14 @@ def test_review_round_keyword_additions_are_flagged(
         "target_lag_1",
         "datetime_part_extraction",
         "text_length",
+        # camelCase twins: the split normalization must not turn any of these into a match
+        "LogTransform",
+        "StandardDeviationRatio",
+        "MeanOfLast3Orders",
+        "CountDistinctCategories",
+        "TargetLag1",
+        "DatetimePartExtraction",
+        "TextLength",
     ],
 )
 def test_operation_mentioning_a_family_word_is_not_flagged(
@@ -1053,6 +1106,11 @@ def test_frequency_encoding_excluding_target_leak_is_now_flagged(
         "winsorize_clip_outliers",
         "quantile_clip_outliers",
         "rolling_ratio_v3",
+        # camelCase twins, for the same reason as the false-positive list above
+        "GroupbyUserMeanAmount",
+        "WinsorizeClipOutliers",
+        "QuantileClipOutliers",
+        "RollingRatioV3",
     ],
 )
 def test_unrecognized_operation_with_global_is_accepted(

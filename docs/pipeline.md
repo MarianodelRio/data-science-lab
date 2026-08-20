@@ -450,9 +450,9 @@ on data and is therefore *required* to declare `per_fold`:
 
 | Family | Representative recognized terms |
 |---|---|
-| Target encoding | `target_encoding`/`target_encode`/`target_encoder`, `target_mean`, `mean_encoding`, `leave_one_out`, `WOE`, `CatBoost`, `James-Stein`, `M-estimate`, `impact_encoding` |
-| Statistical imputation | `median_impute`, `mean_imputation`, `mode_imputer`, `impute_median`, `fillna_median`, `median_fill`, `knn_impute`, `iterative_impute`, `simple_impute`/`simple_imputer`, `MICE` |
-| Scaling / normalization | `standard_scale`, `standardize`/`standardization`, `min_max_scaler`, `minmax`, `robust_scale`, `max_abs_scale`/`maxabs`, `z_score`/`zscore`, `quantile_transform`, `power_transform`, `yeo_johnson`, `box_cox` |
+| Target encoding | `target_encoding`/`target_encode`/`target_encoder`, `target_mean`, `mean_encoding`, `leave_one_out`, `WOE`, `CatBoost`/`cat_boost` (`CatBoostEncoder`), `James-Stein`, `M-estimate`, `impact_encoding` |
+| Statistical imputation | `median_impute`, `mean_imputation`, `mode_imputer`, `most_frequent_imputer`, `impute_median`, `fillna_median`, `median_fill`, `knn_impute`, `iterative_impute`, `simple_impute`/`simple_imputer`, `MICE` |
+| Scaling / normalization | `standard_scale`, `min_max_scaler`, `minmax`, `robust_scale`, `max_abs_scale`/`maxabs`, `z_score`/`zscore`, `quantile_transform`, `power_transform`, `yeo_johnson`, `box_cox` |
 | Binning / discretization | `quantile_bin`, `kbins`, `equal_width_bin`, `binning`, `discretize` |
 | Dimensionality reduction | `pca`, `truncated_svd`, `umap`, `tsne`, `nmf`, `latent_dirichlet` |
 | Frequency / count encoding | `frequency_encoding`, `count_encode`, `value_counts_encoding` |
@@ -462,8 +462,11 @@ Matching is **whole-phrase with word boundaries** against a normalized copy of `
 target encoding, generalized to six families in T-047. So `standard-scale`, `standard_scale`,
 `Standard Scale` and `StandardScaler` all match, while an operation that merely contains a family
 word (`log_transform`, `count_distinct_categories`, `mean_of_last_3_orders`) does not. No bare stem
-(`scale`, `transform`, `encoding`, `impute`, `mean`, `count`) is ever a keyword, for exactly that
-reason.
+(`scale`, `transform`, `normalize`, `standardize`, `encoding`, `impute`, `mean`, `count`) is ever a
+keyword, for exactly that reason — `standardize`/`standardization` were briefly added during the
+T-047 review and removed again in its second round, because "standardize" means "make uniform"
+(`standardize_country_codes`, `standardize_text_case`) at least as often as it means z-scoring,
+which `standard_scale`/`z_score`/`zscore` already cover.
 
 The camelCase split exists because sklearn's own class names — `TargetEncoder`, `StandardScaler`,
 `MinMaxScaler`, `KNNImputer`, `SimpleImputer` — are probable `operation` values and were reachable
@@ -485,8 +488,16 @@ is derived from the target column, so a CV score computed with it is not merely 
 partly measuring the target. The other five leak only *feature* statistics out of the held-out fold
 — a scaler's mean and σ, an imputer's median, a PCA basis, a category's global frequency — which
 inflates the score more mildly. Rejecting both is a conservative stance, not a claim they are the
-same bug: forcing `per_fold` on an operation that turns out to be stateless produces identical
-output, whereas missing a fitted one is a silent leak.
+same bug.
+
+That conservatism is **not symmetric**, which is the constraint governing every keyword choice. The
+guard does not coerce `fit_scope` to `per_fold`; it raises `ValueError`, and neither
+`LLMNode.__call__` nor any node wrapper in `src/graph/` catches it — so a false positive aborts the
+Phase 4 run on a *correct* response. A false negative has three layers behind it: the prompt's
+general "anything fitted is `per_fold`" rule, `code_critic`'s leakage rubric, and the remaining
+keywords of the same family. Under-matching is a covered silent leak; over-matching is a dead run
+with nothing behind it. A keyword therefore earns its place only when its whole phrase is
+unambiguously the fitted technique and nothing else.
 
 **Honest scope.** The family list is a floor, not the boundary — the same framing `FORBIDDEN_CV_KEYS`
 carries. `operation` is an open vocabulary, so an operation matching no family gets no check and may

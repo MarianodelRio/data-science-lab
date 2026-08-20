@@ -147,9 +147,15 @@ def _read_eda_report(state: LabState, workspace: WorkspaceManager) -> str:
 # `MinMaxScaler`, `KNNImputer`) are probable `operation` values and were reachable by no keyword.
 #
 # Deliberately absent from every tuple: the bare stems `scale`, `transform`, `normalize`,
-# `normalization`, `encoding`, `mean`, `count` and `impute`. Each appears inside operations
-# that are legitimately stateless (`log_transform`, `text_normalization`,
-# `count_distinct_categories`, `mean_of_last_3_orders`), and adding one would flag them.
+# `normalization`, `standardize`, `standardization`, `encoding`, `mean`, `count` and `impute`.
+# Each appears inside operations that are legitimately stateless (`log_transform`,
+# `text_normalization`, `standardize_country_codes`, `count_distinct_categories`,
+# `mean_of_last_3_orders`), and adding one would flag them. `standardize`/`standardization` were
+# added to this list in the second T-047 review round after being briefly present in
+# `_SCALER_KEYWORDS`: they are direct synonyms of `normalize`/`normalization` and mean "make
+# uniform" far more often than "z-score" (`standardize_address_format`, `standardize_text_case`,
+# `StandardizePhoneNumber` all matched). Genuine z-scoring stays covered by `standard scale(r)`,
+# `zscore`/`z score`.
 # Because `\b...\b` matching makes `impute` no prefix of `imputation`, both stems of each
 # word are listed explicitly — do not collapse the variants.
 #
@@ -158,9 +164,19 @@ def _read_eda_report(state: LabState, workspace: WorkspaceManager) -> str:
 # merely optimistic, it is measuring the target. The other five leak only *feature*
 # statistics from the held-out fold (a scaler's mean/σ, an imputer's median, a PCA basis, a
 # category's global frequency), which inflates the score more mildly. Requiring `per_fold`
-# for both is a deliberate conservative stance, not a claim that they are the same bug —
-# and it is cheap, because forcing `per_fold` on an operation that turns out to be
-# stateless produces identical output, whereas missing a fitted one is a silent leak.
+# for both is a deliberate conservative stance, not a claim that they are the same bug.
+#
+# That conservatism is **not symmetric**, and the earlier wording here ("cheap, because forcing
+# `per_fold` on a stateless operation produces identical output") was wrong about why. This guard
+# does not coerce `fit_scope`; it raises `ValueError`, and `LLMNode.__call__`
+# (`src/nodes/llm/base.py`) does not catch it and no node-level handler in `src/graph/` does
+# either. So a false positive is not a harmlessly-conservative `per_fold` — it aborts the Phase 4
+# run on a *correct* response. A false negative, by contrast, has three layers behind it: the
+# prompt's general "anything fitted is `per_fold`" rule, `code_critic`'s leakage rubric, and the
+# remaining keywords of the same family. Under-matching is a covered silent leak; over-matching is
+# a dead run with nothing behind it. That asymmetry — not a balanced trade-off — is why bare stems
+# are strictly bad, and why a keyword is added only when its phrase is unambiguously the fitted
+# technique and nothing else.
 _TARGET_ENCODING_KEYWORDS = (
     "target encoding",
     "target encode",
@@ -173,6 +189,10 @@ _TARGET_ENCODING_KEYWORDS = (
     "woe",
     "weight of evidence",
     "catboost",
+    # `category_encoders`' real class name is `CatBoostEncoder`, which the camelCase split turns
+    # into `cat boost encoder` — reachable by no concatenated keyword. `catboostencoder` (an
+    # unseparated lowercase run) still matches nothing; that is the documented non-coverage.
+    "cat boost",
     "james stein",
     "m estimate",
     "impact encoding",
@@ -190,6 +210,7 @@ _STATISTICAL_IMPUTATION_KEYWORDS = (
     "mode imputer",
     "most frequent impute",
     "most frequent imputation",
+    "most frequent imputer",
     "knn impute",
     "knn imputation",
     "knn imputer",
@@ -216,8 +237,6 @@ _SCALER_KEYWORDS = (
     "standard scale",
     "standard scaler",
     "standard scaling",
-    "standardize",
-    "standardization",
     "min max scale",
     "min max scaler",
     "min max scaling",
@@ -241,8 +260,16 @@ _SCALER_KEYWORDS = (
     # sample by its own norm, so it learns nothing from any other row — it is stateless and
     # row-wise, exactly what the prompt tells the LLM to declare `global` for. Flagging it made a
     # *correct* declaration raise, and `LLMNode.__call__` does not catch `ValueError`, so that
-    # aborted the Phase 4 run. Do not re-add them: the concatenated spellings ("standardize",
-    # "zscore", "minmax", "maxabs") above are the shapes that were genuinely missing.
+    # aborted the Phase 4 run. The concatenated spellings ("zscore", "minmax", "maxabs") above are
+    # the shapes that were genuinely missing.
+    #
+    # Also deliberately NOT here, and removed in the second T-047 review round: "standardize" and
+    # "standardization". They are bare stems in the sense of the block comment above — synonyms of
+    # `normalize`/`normalization` whose everyday meaning is "make uniform", so they matched
+    # `standardize_address_format`, `standardize_text_case`, `standardize_country_codes`,
+    # `StandardizePhoneNumber` and `standardize_units_to_metric`, every one of which is stateless
+    # and every one of which aborted the run. z-scoring remains covered by "standard scale(r)",
+    # "z score" and "zscore".
 )
 
 _BINNING_KEYWORDS = (
@@ -332,10 +359,19 @@ def _normalized_operation_variants(value: str) -> tuple[str, ...]:
 
     Splitting camelCase is what makes `TargetEncoder` reachable, but it also breaks apart names
     the tuples carry *concatenated*: `CatBoost encoding` splits to `cat boost encoding`, which no
-    longer matches the `catboost` keyword. Matching against both the split and the unsplit form
-    keeps every pre-review match while adding the class-name shapes, and it cannot introduce a
-    false positive that the unsplit form did not already have, since the split form only differs
-    for inputs that contain an internal capital.
+    longer matches the `catboost` keyword. Matching against both forms therefore **loses
+    nothing** — that much is provable from the construction, since the returned tuple always
+    contains the plain separator-collapsed form, which *is* the pre-camelCase normalization, so
+    the match set is a strict superset of the old one.
+
+    What does *not* follow, and was wrongly claimed here before the second T-047 review round, is
+    that it cannot add a false positive. It matches strictly more strings — that is its purpose —
+    so it can surface one the unsplit form did not have: `StandardizeTextCase`, `ModeFillColorFlag`,
+    `ImputeMeanFlagOnly`, `FillnaMeanIndicator` and `TargetEncoderFreeBaseline` all match split and
+    none match unsplit. Every such case found so far has a snake_case twin that false-positives
+    under both forms, so the root cause is the keyword, not the splitting. The mitigation is
+    keyword discipline — no bare stems, see the family-constant block — not any property of this
+    function. Do not read it as licence to add keywords freely.
     """
     split = _normalize_operation(value)
     joined = _collapse_separators(value)

@@ -20,6 +20,7 @@ from typing import Any
 
 from langchain_core.messages import BaseMessage, HumanMessage
 
+from src.nodes.llm._experiment_design import DEGRADE_ERRORS
 from src.nodes.llm.base import LLMNode, relative_to_workspace
 from src.state import LabState
 from src.workspace.workspace_manager import WorkspaceManager
@@ -71,27 +72,48 @@ def _read_solution_plan(state: LabState, workspace: WorkspaceManager) -> str:
     """Read state['solution_plan_path'] as pretty-printed JSON text. Degrades
     to a placeholder, never raises — mirrors baseline_designer._read_problem_definition.
     T-021 (solution_architect) may not have run yet, so this path is legitimately
-    unset during standalone/partial-phase execution."""
+    unset during standalone/partial-phase execution.
+
+    Still a private per-module copy (the T-022 decision that these reader helpers
+    are duplicated per module, with only `relative_to_workspace` hoisted in T-020,
+    is unchanged). Only the caught set changed in T-047: it is now
+    `_experiment_design.DEGRADE_ERRORS`, which carries the rationale for the exact
+    tuple, rather than a bare `OSError` that let a truncated file
+    (`json.JSONDecodeError`), a non-UTF-8 byte (`UnicodeDecodeError`), a `..`/moved
+    path (`ValueError` out of `WorkspaceManager._resolve`) or a pathological nesting
+    depth (`RecursionError`) escape a helper that promises never to raise (the T-024
+    discovery). `json.dumps` is inside the `try` for the same reason: a payload deep
+    enough to recurse on the way in recurses again on the way out. A non-`str` path
+    is guarded explicitly — `LabState` types it as `str`, but LangGraph does not
+    enforce the TypedDict at runtime, and `Path()` would raise `TypeError`, which is
+    deliberately *not* in the caught set.
+    """
     path = state.get("solution_plan_path") or ""
-    if not path:
+    if not isinstance(path, str) or not path:
         return "(solution plan not yet available)"
     try:
         data = workspace.read_json(relative_to_workspace(path, workspace))
-    except OSError:
+        return json.dumps(data, indent=2)
+    except DEGRADE_ERRORS:
         return f"(unable to read solution plan at {path})"
-    return json.dumps(data, indent=2)
 
 
 def _read_eda_report(state: LabState, workspace: WorkspaceManager) -> str:
     """Same behavior as baseline_designer._read_eda_report — own copy,
     per-module duplication is the established convention for these reader
-    helpers (only relative_to_workspace itself was hoisted, in T-020)."""
+    helpers (only relative_to_workspace itself was hoisted, in T-020).
+
+    Catches `_experiment_design.DEGRADE_ERRORS` and guards a non-`str` path for the
+    same reasons spelled out on `_read_solution_plan` above (T-047 / the T-024
+    discovery). Nothing is re-serialized here — `read_text` already returns a
+    `str` — so there is no second recursion hazard to guard.
+    """
     path = state.get("eda_report_path") or ""
-    if not path:
+    if not isinstance(path, str) or not path:
         return "(EDA report not yet available)"
     try:
         return workspace.read_text(relative_to_workspace(path, workspace))
-    except OSError:
+    except DEGRADE_ERRORS:
         return f"(unable to read EDA report at {path})"
 
 

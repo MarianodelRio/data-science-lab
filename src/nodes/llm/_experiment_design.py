@@ -4,6 +4,16 @@
 `ensemble_specialist` (T-028), all landed — and their downstream consumer
 `coder` (T-029), which reads the file this module shapes.
 
+Two of its utilities are deliberately **not** Phase-5-only and are exported to
+`src/nodes/llm/feature_engineer.py` (Phase 4) as of T-047: `DEGRADE_ERRORS` (the
+caught set every "degrades, never raises" reader helper promises) and
+`is_json_scalar` (the finite-JSON-scalar predicate, promoted from a private name
+so a fourth copy of the ±2**53/non-finite check never has to be written — see
+T-020's third-copy hoisting rule). The `design.json` contract itself stays
+Phase-5-only: nothing feature-spec-specific lives here, and the dependency runs
+one way only — `feature_engineer` imports these two general-purpose utilities
+*from* this module, never the reverse.
+
 `ensemble_specialist` alone extends the eight-key contract with a ninth key,
 `base_experiments`, via `ENSEMBLE_DESIGN_KEYS`/`validate_ensemble_design`: a
 thin wrapper around `validate_experiment_design` rather than a parameter
@@ -149,11 +159,12 @@ _FOLDS_NOT_AVAILABLE = "(frozen fold config not yet available)"
 # again inside `json.dumps` on the way back out; it is a `RuntimeError`, so
 # neither of the other two catches it.
 #
-# Reader helpers in the sibling node modules (`feature_engineer`,
-# `baseline_designer`, `solution_architect`, `_research_common`) still catch
-# `OSError` alone despite carrying the same "never raises" promise — see the
-# T-024 entry in `context/discoveries.md`; fixing them is out of this task's
-# scope, but this module's own readers are consistent with each other.
+# Reader helpers in the sibling node modules (`baseline_designer`,
+# `solution_architect`, `_research_common`) still catch `OSError` alone despite
+# carrying the same "never raises" promise — see the T-024 entry in
+# `context/discoveries.md`; fixing them is out of this task's scope, but this
+# module's own readers are consistent with each other. `feature_engineer`'s two
+# private copies adopted this tuple in T-047 and are no longer on that list.
 DEGRADE_ERRORS = (OSError, ValueError, RecursionError)
 
 
@@ -277,7 +288,7 @@ def normalize_model_family(value: Any, allowed: dict[str, tuple[str, ...]], spec
     return matched[0]
 
 
-def _is_json_scalar(value: Any) -> bool:
+def is_json_scalar(value: Any) -> bool:
     """A value that survives a `json.dump`/`JSON.parse` round trip unchanged.
 
     Two exclusions, both of which `WorkspaceManager.write_json` would otherwise
@@ -291,7 +302,8 @@ def _is_json_scalar(value: Any) -> bool:
       full, but every IEEE-754 double consumer rounds them: `2**53 + 1` reads
       back as `2**53`, and `10**400` reads back as `Infinity`/`null`. The same
       limit `_validate_numeric` applies to bounds, applied here to `choices` and
-      `fixed_params` values.
+      `fixed_params` values, and, since T-047, to `feature_spec.json`'s per-entry
+      `params` in `feature_engineer` (Phase 4).
 
     `bool` is matched before `int` (it is a subclass) so `true`/`false` stay
     scalars regardless of the magnitude check.
@@ -441,7 +453,7 @@ def _validate_choices(param: str, value: Any, specialist: str) -> list[Any]:
         )
     seen: set[Any] = set()
     for choice in value:
-        if not _is_json_scalar(choice):
+        if not is_json_scalar(choice):
             raise ValueError(
                 f"{specialist} response 'search_space.{param}.choices' must contain only finite "
                 f"JSON scalars (string/number/boolean/null), got {choice!r}"
@@ -510,8 +522,8 @@ def _validate_fixed_params(value: Any, specialist: str) -> dict[str, Any]:
     validated: dict[str, Any] = {}
     for key, item in value.items():
         name = _validate_param_name(key, "'fixed_params'", specialist)
-        if not _is_json_scalar(item) and not (
-            isinstance(item, list) and all(_is_json_scalar(entry) for entry in item)
+        if not is_json_scalar(item) and not (
+            isinstance(item, list) and all(is_json_scalar(entry) for entry in item)
         ):
             raise ValueError(
                 f"{specialist} response 'fixed_params.{key}' must be a finite JSON scalar or a "
@@ -736,8 +748,9 @@ def read_solution_plan(state: LabState, workspace: WorkspaceManager) -> str:
     Hoisted from `classical_ml_specialist._read_solution_plan` (T-024) now that
     `nlp_specialist` (T-026) needs the identical reader — see the 2026-08-11
     T-024 entry in `context/decisions.md`, which sanctions this hoist once a
-    third copy exists (`feature_engineer`'s divergent `OSError`-only copy is the
-    first; `classical_ml_specialist`'s `DEGRADE_ERRORS` copy is the second).
+    third copy exists (`feature_engineer`'s copy — then `OSError`-only, aligned
+    onto `DEGRADE_ERRORS` in T-047 — is the first; `classical_ml_specialist`'s
+    `DEGRADE_ERRORS` copy is the second).
     `classical_ml_specialist`'s private copy is deliberately left in place —
     already shipped and tested, not retroactively migrated by this hoist.
     """

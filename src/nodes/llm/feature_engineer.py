@@ -139,10 +139,12 @@ def _read_eda_report(state: LabState, workspace: WorkspaceManager) -> str:
 # `validation/fold_config.json` and inflates the CV score. Each therefore requires
 # `"fit_scope": "per_fold"`.
 #
-# Matching is by whole phrase with word boundaries against a separator-normalized (`-` and
-# `_` collapsed to spaces) lowercase copy of the operation string, so `standard_scale`,
-# `standard-scale` and `Standard Scale` all match the same keyword uniformly. That
-# mechanism is T-022's, unchanged; only its scope generalized from one family to six.
+# Matching is by whole phrase with word boundaries against a normalized copy of the operation
+# string — `-`/`_` collapsed to spaces, case folded, and camelCase split — so `standard_scale`,
+# `standard-scale`, `Standard Scale` and `StandardScaler` all match the same keyword uniformly.
+# That mechanism is T-022's, generalized in T-047 from one family to six and extended in the
+# T-047 review round to camelCase, because sklearn's own class names (`TargetEncoder`,
+# `MinMaxScaler`, `KNNImputer`) are probable `operation` values and were reachable by no keyword.
 #
 # Deliberately absent from every tuple: the bare stems `scale`, `transform`, `normalize`,
 # `normalization`, `encoding`, `mean`, `count` and `impute`. Each appears inside operations
@@ -161,6 +163,8 @@ def _read_eda_report(state: LabState, workspace: WorkspaceManager) -> str:
 # stateless produces identical output, whereas missing a fitted one is a silent leak.
 _TARGET_ENCODING_KEYWORDS = (
     "target encoding",
+    "target encode",
+    "target encoder",
     "target mean",
     "smoothed target",
     "mean encoding",
@@ -193,6 +197,18 @@ _STATISTICAL_IMPUTATION_KEYWORDS = (
     "iterative imputation",
     "iterative imputer",
     "simple imputer",
+    "simple impute",
+    # Verb-first and pandas phrasings. `fillna_median` is the single most probable name an
+    # LLM emits for this transformation and matched nothing before the T-047 review.
+    "impute median",
+    "impute mean",
+    "impute mode",
+    "fillna median",
+    "fillna mean",
+    "fillna mode",
+    "median fill",
+    "mean fill",
+    "mode fill",
     "mice",
 )
 
@@ -200,6 +216,8 @@ _SCALER_KEYWORDS = (
     "standard scale",
     "standard scaler",
     "standard scaling",
+    "standardize",
+    "standardization",
     "min max scale",
     "min max scaler",
     "min max scaling",
@@ -209,15 +227,22 @@ _SCALER_KEYWORDS = (
     "robust scaling",
     "max abs scale",
     "max abs scaler",
+    "max abs scaling",
+    "maxabs",
     "z score",
+    "zscore",
     "quantile transform",
     "quantile transformer",
     "power transform",
     "power transformer",
     "yeo johnson",
     "box cox",
-    "unit norm",
-    "l2 normalize",
+    # Deliberately NOT here: "unit norm" and "l2 normalize". sklearn's `Normalizer` scales each
+    # sample by its own norm, so it learns nothing from any other row — it is stateless and
+    # row-wise, exactly what the prompt tells the LLM to declare `global` for. Flagging it made a
+    # *correct* declaration raise, and `LLMNode.__call__` does not catch `ValueError`, so that
+    # aborted the Phase 4 run. Do not re-add them: the concatenated spellings ("standardize",
+    # "zscore", "minmax", "maxabs") above are the shapes that were genuinely missing.
 )
 
 _BINNING_KEYWORDS = (
@@ -271,16 +296,60 @@ _FEATURE_KEYS = ("columns", "operation", "params", "fit_scope", "rationale")
 _FIT_SCOPES = ("per_fold", "global")
 
 
-def _normalize_operation(value: str) -> str:
-    """Lowercase copy with `-`/`_` runs collapsed to single spaces — the exact
-    normalization T-022's `_is_target_encoding_method` used."""
+# camelCase boundaries, split before lowercasing. `(?<=[a-z0-9])(?=[A-Z])` catches the ordinary
+# word boundary (`TargetEncoder` -> `Target Encoder`, `MinMaxScaler` -> `Min Max Scaler`);
+# `(?<=[A-Z])(?=[A-Z][a-z])` catches an acronym followed by a capitalized word (`KNNImputer` ->
+# `KNN Imputer`, not `K N N Imputer`). A bare all-caps token has no boundary of either kind, so
+# `PCA` and `WOE` normalize to `pca`/`woe` and keep matching as before.
+_CAMEL_WORD_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+_CAMEL_ACRONYM_BOUNDARY = re.compile(r"(?<=[A-Z])(?=[A-Z][a-z])")
+
+
+def _collapse_separators(value: str) -> str:
+    """Lowercase copy with `-`/`_` runs and whitespace collapsed to single spaces — the exact
+    normalization T-022's `_is_target_encoding_method` used, unchanged."""
     normalized = re.sub(r"[-_]+", " ", value.lower())
     return re.sub(r"\s+", " ", normalized).strip()
 
 
+def _normalize_operation(value: str) -> str:
+    """`_collapse_separators` plus a camelCase split, so sklearn's own class names reach the
+    keyword tuples: `TargetEncoder` -> `target encoder`, `MinMaxScaler` -> `min max scaler`,
+    `KNNImputer` -> `knn imputer`, while `PCA` -> `pca` and `WOE` -> `woe` are untouched.
+
+    Not covered, and stated rather than silently assumed: an all-lowercase concatenation with no
+    separator and no case boundary (`targetencoder`, `medianimpute`) cannot be split by any rule
+    that does not guess word breaks, so it matches nothing. Neither does a name whose only
+    boundary is a digit run (`Top10Encoder` -> `top10 encoder`, since `[a-z0-9]` deliberately
+    treats digits as part of the preceding word rather than splitting `top 10 encoder`).
+    """
+    spaced = _CAMEL_ACRONYM_BOUNDARY.sub(" ", _CAMEL_WORD_BOUNDARY.sub(" ", value))
+    return _collapse_separators(spaced)
+
+
+def _normalized_operation_variants(value: str) -> tuple[str, ...]:
+    """Both readings of an operation string, because neither alone is sufficient.
+
+    Splitting camelCase is what makes `TargetEncoder` reachable, but it also breaks apart names
+    the tuples carry *concatenated*: `CatBoost encoding` splits to `cat boost encoding`, which no
+    longer matches the `catboost` keyword. Matching against both the split and the unsplit form
+    keeps every pre-review match while adding the class-name shapes, and it cannot introduce a
+    false positive that the unsplit form did not already have, since the split form only differs
+    for inputs that contain an internal capital.
+    """
+    split = _normalize_operation(value)
+    joined = _collapse_separators(value)
+    return (split,) if split == joined else (split, joined)
+
+
 def _matched_fit_scope_family(operation: str) -> str | None:
     """The label of the first leakage-prone family whose keyword set matches
-    `operation` as a whole phrase (`\\b...\\b`, separator-normalized), or `None`.
+    `operation` as a whole phrase (`\\b...\\b`), against either normalization variant, or `None`.
+
+    Normalization collapses `-`/`_` separators and case and splits camelCase, so `standard_scale`,
+    `standard-scale`, `Standard Scale` and `StandardScaler` all reach the same keywords. It does
+    **not** split an unseparated all-lowercase run (`targetencoder`), which therefore matches
+    nothing — see `_normalize_operation`.
 
     `None` is the documented residual risk, not a claim of safety: `operation` is an
     open vocabulary, so a genuinely novel fitted technique (`groupby_user_mean_amount`)
@@ -290,9 +359,13 @@ def _matched_fit_scope_family(operation: str) -> str | None:
     the general "anything fitted is per_fold" rule that governs everything above this
     keyword floor.
     """
-    normalized = _normalize_operation(operation)
+    candidates = _normalized_operation_variants(operation)
     for family, keywords in _FIT_SCOPE_SENSITIVE_FAMILIES:
-        if any(re.search(rf"\b{re.escape(keyword)}\b", normalized) for keyword in keywords):
+        if any(
+            re.search(rf"\b{re.escape(keyword)}\b", candidate)
+            for candidate in candidates
+            for keyword in keywords
+        ):
             return family
     return None
 
@@ -307,16 +380,27 @@ def _validate_columns(index: int, value: Any) -> list[str]:
             f"feature_engineer response 'features[{index}]' field 'columns' must be a "
             f"non-empty list of non-empty strings, got {value!r}"
         )
+    if len(set(value)) != len(value):
+        raise ValueError(
+            f"feature_engineer response 'features[{index}]' field 'columns' names the same "
+            f"column more than once, got {value!r} — an operation applied to a column and "
+            f"itself (a ratio, a difference, an interaction) yields a constant, which reads "
+            f"downstream as a modeling problem rather than as the specification bug it is. "
+            f"`solution_architect` rejects duplicate 'model_families' for the same reason"
+        )
     return list(value)
 
 
 def _validate_text_field(index: int, field: str, value: Any) -> str:
+    """Returns the **stripped** value. `"  target_encoding  "` passes the truthiness check but
+    `coder` (T-029) string-matches `operation`, and the family guard matches on word boundaries,
+    so padding must never reach the artifact. Applied to `rationale` too, for consistency."""
     if not isinstance(value, str) or not value.strip():
         raise ValueError(
             f"feature_engineer response 'features[{index}]' missing required non-empty "
             f"string field {field!r}"
         )
-    return value
+    return value.strip()
 
 
 def _validate_params(index: int, value: Any) -> dict[str, Any]:
@@ -402,7 +486,20 @@ def _validate_features(value: Any) -> list[dict[str, Any]]:
         raise ValueError(
             f"feature_engineer response missing required list field 'features', got {value!r}"
         )
-    return [_validate_feature_entry(i, item) for i, item in enumerate(value)]
+    entries = [_validate_feature_entry(i, item) for i, item in enumerate(value)]
+    first_seen: dict[tuple[tuple[str, ...], str], int] = {}
+    for index, entry in enumerate(entries):
+        key = (tuple(entry["columns"]), entry["operation"])
+        previous = first_seen.get(key)
+        if previous is not None:
+            raise ValueError(
+                f"feature_engineer response 'features[{index}]' repeats 'features[{previous}]': "
+                f"the same operation {entry['operation']!r} on the same columns "
+                f"{entry['columns']!r}. `coder` derives one column per entry, so the pair is a "
+                f"name collision — identical 'params' or not, only one of the two can survive"
+            )
+        first_seen[key] = index
+    return entries
 
 
 def _validate_feature_spec(data: dict[str, Any]) -> dict[str, Any]:

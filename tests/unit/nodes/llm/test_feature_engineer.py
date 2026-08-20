@@ -27,6 +27,8 @@ from src.config.prompts import PromptLoader
 from src.config.settings import ContextConfig, Settings
 from src.nodes.llm.feature_engineer import (
     FeatureEngineerNode,
+    _matched_fit_scope_family,
+    _normalize_operation,
     _read_eda_report,
     _read_solution_plan,
 )
@@ -449,6 +451,121 @@ def test_empty_features_list_is_accepted(
     assert args[1] == {"features": []}
 
 
+def test_duplicate_columns_operation_pair_across_entries_raises(
+    patched_llm_factory, patched_settings, mock_workspace_manager
+) -> None:
+    """Two entries sharing a `(columns, operation)` pair name the same derived column.
+    `coder` (T-029) would generate it twice and either collide or silently duplicate.
+    The check is on the pair, **not** on full-entry equality: differing `params` change
+    the values but not the name, so that case is a collision too."""
+    _respond(
+        patched_llm_factory,
+        {
+            "features": [
+                _entry(columns=["user_id"], operation="target_encoding", fit_scope="per_fold"),
+                _entry(
+                    columns=["user_id"],
+                    operation="target_encoding",
+                    params={"smoothing": 99},
+                    fit_scope="per_fold",
+                    rationale="a different smoothing, but the same derived column name",
+                ),
+            ]
+        },
+    )
+    node = FeatureEngineerNode()
+
+    with pytest.raises(ValueError, match="features\\[1\\]"):
+        node(_build_state())
+
+
+def test_same_operation_on_different_columns_is_accepted(
+    patched_llm_factory, patched_settings, mock_workspace_manager
+) -> None:
+    """The duplicate check keys on the *pair*. One operation applied to several
+    different columns is the normal case and must stay legal."""
+    _respond(
+        patched_llm_factory,
+        {
+            "features": [
+                _entry(columns=["user_id"], operation="target_encoding", fit_scope="per_fold"),
+                _entry(columns=["item_id"], operation="target_encoding", fit_scope="per_fold"),
+                _entry(columns=["user_id"], operation="frequency_encoding", fit_scope="per_fold"),
+            ]
+        },
+    )
+    _, workspace_instance = mock_workspace_manager
+    node = FeatureEngineerNode()
+
+    node(_build_state())
+
+    assert len(_written_features(workspace_instance)) == 3
+
+
+def test_column_order_distinguishes_two_entries(
+    patched_llm_factory, patched_settings, mock_workspace_manager
+) -> None:
+    """`columns` is an ordered list and `coder` reads it positionally — `a/b` and `b/a`
+    are different ratios, so the pair key is the tuple, not a set."""
+    _respond(
+        patched_llm_factory,
+        {
+            "features": [
+                _entry(columns=["a", "b"], operation="ratio"),
+                _entry(columns=["b", "a"], operation="ratio"),
+            ]
+        },
+    )
+    _, workspace_instance = mock_workspace_manager
+    node = FeatureEngineerNode()
+
+    node(_build_state())
+
+    assert len(_written_features(workspace_instance)) == 2
+
+
+def test_operation_and_rationale_are_written_stripped(
+    patched_llm_factory, patched_settings, mock_workspace_manager
+) -> None:
+    """`"  target_encoding  "` passes the `.strip()` truthiness check, so the padding
+    used to reach the artifact verbatim. `coder` string-matches `operation`, and the
+    family guard matches on word boundaries, so both fields are stripped on the way in."""
+    _respond(
+        patched_llm_factory,
+        {
+            "features": [
+                _entry(
+                    operation="  cyclical_sin_cos\n",
+                    rationale="\t hour is cyclical  ",
+                )
+            ]
+        },
+    )
+    _, workspace_instance = mock_workspace_manager
+    node = FeatureEngineerNode()
+
+    node(_build_state())
+
+    written = _written_features(workspace_instance)[0]
+    assert written["operation"] == "cyclical_sin_cos"
+    assert written["rationale"] == "hour is cyclical"
+
+
+def test_padded_family_operation_is_still_flagged(
+    patched_llm_factory, patched_settings, mock_workspace_manager
+) -> None:
+    """Stripping happens before the family guard sees the operation, so padding cannot
+    be used — accidentally or otherwise — to slip a fitted operation past it."""
+    _respond(
+        patched_llm_factory,
+        {"features": [_entry(operation="  target_encoding  ", params={}, fit_scope="global")]},
+    )
+    node = FeatureEngineerNode()
+
+    with pytest.raises(ValueError, match="target encoding"):
+        node(_build_state())
+
+
 # -- per-entry field validation --
 
 
@@ -458,6 +575,22 @@ def test_empty_features_list_is_accepted(
 def test_invalid_columns_raises(
     patched_llm_factory, patched_settings, mock_workspace_manager, value: Any
 ) -> None:
+    _respond(patched_llm_factory, {"features": [_entry_with("columns", value)]})
+    node = FeatureEngineerNode()
+
+    with pytest.raises(ValueError, match="columns"):
+        node(_build_state())
+
+
+@pytest.mark.parametrize("value", [["amount", "amount"], ["a", "b", "a"], ["hour", "hour", "hour"]])
+def test_duplicate_columns_within_one_entry_raises(
+    patched_llm_factory, patched_settings, mock_workspace_manager, value: Any
+) -> None:
+    """`{"columns": ["amount", "amount"], "operation": "ratio"}` is a constant-1
+    feature. It validated under the first T-047 implementation and would have reached
+    `coder` (T-029), where a column of ones reads as a modeling problem rather than as
+    the specification bug it is. `solution_architect` sets the precedent by rejecting
+    normalized-duplicate `model_families`."""
     _respond(patched_llm_factory, {"features": [_entry_with("columns", value)]})
     node = FeatureEngineerNode()
 
@@ -602,90 +735,147 @@ def test_params_flat_list_of_scalars_is_accepted(
 
 # -- fit-scope family matching --
 
-# One list, both directions: a keyword added to or dropped from
-# `_FIT_SCOPE_SENSITIVE_FAMILIES` moves the "must be per_fold" and the "per_fold is
-# accepted" tests together. Case and `-`/`_` separator variants are included on
-# purpose — matching normalizes both before the whole-phrase check.
+# One list, both directions, and it carries the **expected family label** rather than the
+# operation alone. `match="per_fold"` alone was not enough: every family's rejection message
+# contains that string, so a keyword accidentally relocated from one tuple to another would have
+# passed every case. Asserting the label pins which family matched, the way
+# `test_frequency_encoding_excluding_target_leak_is_now_flagged` already did. A keyword added to
+# or dropped from `_FIT_SCOPE_SENSITIVE_FAMILIES` still moves the "must be per_fold" and the
+# "per_fold is accepted" tests together, because both parametrize over this one list.
+#
+# Case, `-`/`_` separator and camelCase variants are included on purpose — matching normalizes
+# all three before the whole-phrase check, and sklearn's own class names (`TargetEncoder`,
+# `MinMaxScaler`, `KNNImputer`) are probable `operation` values.
+_TARGET_ENCODING = "target encoding"
+_IMPUTATION = "statistical imputation"
+_SCALING = "scaling / normalization"
+_BINNING = "binning / discretization"
+_DIM_REDUCTION = "dimensionality reduction"
+_FREQUENCY = "frequency / count encoding"
+
 _FAMILY_OPERATIONS = [
-    # target encoding (T-022's curated tuple, unchanged in v2)
-    "target_encoding",
-    "target-encoding",
-    "Target Encoding",
-    "mean_encoding",
-    "leave_one_out",
-    "leave-one-out",
-    "WOE",
-    "weight of evidence",
-    "CatBoost encoding",
-    "James-Stein encoding",
-    "M-estimate encoding",
-    "impact_encoding",
-    "target_mean",
-    "smoothed target encoding",
+    # target encoding (T-022's curated tuple; `target_encode`/`target_encoder` added in the
+    # T-047 review round — the noun form matched and the verb/agent forms did not)
+    ("target_encoding", _TARGET_ENCODING),
+    ("target-encoding", _TARGET_ENCODING),
+    ("Target Encoding", _TARGET_ENCODING),
+    ("target_encode", _TARGET_ENCODING),
+    ("target_encoder", _TARGET_ENCODING),
+    ("TargetEncoder", _TARGET_ENCODING),
+    ("mean_encoding", _TARGET_ENCODING),
+    ("leave_one_out", _TARGET_ENCODING),
+    ("leave-one-out", _TARGET_ENCODING),
+    ("WOE", _TARGET_ENCODING),
+    ("weight of evidence", _TARGET_ENCODING),
+    ("CatBoost encoding", _TARGET_ENCODING),
+    ("James-Stein encoding", _TARGET_ENCODING),
+    ("M-estimate encoding", _TARGET_ENCODING),
+    ("impact_encoding", _TARGET_ENCODING),
+    ("target_mean", _TARGET_ENCODING),
+    ("smoothed target encoding", _TARGET_ENCODING),
     # statistical imputation
-    "median_impute",
-    "median-imputation",
-    "Mean Imputer",
-    "mode_impute",
-    "knn_impute",
-    "iterative_imputation",
-    "mice",
+    ("median_impute", _IMPUTATION),
+    ("median-imputation", _IMPUTATION),
+    ("Mean Imputer", _IMPUTATION),
+    ("mode_impute", _IMPUTATION),
+    ("knn_impute", _IMPUTATION),
+    ("iterative_imputation", _IMPUTATION),
+    ("mice", _IMPUTATION),
+    ("simple_imputer", _IMPUTATION),
+    ("simple_impute", _IMPUTATION),
+    ("SimpleImputer", _IMPUTATION),
+    ("KNNImputer", _IMPUTATION),
+    ("impute_median", _IMPUTATION),
+    ("impute_mean", _IMPUTATION),
+    ("impute_mode", _IMPUTATION),
+    ("fillna_median", _IMPUTATION),
+    ("fillna_mean", _IMPUTATION),
+    ("fillna_mode", _IMPUTATION),
+    ("median_fill", _IMPUTATION),
+    ("mean_fill", _IMPUTATION),
+    ("mode_fill", _IMPUTATION),
     # scalers / normalizers
-    "standard_scale",
-    "standard-scale",
-    "Standard Scale",
-    "min_max_scaler",
-    "robust_scaling",
-    "z_score",
-    "quantile_transform",
-    "power_transform",
-    "yeo_johnson",
-    "box-cox",
+    ("standard_scale", _SCALING),
+    ("standard-scale", _SCALING),
+    ("Standard Scale", _SCALING),
+    ("StandardScaler", _SCALING),
+    ("standardize", _SCALING),
+    ("standardization", _SCALING),
+    ("min_max_scaler", _SCALING),
+    ("MinMaxScaler", _SCALING),
+    ("robust_scaling", _SCALING),
+    ("z_score", _SCALING),
+    ("zscore_normalization", _SCALING),
+    ("maxabs_scale", _SCALING),
+    ("max_abs_scaling", _SCALING),
+    ("MaxAbsScaler", _SCALING),
+    ("quantile_transform", _SCALING),
+    ("power_transform", _SCALING),
+    ("yeo_johnson", _SCALING),
+    ("box-cox", _SCALING),
     # binning / discretization
-    "quantile_bin",
-    "kbins",
-    "kbins_discretizer",
-    "equal_frequency_binning",
-    "equal_width_binning",
-    "discretize",
+    ("quantile_bin", _BINNING),
+    ("kbins", _BINNING),
+    ("kbins_discretizer", _BINNING),
+    ("KBinsDiscretizer", _BINNING),
+    ("equal_frequency_binning", _BINNING),
+    ("equal_width_binning", _BINNING),
+    ("discretize", _BINNING),
     # dimensionality reduction
-    "pca",
-    "PCA",
-    "truncated_svd",
-    "umap",
-    "tsne",
-    "t-sne",
-    "nmf",
+    ("pca", _DIM_REDUCTION),
+    ("PCA", _DIM_REDUCTION),
+    ("truncated_svd", _DIM_REDUCTION),
+    ("TruncatedSVD", _DIM_REDUCTION),
+    ("umap", _DIM_REDUCTION),
+    ("tsne", _DIM_REDUCTION),
+    ("t-sne", _DIM_REDUCTION),
+    ("nmf", _DIM_REDUCTION),
     # frequency / count encoding
-    "frequency_encoding",
-    "frequency-encoding",
-    "count_encoding",
-    "Count Encode",
+    ("frequency_encoding", _FREQUENCY),
+    ("frequency-encoding", _FREQUENCY),
+    ("count_encoding", _FREQUENCY),
+    ("Count Encode", _FREQUENCY),
 ]
 
 
-@pytest.mark.parametrize("operation", _FAMILY_OPERATIONS)
+@pytest.mark.parametrize(("operation", "expected_family"), _FAMILY_OPERATIONS)
 def test_leakage_prone_family_with_global_fit_scope_raises(
-    patched_llm_factory, patched_settings, mock_workspace_manager, operation: str
+    patched_llm_factory,
+    patched_settings,
+    mock_workspace_manager,
+    operation: str,
+    expected_family: str,
 ) -> None:
     """Every one of the six families is fitted on data, so declaring `global` for
     any of them is rejected. Target encoding leaks the target outright; the other
     five leak held-out-fold feature statistics — a milder inflation, still rejected,
     because forcing `per_fold` on something that turns out to be stateless produces
-    identical output while missing a fitted operation is a silent leak."""
+    identical output while missing a fitted operation is a silent leak.
+
+    The message must name the family that matched, not merely `per_fold`: every
+    family's message says `per_fold`, so matching only on that would let a keyword
+    moved into the wrong tuple pass all of these cases."""
     _respond(
         patched_llm_factory,
         {"features": [_entry(operation=operation, params={}, fit_scope="global")]},
     )
     node = FeatureEngineerNode()
 
-    with pytest.raises(ValueError, match="per_fold"):
+    with pytest.raises(ValueError) as excinfo:
         node(_build_state())
 
+    message = str(excinfo.value)
+    assert expected_family in message
+    assert "per_fold" in message
 
-@pytest.mark.parametrize("operation", _FAMILY_OPERATIONS)
+
+@pytest.mark.parametrize(("operation", "expected_family"), _FAMILY_OPERATIONS)
 def test_leakage_prone_family_with_per_fold_is_accepted(
-    patched_llm_factory, patched_settings, mock_workspace_manager, operation: str
+    patched_llm_factory,
+    patched_settings,
+    mock_workspace_manager,
+    operation: str,
+    expected_family: str,
 ) -> None:
     _respond(
         patched_llm_factory,
@@ -699,6 +889,111 @@ def test_leakage_prone_family_with_per_fold_is_accepted(
     written = _written_features(workspace_instance)[0]
     assert written["operation"] == operation
     assert written["fit_scope"] == "per_fold"
+
+
+@pytest.mark.parametrize(
+    ("operation", "expected"),
+    [
+        # ordinary camelCase word boundary
+        ("TargetEncoder", "target encoder"),
+        ("StandardScaler", "standard scaler"),
+        ("MinMaxScaler", "min max scaler"),
+        # an uppercase run followed by a capitalized word splits after the acronym,
+        # not between its letters
+        ("KNNImputer", "knn imputer"),
+        ("TruncatedSVD", "truncated svd"),
+        # a bare all-caps token has no boundary of either kind and is left whole
+        ("PCA", "pca"),
+        ("WOE", "woe"),
+        # separators and case, unchanged from T-022
+        ("standard-scale", "standard scale"),
+        ("standard_scale", "standard scale"),
+        ("Standard  Scale", "standard scale"),
+        # documented non-coverage: an unseparated all-lowercase run cannot be split,
+        # and a digit run is treated as part of the preceding word
+        ("targetencoder", "targetencoder"),
+        ("Top10Encoder", "top10 encoder"),
+    ],
+)
+def test_normalize_operation_table(operation: str, expected: str) -> None:
+    """Pins the normalization the keyword floor depends on. Added in the T-047 review
+    round: without the camelCase split, sklearn's own class names — `TargetEncoder`,
+    `StandardScaler`, `MinMaxScaler`, `KNNImputer`, `SimpleImputer`, all highly probable
+    `operation` values — were reachable by no keyword in any tuple."""
+    assert _normalize_operation(operation) == expected
+
+
+def test_camel_case_split_does_not_lose_concatenated_keywords() -> None:
+    """The reason `_matched_fit_scope_family` matches against *both* normalization
+    variants. `CatBoost` is carried concatenated in the tuple (`catboost`), so splitting
+    it to `cat boost` would silently drop a pre-existing match — a regression traded for
+    the class-name shapes rather than added on top of them."""
+    assert _normalize_operation("CatBoost encoding") == "cat boost encoding"
+    assert _matched_fit_scope_family("CatBoost encoding") == _TARGET_ENCODING
+
+
+@pytest.mark.parametrize("operation", ["l2_normalize", "unit_norm", "L2Normalizer", "Normalizer"])
+def test_row_wise_normalizer_with_global_is_accepted(
+    patched_llm_factory, patched_settings, mock_workspace_manager, operation: str
+) -> None:
+    """Regression for the false positive the T-047 review found executed. sklearn's
+    `Normalizer` scales each sample by its own norm and learns nothing from any other
+    row: it is stateless, so `global` is the *correct* declaration the prompt asks for.
+    Flagging it made a conforming response raise, and `LLMNode.__call__` does not catch
+    `ValueError`, so a correct spec terminated the Phase 4 run."""
+    _respond(
+        patched_llm_factory,
+        {"features": [_entry(operation=operation, params={}, fit_scope="global")]},
+    )
+    _, workspace_instance = mock_workspace_manager
+    node = FeatureEngineerNode()
+
+    node(_build_state())
+
+    assert _written_features(workspace_instance)[0]["fit_scope"] == "global"
+
+
+@pytest.mark.parametrize(
+    ("operation", "expected_family"),
+    [
+        # A2 — the concatenated scaler spellings. The tuple already carried `minmax` but not
+        # `maxabs`, and `z score` but not `zscore`; `standardize` is the plain-English verb.
+        ("standardize", _SCALING),
+        ("maxabs_scale", _SCALING),
+        ("zscore_normalization", _SCALING),
+        # A3 — verb-first and pandas phrasings. `fillna_median` is the most probable name of all.
+        ("fillna_median", _IMPUTATION),
+        ("impute_median", _IMPUTATION),
+        ("simple_impute", _IMPUTATION),
+        # A4 — the verb and agent forms of the highest-severity family. Only the noun
+        # (`target_encoding`) matched; `TargetEncoder` needed the camelCase split as well.
+        ("target_encode", _TARGET_ENCODING),
+        ("target_encoder", _TARGET_ENCODING),
+        ("TargetEncoder", _TARGET_ENCODING),
+    ],
+)
+def test_review_round_keyword_additions_are_flagged(
+    patched_llm_factory,
+    patched_settings,
+    mock_workspace_manager,
+    operation: str,
+    expected_family: str,
+) -> None:
+    """Named regression for the four keyword gaps the T-047 review found by executing
+    `_matched_fit_scope_family`. Each of these returned `None` and was therefore written
+    with `fit_scope: "global"`, silently leaking held-out-fold statistics — or, for the
+    target-encoding forms, the target itself. They are also in `_FAMILY_OPERATIONS`; this
+    test exists so the gaps stay greppable by the finding that produced them."""
+    _respond(
+        patched_llm_factory,
+        {"features": [_entry(operation=operation, params={}, fit_scope="global")]},
+    )
+    node = FeatureEngineerNode()
+
+    with pytest.raises(ValueError) as excinfo:
+        node(_build_state())
+
+    assert expected_family in str(excinfo.value)
 
 
 @pytest.mark.parametrize(

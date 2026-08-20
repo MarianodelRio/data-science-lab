@@ -750,11 +750,109 @@ agent, step 3).
   the **positional index** in `## Base experiments` (`weight_0`, `weight_1`, ...), never the raw
   `experiment_id`, which may not be a valid Python identifier.
 
-  **Runtime-unreachable today.** Nothing in `src/` writes `state["experiments"]` yet (`coder`, its
-  only producer, is T-029 and is blocked), so `specialist_selector` can never actually satisfy its
-  own `>= 2` check in a real run and this node is never dispatched to in practice — fully
-  implemented and tested against a directly-constructed `state`, the same scoping `code_critic`
-  (T-030) documents for its own well-known-path reads.
+  **Reachable now that `coder` (T-029) lands.** `coder` is the sole writer of
+  `state["experiments"]` — once two real iterations have each appended an entry,
+  `specialist_selector`'s `>= 2` check can be satisfied in a real run and this node is dispatched
+  to for real. It remains additionally exercised in tests against a directly-constructed `state`,
+  the same scoping `code_critic` (T-030) documents for its own well-known-path reads.
+
+- **`coder`** (`src/nodes/llm/coder.py`, `LLMNode` subclass, `model_role: implementation`, T-029)
+  — the phase's **only** node that writes ML implementation code, running between
+  `specialist_selector`'s chosen specialist and `code_critic`. Like `code_critic` it overrides
+  `LLMNode.__call__` **wholesale** rather than composing via the `_build_messages`/`_write_output`/
+  `_build_output_state` hooks, because it owns its own execute-then-re-prompt retry loop — the same
+  precedent T-009 established for `code_critic`.
+
+  **Inputs.** One `HumanMessage` with four labeled sections: `## Experiment design (design.json)`
+  (read from `experiments/exp_{iteration}/design.json`, degrading to a placeholder on
+  `_experiment_design.DEGRADE_ERRORS`), `## Feature spec (feature_spec.json)` (resolved via the
+  shared `resolve_feature_spec_ref`, degrading the same way), `## Frozen CV folds` (the shared
+  `read_fold_summary` — a `strategy`/`n_folds`/`seed` summary only; the prompt requires the
+  generated script to load `validation/fold_config.json` itself at runtime rather than trust this
+  summary), and `## Run configuration` (the literal `optuna.n_trials`/
+  `optuna.early_stopping_patience`/`workspace.mlflow_tracking_uri` values from `Settings.load()`,
+  read directly in `__call__` — a **second**, module-local `Settings.load()` call alongside the one
+  the inherited `LLMNode.__init__` already makes for `_max_messages_per_node`).
+
+  **Execution-retry loop.** For up to `1 + _MAX_EXECUTION_RETRIES` (`_MAX_EXECUTION_RETRIES = 2`,
+  so 3 attempts total) cycles: invoke the LLM, extract the single fenced ```` ```python ```` block
+  (`_extract_code` — raises on zero or more than one fenced block, or an empty one), write it to
+  `experiments/exp_{iteration}/train.py` via `WorkspaceManager.write_text` (overwriting whatever an
+  earlier attempt wrote — see "the experiment-directory-overwrite-on-retry convention" below),
+  execute it for real via `code_executor.execute(code, cwd=workspace.workspace_path)`, and run
+  `_validate_run` — a single failure gate covering both subprocess-level failure (`timed_out`,
+  nonzero `returncode`) and artifact-level failure (`results.json` unreadable/not-an-object,
+  `cv_score` missing/non-numeric/non-finite, an out-of-vocabulary `metric`, a missing
+  `submission.csv`, a missing OOF artifact). On any failure short of the last attempt, the failure
+  reason plus the subprocess's `stderr` are appended as a new `HumanMessage` (`_failure_message`)
+  and the loop re-prompts; unlike `code_critic`'s separate design-quality loop, there is **no
+  forced-pass** here — exhausting the budget raises `ValueError` and the graph run fails loudly.
+
+  **Critic-feedback threading.** `code_critic` re-invokes `coder` directly
+  (`node_resolver.resolve_node("coder")(working_state)`) with its own verdict `AIMessage` already
+  appended to `working_state["messages"]`. `coder.__call__`'s first step —
+  `trim_context(state.get("messages", []), self._max_messages_per_node)` — picks that message up
+  and threads it into the outgoing prompt, so critic feedback reaches the LLM with no extra
+  plumbing between the two nodes.
+
+  **Output contract.** The generated script must write, workspace-relative from its own subprocess
+  cwd: `{exp_dir}/results.json` (`cv_score: float` required; optional `metric` — one of
+  `accuracy`/`r2`/`rsquared`/`score`, matched case/separator-insensitively; optional
+  `feature_importance`+`feature_names` for tree-ensemble families; `oof_path` pointing at the OOF
+  file), `{exp_dir}/submission.csv`, and `{exp_dir}/oof_predictions.parquet` (the fixed fallback
+  filename `_oof_artifact_exists` falls back to checking when `results.json` carries no usable
+  `oof_path`).
+
+  **`fit_scope` v2, dispatch-free.** For every `feature_spec.json["features"]` entry the prompt
+  requires branching on `fit_scope`: `"per_fold"` fitted inside the CV loop on the training fold
+  only and applied unchanged to validation/test; `"global"` applied once outside the loop. There is
+  no fixed operation → code dispatch table in the prompt or in this node — the LLM writes the
+  pandas/sklearn code for each `operation`+`params` pair directly, guided by `rationale`, and the
+  prompt requires an explicit `raise` naming any `operation` it does not recognize, never a silent
+  skip. A missing/unreadable `feature_spec.json` degrades to raw feature columns unchanged, per
+  `_read_feature_spec`.
+
+  **Column safety.** `feature_spec.json`'s `columns` values are free strings copied verbatim from
+  real dataset headers and may contain quotes, backslashes, newlines or `#`. The prompt requires
+  every column name that must become Python source text to go through `repr()` or `json.dumps()` —
+  never string-concatenated into a quoted literal or a `df.query(...)` string — with a worked
+  example mirroring `code_critic`'s worked JSON example.
+
+  **`design.json` dispatch and the `FORBIDDEN_CV_KEYS` gaps.** The prompt requires dispatching on
+  `model_family` with a `raise ValueError` naming any unrecognized family, defaulting
+  `gradient_boosting_lags` to the already-installed `lightgbm`, parsing ARIMA-style
+  `order`/`seasonal_order` defensively (a hyphenated string or a flat list of scalars — never a bare
+  `int(part)`), and — since the shared design validator matches `FORBIDDEN_CV_KEYS` by exact,
+  case-sensitive key name and does not police model-side holdout/fold-shaping hyperparameters at
+  all (`validation_fraction`, `early_stopping`/`n_iter_no_change`, `eval_set`/
+  `early_stopping_rounds`, `od_type`/`od_wait`, `validation_split`/`val_size`, `gap`,
+  `max_train_size`, `initial`, `horizon`, `period`, `cutoffs`) — deciding per model family whether
+  to honor each one against the frozen fold's own validation split or drop it, and recording that
+  decision in `results.json` (e.g. `"holdout_param_handling"`). `forecast_horizon` is a legitimate
+  model parameter and is always honored. `torch`, `pytorch-tabnet`, `statsmodels`, `prophet` and
+  `transformers` are not installed; the prompt requires preferring an already-installed alternative
+  where one exists and otherwise importing the real library anyway and letting the resulting
+  `ImportError` surface as a normal execution failure rather than fabricating a result.
+
+  **Test patch points.** This custom `__call__` instantiates `WorkspaceManager` directly in this
+  module, so unit tests patch `src.nodes.llm.coder.WorkspaceManager` — except the module's own test
+  file uses a **real** `WorkspaceManager` against `tmp_path`, since `_validate_run`/
+  `_oof_artifact_exists` do real `Path.exists()` filesystem checks that a mock cannot satisfy
+  transparently. `Settings` is patched at *both* `src.nodes.llm.base` (the inherited `__init__`'s
+  `_max_messages_per_node` read) and `src.nodes.llm.coder` (the `__call__`-local
+  `optuna`/`mlflow` read). `execute` is patched at `src.nodes.llm.coder`.
+
+  **Deliberate scope gap — no consolidated `src/` files.** `coder` writes only the per-experiment
+  `experiments/exp_{iteration}/train.py` (plus `results.json`/`submission.csv`/OOF predictions). It
+  does **not** write consolidated workspace-root `src/features.py`/`src/models.py`/`src/train.py`,
+  which `spec.md`'s Phase 5 Interface section and `reviewer`'s (T-033) pinned candidate list both
+  mention as eventual `coder` outputs. This was a human-approved deferral at the T-029 Phase 2
+  checkpoint, not an oversight: `coder`'s generated scripts are self-contained per experiment
+  (inline feature engineering, no importable `features.py` module to extract), and `reviewer`
+  already degrades each missing candidate to "(not present in the workspace)" within its shared
+  injection budget, so nothing crashes without them — the review it produces is simply weaker.
+  See `context/discoveries/T-029.md` for the open follow-up (unassigned — a future task must decide
+  whether `coder` or a Phase 7 node materializes these files, and whether they make sense at all).
 
 - **`code_critic`** (`src/nodes/llm/code_critic.py`, `LLMNode` subclass, `model_role:
   implementation`, T-030) — the phase's **last** node, and its critic (`critic: {node: code_critic,
@@ -794,13 +892,26 @@ agent, step 3).
   `train.py` — and `design.json`/`results.json` are then read from **that same directory only**, so
   all three artifacts always describe one experiment. Candidates are
   `state["experiments"][-1]["path"]` when usable (re-relativized; a value with a suffix is treated as
-  a file pointer and its parent taken, since `coder` (T-029) has not fixed which it records), then the
-  well-known `experiments/exp_{current_iteration}/`; when no candidate yields the script the first is
-  used so the placeholders still name one place. Scanning per artifact instead would let the critic
-  review `exp_7`'s code against `exp_0`'s design — the *expected* case once `coder` lands, since
-  nothing increments `current_iteration` — and, because the prompt accepts early stopping only when
+  a file pointer and its parent taken — `coder` (T-029) in fact always records the bare experiment
+  *directory*, e.g. `experiments/exp_0`, but this node keeps the suffix-stripping fallback so it works
+  with either convention), then the well-known `experiments/exp_{current_iteration}/`; when no
+  candidate yields the script the first is used so the placeholders still name one place. Scanning
+  per artifact instead would let the critic review `exp_7`'s code against `exp_0`'s design — a real
+  risk in a multi-iteration run, since nothing increments `current_iteration` until
+  `experiment_designer` runs in Phase 6 — and, because the prompt accepts early stopping only when
   it is "recorded in `results.json`", a stale `results.json` is a route to a false **pass**, not
   merely a false iterate.
+
+  **The experiment-directory-overwrite-on-retry convention.** `coder` overwrites
+  `experiments/exp_{iteration}/` in place on every internal execution retry (its own bounded
+  `_MAX_EXECUTION_RETRIES` loop) **and** on every `code_critic`-triggered re-invocation of the whole
+  node. Only the very first, graph-level `coder` call's returned delta is ever applied to the real
+  `LabState` — LangGraph applies a node's return value once per graph step, and `code_critic`'s
+  internal re-invocations (via `node_resolver.resolve_node("coder")(working_state)`) mutate only its
+  own local `working_state`, never the graph itself. So `result["experiments"]` gains exactly **one**
+  entry per graph-level Phase 5 iteration, no matter how many times `coder`/`code_critic` looped
+  internally — the on-disk `train.py`/`results.json`/`submission.csv`/OOF artifacts, by contrast, end
+  up holding whatever the *last* internal retry wrote.
 
   **Retry contract.** The budget is read from `load_phase_config("phase5_implementation").critic
   .max_retries` — *not* `Settings.execution.max_critic_retries` (both are `3` today; the phase YAML
@@ -924,7 +1035,8 @@ module -- ported (not imported, to keep `code_critic`'s Phase 5 module and this 
 decoupled) from `code_critic._experiment_dir_from_state`/`_candidate_experiment_dirs`
 (`code_critic.py:99-158`): the state-recorded experiment pointer (`state["experiments"][-1]["path"]`)
 is tried first, then the well-known `experiments/exp_{iteration}` directory, so both nodes work whether
-or not `coder` (T-029, not yet landed) populates `experiments`. The three LLM nodes deliberately do
+or not `coder` (T-029, landed) has appended the current iteration's entry to `experiments` yet. The
+three LLM nodes deliberately do
 **not** share that module -- see the `_evaluation_llm_common.py` paragraph at the end of this section.
 
 - **`score_evaluator`** (`src/nodes/compute/score_evaluator.py`, `ComputeNode` subclass, T-031) -- the
@@ -1234,11 +1346,15 @@ another experiment's numbers as this run's.
   *Submission resolution.* First candidate whose absolute path is a file: the experiment directory
   named by `state["best_experiment_path"]`, then `experiments/exp_{current_iteration - 1}`. The
   recorded `submission_file` is always the workspace-relative form, never the absolute path handed
-  to the API. **`{best_experiment_path}/submission.csv` is a new contract pinned for `coder`
-  (T-029)** -- `coder`'s declared outputs (`train.py`, `results.json`, OOF predictions) do not
-  include it today, so until it does, this node's "no submission file" degrade path is the one that
-  runs. Same category as T-031's `results.json` `metric` token set; recorded in
-  `context/discoveries/T-033.md`.
+  to the API. **`{best_experiment_path}/submission.csv` is a contract `coder` (T-029) now
+  fulfills** -- `coder`'s output contract requires every generated `train.py` to write
+  `submission.csv` alongside `results.json` and the OOF predictions in its own experiment
+  directory, so once at least one real iteration has run and `score_evaluator` has set
+  `best_experiment_path`, this node finds a real file instead of degrading. On a bare/standalone
+  workspace (no Phase 5 run behind it — e.g. the integration smoke suite's `phase7_delivery` case)
+  `best_experiment_path` is still unset and the "no submission file" degrade path still runs, which
+  is what that suite asserts. Same category as T-031's `results.json` `metric` token set; recorded
+  in `context/discoveries/T-033.md`.
 
   *CV de-normalization and the divergence flag.* `score_evaluator` stores every score already
   normalized to higher-is-better, sign-flipping a minimize metric, so `state["best_score"]` for an
@@ -1315,6 +1431,7 @@ artifact is missing.
 | `nlp_specialist` | LLM (`LLMNode`) | 5 — Implementation | Landed (T-026) |
 | `timeseries_specialist` | LLM (`LLMNode`) | 5 — Implementation | Landed (T-027) |
 | `ensemble_specialist` | LLM (`LLMNode`) | 5 — Implementation | Landed (T-028) |
+| `coder` | LLM (`LLMNode`) | 5 — Implementation | Landed (T-029) |
 | `code_critic` | LLM (`LLMNode`) | 5 — Implementation | Landed (T-030) |
 | `score_evaluator` | Compute (`ComputeNode`) | 6 — Evaluation | Landed (T-031) |
 | `feature_importance_extractor` | Compute (`ComputeNode`) | 6 — Evaluation | Landed (T-031) |

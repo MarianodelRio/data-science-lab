@@ -3,12 +3,12 @@ id: T-047
 phase: 2
 agent: pipeline-agent
 depends_on: [T-022]
-status: in-progress
+status: pr-open
 folders: ["src/nodes/llm/", "config/agents/", "config/prompts/"]
 outputs: [feature_spec.json v2 schema, _validate_features, fit-scope family guards, feature_engineer prompt v2]
 size: M
 branch: feature/T-047-feature-spec-v2-fit-scope
-pr: ~
+pr: https://github.com/MarianodelRio/data-science-lab/pull/36
 ---
 
 ## feature_spec.json v2 — single transformation primitive + `fit_scope`

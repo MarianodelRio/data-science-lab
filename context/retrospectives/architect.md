@@ -31,3 +31,13 @@
 **Folders:** src/nodes/llm/, src/nodes/compute/, config/agents/, config/prompts/
 **Lesson:** Routing data to a workspace artifact because the state contract is protected also routes it out of the checkpointer — say so explicitly when approving, since a resumed run cannot recover what never entered state.
 **Signal:** "Nothing in `LabState`, and therefore nothing in the SQLite checkpointer, records whether a run submitted or what it scored." *(source: context/discoveries)*
+
+## L-007 | T-047 | 2026-08-20 | Weight: 3
+**Folders:** src/nodes/llm/, config/agents/, config/prompts/
+**Lesson:** Before approving a validator that rejects rather than coerces, check whether anything catches the exception — if nothing does, over-matching kills the run while under-matching is merely a covered gap, so the two error directions are not symmetric and "be conservative" is the wrong default.
+**Signal:** "A false positive therefore **aborts the Phase 4 run on a correct response**." *(source: context/decisions)*
+
+## L-008 | T-047 | 2026-08-20 | Weight: 3
+**Folders:** src/nodes/llm/, config/agents/, config/prompts/
+**Lesson:** When two artifacts end up describing the same property, do not widen the older contract to match — align the vocabularies by construction and rule which one wins, so the downstream consumer gets a tie-break instead of a judgement call.
+**Signal:** "Where the two artifacts disagree, **`feature_spec.json`'s `fit_scope` is authoritative**." *(source: context/decisions)*

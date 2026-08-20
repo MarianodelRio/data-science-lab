@@ -26,3 +26,8 @@
 **Folders:** src/nodes/llm/, src/nodes/compute/, config/agents/, config/prompts/
 **Lesson:** An `except` written for one known cause will silently swallow every other cause raising the same type — before reusing a narrow handler, ask what else raises it, and word the message so it stays honest for all of them.
 **Signal:** "`float(latest.public_score)` on a `None` score raises `TypeError`, which the branch written for the T-007 `max(..., key=.date)` hazard swallowed and diagnosed as a `date` problem." *(source: ## Completed)*
+
+## L-006 | T-047 | 2026-08-20 | Weight: 2
+**Folders:** src/nodes/llm/, config/agents/, config/prompts/
+**Lesson:** When you extend a normalization step, match against the old and the new form both — a normalization that only replaces the old one silently drops matches that depended on the previous reading.
+**Signal:** "`CatBoost encoding` splits to `cat boost encoding`, which no longer matches the concatenated `catboost` keyword — so the split is added on top of the old reading rather than traded for it." *(source: context/decisions)*

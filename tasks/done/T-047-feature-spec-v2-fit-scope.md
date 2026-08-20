@@ -3,7 +3,7 @@ id: T-047
 phase: 2
 agent: pipeline-agent
 depends_on: [T-022]
-status: pr-open
+status: done
 folders: ["src/nodes/llm/", "config/agents/", "config/prompts/"]
 outputs: [feature_spec.json v2 schema, _validate_features, fit-scope family guards, feature_engineer prompt v2]
 size: M

@@ -144,6 +144,14 @@ State transitions go through `scripts/` — not hand-rolled git:
 `dt-verify` runs test + lint + type-check against a worktree (used by `/orchestrate`
 before and after review). `dt-board` regenerates the git-ignored `.dt-index.json` cache.
 
+**Who moves the task file, and who edits it.** The `tasks/*/` folder moves belong to `main`
+alone — `dt-claim`, `dt-ready`, `dt-pr` and `dt-done` rename the file there as status
+changes. The Coder only appends `## Completed`, **in place**, at whatever folder the file
+currently sits in (`git ls-files 'tasks/*/T-XXX.md'` inside the worktree). It never creates
+the file at another path and never moves it: a second copy at the folder `main` is using
+becomes an `add/add` conflict at the Phase 4 rebase. `dt-claim` fast-forwards the feature
+branch onto its own claim commit precisely so both sides see one path.
+
 ### Task file format
 
 ```markdown
@@ -180,6 +188,8 @@ fix/B-XXX-short-slug          ← one branch per bug
 ```
 
 - Never commit directly to `main` except `tasks/` status metadata
+- Never move a task file from a feature branch — the `tasks/*/` moves are main's; a branch
+  only appends `## Completed` in place
 - Each agent works in its own worktree (`../data-science-lab-T-XXX/`)
 - Branch creation = task claim; push race lost → task already taken
 - `main` must **not** be a protected branch (framework pushes `tasks/*.md` to main)

@@ -364,6 +364,128 @@ re-run, never overwritten for the lifetime of the run (design.md § Phase 3).
   own separate copy (Phase 2 research nodes, an intentionally distinct module boundary — see its
   own docstring).
 
+### Design (Phase 4)
+
+`config/phases/phase4_design.yaml`'s `sequence`: `solution_architect` → `feature_engineer` →
+`analysis_critic`, critic targets `[solution_architect, feature_engineer]` (`max_retries: 3`),
+`interrupt_after: true`. This phase is the **iteration loop head** — Phase 6 routes back here for
+every iteration after the first (see "Supervisor" above), so unlike Phase 3's write-once baseline,
+both artifacts are per-**iteration** paths under `design/iteration_{current_iteration}/` and a new
+pair is produced on each pass.
+
+- **`solution_architect`** (`src/nodes/llm/solution_architect.py`, `LLMNode` subclass, `model_role:
+  reasoning`, T-021) — runs first, choosing the modeling strategy for this iteration.
+  `_build_messages` queries the `RagStore` for modeling-strategy findings and reads
+  `experiments/baseline/results.json` (from `state["baseline_results_path"]`), injecting both as one
+  extra `HumanMessage`. `_write_output` extracts a JSON object using the same fence-stripping
+  convention as `problem_framer`, then validates and writes `design/iteration_{iteration}/
+  solution_plan.json` with exactly `model_families` (2-4 unique non-empty strings — normalized
+  duplicates rejected), `order` (the same families as a permutation), `ensembling_strategy`,
+  `realistic_ceiling` (`metric` / finite `target_score` / `rationale`) and `rationale`.
+  `_build_output_state` sets `state["solution_plan_path"]`, which `feature_engineer` and every
+  Phase 5 specialist read next. Two descopes are deliberate and human-approved — it reads no
+  previous error diagnosis, and it never escalates to the `advisor` model role; its module
+  docstring records both.
+- **`feature_engineer`** (`src/nodes/llm/feature_engineer.py`, `LLMNode` subclass, `model_role:
+  reasoning`, T-022, schema v2 in T-047) — runs second, designing the feature transformations that
+  strategy needs. `_build_messages` injects the solution plan and the EDA report
+  (`state["solution_plan_path"]`/`state["eda_report_path"]`) as one extra `HumanMessage`. Both are
+  read through degrade-safe private helpers that catch `_experiment_design.DEGRADE_ERRORS` and
+  guard a non-`str` path, so a partially-completed upstream phase — a missing artifact, a truncated
+  one, a non-UTF-8 byte, a path recorded before the workspace moved — degrades to a placeholder
+  string the prompt is told to read as "no information", and never aborts the graph run.
+  `_write_output` extracts, validates and writes `design/iteration_{iteration}/feature_spec.json`
+  (contract below). `_build_output_state` sets `state["feature_spec_path"]`, which is **load-bearing
+  beyond its own value**: `analysis_critic._detect_phase_stem` uses its presence as the
+  Phase-1-vs-Phase-4 discriminator rather than `state["phase"]` (which the graph stamps only *after*
+  a subgraph finishes). That is sound only because the field is monotonic — once written it is never
+  cleared — so `_build_output_state` must keep returning it (T-016).
+- **`analysis_critic`** (`src/nodes/llm/analysis_critic.py`, `LLMNode` subclass) — the same node
+  Phase 1 uses, with the same `pass`/`iterate` mechanics and the same forced `pass` after
+  `max_retries` attempts (CLAUDE.md invariant #5). It reads each target's output as **raw text** via
+  `_TARGET_STATE_FIELDS` (`solution_plan_path`, `feature_spec_path`) rather than parsing it, so it
+  is schema-neutral: the v1 → v2 feature-spec migration required no change to it at all.
+
+#### The `feature_spec.json` contract (v2)
+
+`_validate_feature_spec` in `src/nodes/llm/feature_engineer.py` is a **whitelist rebuild**: the
+written file has exactly one top-level key, `features`, and each entry is a fresh dict with exactly
+these five keys in this order. The LLM's own object is never written through, so any extra key it
+sends — including v1's `fold_aware`, `column`, `method`, `strategy` and `type` — is dropped.
+
+| Key | Source | Contents |
+|---|---|---|
+| `columns` | LLM (validated) | non-empty list of non-empty column-name strings — one or many |
+| `operation` | LLM (validated) | non-empty free-form string naming the transformation |
+| `params` | LLM (validated) | finite JSON scalars or flat lists of them; required even when `{}` |
+| `fit_scope` | LLM (validated) | exactly `per_fold` or `global` |
+| `rationale` | LLM (validated) | non-empty string |
+
+Unlike `design.json`, nothing here is node-injected — every field comes from the LLM and is
+validated, never supplied.
+
+**One primitive, not three categories.** A per-column transform and a multi-column interaction are
+the same shape: one entry with one column in `columns`, or one entry with several. There is no
+minimum column count and no fixed catalogue of operations, which is what lets cyclical encoding,
+log/power transforms, datetime-part extraction, aggregations, text length and outlier clipping be
+expressed at all — none of them fit v1's `encodings`/`null_handling`/`interactions` split.
+
+**`fit_scope` is required on every entry and has no default.** Matching is by exact token: neither
+case-folded nor separator-normalized, so `"per-fold"`, `"PER_FOLD"`, `true`/`false` and a missing
+key are all rejected. `coder` (T-029) branches on this value, so exactly two spellings may reach the
+artifact.
+
+**Leakage-prone operation families.** An operation whose name matches one of six families is fitted
+on data and is therefore *required* to declare `per_fold`:
+
+| Family | Representative recognized terms |
+|---|---|
+| Target encoding | `target_encoding`, `target_mean`, `mean_encoding`, `leave_one_out`, `WOE`, `CatBoost`, `James-Stein`, `M-estimate`, `impact_encoding` |
+| Statistical imputation | `median_impute`, `mean_imputation`, `mode_imputer`, `knn_impute`, `iterative_impute`, `simple_imputer`, `MICE` |
+| Scaling / normalization | `standard_scale`, `min_max_scaler`, `robust_scale`, `z_score`, `quantile_transform`, `power_transform`, `yeo_johnson`, `box_cox` |
+| Binning / discretization | `quantile_bin`, `kbins`, `equal_width_bin`, `binning`, `discretize` |
+| Dimensionality reduction | `pca`, `truncated_svd`, `umap`, `tsne`, `nmf`, `latent_dirichlet` |
+| Frequency / count encoding | `frequency_encoding`, `count_encode`, `value_counts_encoding` |
+
+Matching is **whole-phrase with word boundaries** against a separator-normalized lowercase copy of
+`operation` — the mechanism T-022 introduced for target encoding, generalized to six families in
+T-047. So `standard-scale`, `standard_scale` and `Standard Scale` all match, while an operation that
+merely contains a family word (`log_transform`, `count_distinct_categories`,
+`mean_of_last_3_orders`) does not. No bare stem (`scale`, `transform`, `encoding`, `impute`, `mean`,
+`count`) is ever a keyword, for exactly that reason.
+
+**Severity is deliberately not uniform.** Target encoding is *target* leakage: the value for a row
+is derived from the target column, so a CV score computed with it is not merely optimistic, it is
+partly measuring the target. The other five leak only *feature* statistics out of the held-out fold
+— a scaler's mean and σ, an imputer's median, a PCA basis, a category's global frequency — which
+inflates the score more mildly. Rejecting both is a conservative stance, not a claim they are the
+same bug: forcing `per_fold` on an operation that turns out to be stateless produces identical
+output, whereas missing a fitted one is a silent leak.
+
+**Honest scope.** The family list is a floor, not the boundary — the same framing `FORBIDDEN_CV_KEYS`
+carries. `operation` is an open vocabulary, so an operation matching no family gets no check and may
+declare `global` even when it is genuinely fitted (`groupby_user_mean_amount` aggregates over other
+rows and should be `per_fold`; nothing here catches it). Two things cover that gap:
+`config/prompts/feature_engineer/v2.md` states the general rule prominently — *anything fitted, that
+learns a parameter, statistic, mapping, vocabulary or basis from the data, must declare `per_fold`;
+only a stateless row-wise transform may declare `global`* — and `code_critic`'s leakage rubric is
+the downstream net that checks the generated code actually honors each entry's declared scope.
+
+**Relationship to `design.json`'s `preprocessing`.** `preprocessing` (Phase 5) is a flat list of
+lower_snake tokens naming steps; it has no way to express *when* a step is fitted, and
+`FORBIDDEN_CV_KEYS` matches dict keys, never list values. The two vocabularies were aligned by
+construction — `per_fold`/`global` are exactly the tokens
+`deep_learning_specialist/v1.md`'s `standard_scaler_fitted_per_fold` convention already recommends —
+so no rename is ever needed. **Where the two disagree, `feature_spec.json`'s `fit_scope` is
+authoritative.** Widening `preprocessing` itself is a separate task (see the T-025 discovery, aimed
+at T-029).
+
+**v1 → v2.** The three fixed lists (`encodings`, `null_handling`, `interactions`) and the per-entry
+`fold_aware` boolean are gone. `fold_aware: true` is now `fit_scope: "per_fold"`, and target
+encoding is one family of six rather than the only guarded case. The prompt was bumped to `v2`;
+`v1.md` is retained on disk, since `PromptLoader` is version-addressed and nothing enumerates the
+directory (see `docs/agents.md` § Changing a prompt).
+
 ### Implementation (Phase 5)
 
 `config/phases/phase5_implementation.yaml`'s `sequence`: `specialist_selector` → `coder` →

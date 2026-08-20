@@ -68,3 +68,14 @@ Each agent-adding task appends one row to the table below. Do not remove or reor
    (non-iteration placeholders), or `_build_output_state` (set the node's own `LabState`
    path field) only for non-default behavior.
 5. Append a row to the table above.
+
+## Changing a prompt
+
+1. Create `config/prompts/{name}/v{N}.md` alongside the existing versions.
+2. Bump `prompt_version` in `config/agents/{name}.yaml` to `v{N}`.
+3. **Keep the old file.** `PromptLoader` is version-addressed and nothing enumerates the
+   directory, so a superseded version costs nothing and keeps the previous behavior reproducible.
+4. Update the unit test that pins the version (`test_config_and_prompt_load_for_real` in each
+   agent's suite asserts both `prompt_version` and that the named file loads).
+
+T-047 (`feature_engineer` v1 → v2) is the first version bump in this repo and follows exactly this.

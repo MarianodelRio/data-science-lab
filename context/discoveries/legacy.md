@@ -577,7 +577,7 @@ Filed as B-001 (test-only scope; `src/` needs no change). Full diagnosis, includ
 mocks the resume actually needs, is in `tasks/available/B-001-resume-reruns-completed-phase.md`.
 Status: resolved in B-001
 
-## OPEN — 2026-08-13 [pipeline-agent (B-001) → whoever picks up T-047 (feature_spec v2 fit scope)]
+## RESOLVED — 2026-08-13 [pipeline-agent (B-001) → whoever picks up T-047 (feature_spec v2 fit scope)]
 `tasks/available/T-047-feature-spec-v2-fit-scope.md:130` has a done-when item referencing
 `_MOCK_FEATURE_SPEC` in `tests/integration/phases/test_phase_subgraphs_smoke.py`. After B-001 that
 constant — and the entire network-free mock set the smoke test used to own — lives in
@@ -587,7 +587,9 @@ drives `feature_engineer` for real through phase 4, so a payload that `_validate
 rejects will fail that test too, not only the smoke test.
 Not fixed here: `tasks/available/` is outside B-001's `folders:`, so the task file itself was left
 untouched.
-Status: open
+Status: resolved in T-047 — `_MOCK_FEATURE_SPEC` was migrated to schema v2 in
+`tests/fixtures/graph_mocks.py` (two entries, one `global` and one matching a family, so both
+branches of the fit-scope guard run), and both consumers were verified green.
 
 ## OPEN — 2026-08-13 [pipeline-agent (B-001 review) → whoever next touches src/graph/]
 **Subgraph resume granularity is finer than the code comments claim: resume is node-granular

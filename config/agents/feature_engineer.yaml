@@ -1,6 +1,6 @@
 name: feature_engineer
 model_role: reasoning
-prompt_version: v1
+prompt_version: v2
 tools: []
 output_file_pattern: "design/iteration_{iteration}/feature_spec.json"
 max_tokens: 4096

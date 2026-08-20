@@ -126,16 +126,33 @@ _MOCK_SOLUTION_PLAN = json.dumps(
     }
 )
 
-# feature_engineer (T-022) is also a structured-JSON node — its own
-# `_extract_json`/`_validate_feature_spec` require exactly `encodings`/
-# `null_handling`/`interactions` list keys (see config/prompts/
-# feature_engineer/v1.md), which `_MOCK_LLM_CONTENT`'s fenced ```python
-# narrative shape would fail, so it needs its own dispatch entry too.
+# feature_engineer (T-022, schema v2 in T-047) is also a structured-JSON node — its
+# own `_extract_json`/`_validate_feature_spec` require a single `features` list whose
+# every entry carries `columns`/`operation`/`params`/`fit_scope`/`rationale`, with
+# `fit_scope` ∈ {"per_fold", "global"} required on every entry and forced to
+# "per_fold" for the leakage-prone operation families (see config/prompts/
+# feature_engineer/v2.md), which `_MOCK_LLM_CONTENT`'s fenced ```python narrative
+# shape would fail, so it needs its own dispatch entry too. The two entries below
+# are deliberately one of each: a stateless `global` transform, and one that matches
+# a family, so both branches of the fit-scope guard run in the graph-driven tests.
 _MOCK_FEATURE_SPEC = json.dumps(
     {
-        "encodings": [{"column": "cat1", "method": "one_hot"}],
-        "null_handling": [{"column": "num1", "strategy": "median_impute"}],
-        "interactions": [],
+        "features": [
+            {
+                "columns": ["num1"],
+                "operation": "log_transform",
+                "params": {},
+                "fit_scope": "global",
+                "rationale": "Smoke-test placeholder: a stateless row-wise transform.",
+            },
+            {
+                "columns": ["num1"],
+                "operation": "median_impute",
+                "params": {},
+                "fit_scope": "per_fold",
+                "rationale": "Smoke-test placeholder: a fitted operation, so per-fold.",
+            },
+        ]
     }
 )
 

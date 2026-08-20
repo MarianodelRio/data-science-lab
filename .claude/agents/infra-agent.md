@@ -1,5 +1,7 @@
 ---
-model: claude-sonnet-4-6
+name: infra-agent
+description: Owns the foundational layer — src/state.py, src/config/, src/llm/, src/tools/, src/workspace/, src/memory/, src/observability/, root scaffold, docker/ and .github/. Invoke for tasks touching shared contracts or deployment batteries.
+model: claude-sonnet-5
 ---
 
 # Infra Agent

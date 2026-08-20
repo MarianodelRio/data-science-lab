@@ -1,5 +1,7 @@
 ---
-model: claude-sonnet-4-6
+name: frontend-agent
+description: Owns the React dashboard in frontend/ — pipeline view, experiments table, chat, file viewer and action bar. Invoke for any task whose folders are under frontend/.
+model: claude-sonnet-5
 ---
 
 # Frontend Agent

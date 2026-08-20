@@ -43,10 +43,40 @@ Each agent writes **only** inside its folders (defined in `.claude/agents/`).
 | `api-agent` | `src/api/`, `docs/api.md` |
 | `frontend-agent` | `frontend/` |
 
-Cross-cutting rules for the framework agents live in `.claude/steering/`, injected
-per-agent by scope (`always.md` and `task-format.md` → all; `context-formats.md` →
-orchestrator/architect/coder/planner/review-coordinator; `coder-complete.md` → coder).
+Cross-cutting rules for the framework agents live in `.claude/steering/`. Their
+`inclusion:` frontmatter declares the intended scope (`always.md` and `task-format.md` →
+all; `context-formats.md` → orchestrator/architect/coder/planner; `coder-complete.md` →
+coder), but **there is no harness-side injection**: the Orchestrator reads these files in
+Phase 0 and pastes the relevant ones inline at the top of each sub-agent prompt.
 `.claude/AGENTS.md` is only a stub pointing there.
+
+### Agent file format
+
+Every file in `.claude/agents/` **must** declare `name` and `description` in its
+frontmatter. Claude Code registers a file as an invocable sub-agent type only when both
+are present — a file carrying just `model:` is silently ignored, the spawn falls back to a
+generic agent with the definition pasted inline, and per-agent model routing is lost.
+Nothing reports an error, so treat the frontmatter as load-bearing, not metadata.
+
+```markdown
+---
+name: pipeline-agent        # exactly the filename without .md
+description: One line — what the agent owns and when to invoke it.
+model: claude-sonnet-5
+---
+```
+
+`name` must match the filename character for character: every sub-agent spawn and every
+`agent:` field in `tasks/*.md` resolves by that string. Nested spawning
+(review-coordinator → its reviewers) additionally needs
+`CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: "2"` in `.claude/settings.json`.
+
+Check every agent file at once:
+
+```bash
+for f in .claude/agents/*.md; do n=$(basename "$f" .md); \
+  grep -q "^name: $n$" "$f" && grep -q "^description: " "$f" || echo "BROKEN: $f"; done
+```
 
 **Protected contracts** (require explicit human approval before change):
 `src/state.py` (LabState), `src/config/` dataclasses, `LLMFactory.get` signature,

@@ -1,5 +1,7 @@
 ---
-model: claude-sonnet-4-6
+name: pipeline-agent
+description: Owns the LangGraph pipeline — src/graph/, src/nodes/, config/agents|phases|prompts/ and docs/pipeline.md|agents.md. Invoke for any task adding or changing a graph node, phase or prompt.
+model: claude-sonnet-5
 ---
 
 # Pipeline Agent

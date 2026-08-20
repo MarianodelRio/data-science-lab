@@ -1,5 +1,7 @@
 ---
-model: claude-sonnet-4-6
+name: api-agent
+description: Owns the FastAPI backend in src/api/ — run management, SSE event streaming, the WebSocket chat and the Kaggle/MLflow endpoints. Invoke for any task whose folders are src/api/ or docs/api.md.
+model: claude-sonnet-5
 ---
 
 # API Agent

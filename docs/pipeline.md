@@ -473,7 +473,10 @@ The camelCase split exists because sklearn's own class names — `TargetEncoder`
 by no keyword without it. An uppercase run followed by a capitalized word splits after the acronym
 (`KNNImputer` → `knn imputer`, not `k n n imputer`), and a bare all-caps token is left whole
 (`PCA` → `pca`). Matching runs against both the split and the unsplit normalization, so a keyword
-carried concatenated in a tuple (`catboost`) still matches a camelCase spelling of the same name.
+carried concatenated in a tuple (`catboost`) still matches a camelCase spelling of the bare name
+(`CatBoost` → `catboost`). It does **not** survive a suffix: `CatBoostEncoder` normalizes to
+`cat boost encoder` and `catboostencoder`, and the concatenated keyword matches neither — which is
+why the separated form (`cat boost`) is carried in the tuple alongside it.
 An unseparated all-lowercase run (`targetencoder`) cannot be split by any rule that does not guess
 word breaks, and matches nothing.
 

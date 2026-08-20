@@ -23,7 +23,12 @@ from src.graph.node_resolver import resolve_node
 from src.graph.phases import PHASE_ORDER
 from src.nodes.llm._evaluation_llm_common import ROOT_CAUSES
 from src.state import new_state
-from tests.fixtures.graph_mocks import graph_llm_mocks, seed_raw_train_csv, set_fake_provider_env
+from tests.fixtures.graph_mocks import (
+    _seed_phase5_coder_fixtures,
+    graph_llm_mocks,
+    seed_raw_train_csv,
+    set_fake_provider_env,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -75,6 +80,8 @@ def test_phase_subgraph_compiles_and_runs(stem: str, tmp_path) -> None:
 
     if stem == "phase3_baseline":
         _seed_phase3_baseline_fixtures(tmp_path)
+    if stem == "phase5_implementation":
+        _seed_phase5_coder_fixtures(tmp_path)
 
     state = new_state("comp", str(tmp_path))
     result = compiled.invoke(state)
@@ -91,6 +98,15 @@ def test_phase_subgraph_compiles_and_runs(stem: str, tmp_path) -> None:
         assert design["specialist"] == "classical_ml_specialist"
         assert design["cv_strategy_ref"] == "validation/fold_config.json"
         assert "n_estimators" in design["search_space"]
+
+        # `coder` (T-029) is a real node now — the script it generated
+        # (`_MOCK_CODER_TRAIN_SCRIPT`) ran for real via `code_executor.execute`
+        # and wrote its three-artifact contract.
+        exp_dir = tmp_path / "experiments" / "exp_0"
+        assert (exp_dir / "train.py").is_file()
+        assert (exp_dir / "results.json").is_file()
+        assert (exp_dir / "submission.csv").is_file()
+        assert (exp_dir / "oof_predictions.parquet").is_file()
 
         # `code_critic` (T-030) is a real node now, not a `NoOpNode` — its
         # verdict record landing proves the live edge. Like `analysis_critic`, it
@@ -112,6 +128,20 @@ def test_phase_subgraph_compiles_and_runs(stem: str, tmp_path) -> None:
         assert verdicts["final_verdict"]["verdict"] == "pass"
         assert verdicts["final_verdict"]["forced_pass"] is True
         assert [a["verdict"] for a in verdicts["attempts"]] == ["iterate"] * 3 + ["pass"]
+
+        # `code_critic` re-invoked `coder` three more times internally (one per
+        # forced `iterate`), each running `coder.__call__` in full — but
+        # `state["experiments"]` only ever reflects the *first* graph-level
+        # `coder` call's returned delta (LangGraph applies a node's return value
+        # once per graph step; the critic's internal re-invocations only mutate
+        # its own local `working_state`, never the real graph state). So exactly
+        # one entry, not four.
+        assert len(result["experiments"]) == 1
+        experiment = result["experiments"][0]
+        assert experiment["id"] == "exp_0"
+        assert experiment["path"] == "experiments/exp_0"
+        assert experiment["iteration"] == 0
+        assert experiment["model"] == "lightgbm"
 
     if stem == "phase6_evaluation":
         # `score_evaluator` (T-031) is a real node now — it runs on a bare,
@@ -234,6 +264,8 @@ def test_phase5_subgraph_routes_neural_plan_to_deep_learning_specialist(tmp_path
         encoding="utf-8",
     )
 
+    _seed_phase5_coder_fixtures(tmp_path)
+
     module = importlib.import_module("src.graph.phases.phase5_implementation")
     compiled = module.build(resolve_node)
 
@@ -278,6 +310,7 @@ def test_phase5_subgraph_routes_forecasting_plan_to_timeseries_specialist(tmp_pa
         ),
         encoding="utf-8",
     )
+    _seed_phase5_coder_fixtures(tmp_path)
 
     module = importlib.import_module("src.graph.phases.phase5_implementation")
     compiled = module.build(resolve_node)

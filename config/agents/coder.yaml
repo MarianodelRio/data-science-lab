@@ -1,0 +1,6 @@
+name: coder
+model_role: implementation
+prompt_version: v1
+tools: []
+output_file_pattern: "experiments/exp_{iteration}/train.py"
+max_tokens: 8192

@@ -217,6 +217,54 @@ _MOCK_TIMESERIES_DESIGN = json.dumps(
     }
 )
 
+# coder (T-029) is NOT a structured-JSON node — like data_analyst, its output is a
+# fenced ```python script, so it needs its own dispatch entry with the fence baked
+# in (mirroring `_MOCK_LLM_CONTENT`'s shape), rather than reusing that fallback: the
+# fallback's script prints a fold-config JSON blob, not something that writes
+# `results.json`/`submission.csv`/an OOF file, so `coder`'s own `_validate_run`
+# would fail it and burn its execution-retry budget for nothing. This script is
+# executed for REAL by `code_executor.execute` (unmocked here, per this module's
+# own convention) against the smoke test's tmp workspace, so it must be a small,
+# genuinely runnable script, not a placeholder string. `iteration` is hardcoded to
+# 0 because every consumer of this fixture (the parametrized phase5_implementation
+# case and the two routing tests) exercises a standalone Phase 5 run, which never
+# increments `current_iteration` — see `_seed_phase5_coder_fixtures` below, which
+# seeds the `validation/fold_config.json` and `data/raw/train.csv` this script
+# reads. It must not crash when `feature_spec.json` is absent (a standalone Phase 5
+# run has no Phase 4 upstream), so that read is wrapped in `try/except
+# FileNotFoundError`.
+_MOCK_CODER_TRAIN_SCRIPT = (
+    "```python\n"
+    "import json\n"
+    "from pathlib import Path\n\n"
+    "EXP_DIR = Path('experiments/exp_0')\n\n"
+    "def main() -> None:\n"
+    "    EXP_DIR.mkdir(parents=True, exist_ok=True)\n"
+    "    design = json.loads((EXP_DIR / 'design.json').read_text())\n"
+    "    folds = json.loads(Path('validation/fold_config.json').read_text())\n"
+    "    try:\n"
+    "        feature_spec = json.loads(\n"
+    "            Path('design/iteration_0/feature_spec.json').read_text()\n"
+    "        )\n"
+    "    except FileNotFoundError:\n"
+    "        feature_spec = None\n"
+    "    oof_relative = str(EXP_DIR / 'oof_predictions.parquet')\n"
+    "    (EXP_DIR / 'oof_predictions.parquet').write_bytes(b'')\n"
+    "    results = {\n"
+    "        'cv_score': 0.5,\n"
+    "        'metric': 'accuracy',\n"
+    "        'oof_path': oof_relative,\n"
+    "        'model_family': design.get('model_family'),\n"
+    "        'n_folds': folds.get('n_folds'),\n"
+    "        'feature_spec_seen': feature_spec is not None,\n"
+    "    }\n"
+    "    (EXP_DIR / 'results.json').write_text(json.dumps(results))\n"
+    "    (EXP_DIR / 'submission.csv').write_text('id,target\\n1,0\\n')\n\n"
+    "if __name__ == '__main__':\n"
+    "    main()\n"
+    "```\n"
+)
+
 # error_analyst / hypothesis_generator / experiment_designer (T-032, phase6_evaluation)
 # are structured-JSON nodes too — each validates a whitelist-rebuilt schema (see
 # src/nodes/llm/_evaluation_llm_common.py and config/prompts/{name}/v1.md), which
@@ -310,6 +358,7 @@ _DISPATCH: tuple[tuple[str, str], ...] = (
     ("classical_ml_specialist", _MOCK_CLASSICAL_ML_DESIGN),
     ("deep_learning_specialist", _MOCK_DEEP_LEARNING_DESIGN),
     ("timeseries_specialist", _MOCK_TIMESERIES_DESIGN),
+    ("coder", _MOCK_CODER_TRAIN_SCRIPT),
     ("literature_researcher", _MOCK_EMPTY_EXTRACTION),
     ("web_researcher", _MOCK_EMPTY_EXTRACTION),
     ("competition_analyst", _MOCK_COMPETITION_ANALYSIS),
@@ -509,4 +558,29 @@ def seed_raw_train_csv(workspace_path: Path) -> None:
     raw_dir.mkdir(parents=True, exist_ok=True)
     (raw_dir / "train.csv").write_text(
         "feature1,target\n1,0\n2,1\n3,0\n4,1\n5,0\n", encoding="utf-8"
+    )
+
+
+def _seed_phase5_coder_fixtures(workspace_path: Path) -> None:
+    """`phase5_implementation` is the second phase in this suite whose real
+    node (`coder`, T-029) both executes a real subprocess (via
+    `code_executor.execute`, unmocked here) AND depends on the frozen fold
+    config a real Phase 1 run would already have produced — mirrors
+    `_seed_phase3_baseline_fixtures` in `tests/integration/phases/
+    test_phase_subgraphs_smoke.py` for the same reason `baseline_runner`
+    needed it. `_MOCK_CODER_TRAIN_SCRIPT` reads both files this seeds.
+    """
+    seed_raw_train_csv(workspace_path)
+    validation_dir = workspace_path / "validation"
+    validation_dir.mkdir(parents=True, exist_ok=True)
+    (validation_dir / "fold_config.json").write_text(
+        json.dumps(
+            {
+                "strategy": "stratified",
+                "n_folds": 1,
+                "seed": 0,
+                "fold_indices": [{"train": [0, 1, 2], "val": [3, 4]}],
+            }
+        ),
+        encoding="utf-8",
     )

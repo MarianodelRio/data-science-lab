@@ -108,6 +108,15 @@ def _seed_design(
     )
 
 
+def _seed_baseline_design(tmp_path: Path, *, target_column: str = "target") -> None:
+    baseline_dir = tmp_path / "experiments" / "baseline"
+    baseline_dir.mkdir(parents=True, exist_ok=True)
+    (baseline_dir / "design.json").write_text(
+        json.dumps({"target_column": target_column, "model": "gradient_boosting"}),
+        encoding="utf-8",
+    )
+
+
 def _write_success_artifacts(
     cwd: str,
     exp_dir: str,
@@ -176,6 +185,14 @@ def test_prompt_includes_fit_scope_and_column_safety_instructions() -> None:
     assert "repr(" in prompt
     assert "json.dumps(" in prompt
     assert "never string-concatenate" in prompt.lower()
+
+
+def test_prompt_requires_unconditional_target_column_exclusion() -> None:
+    prompt = PromptLoader().load("coder", "v1")
+
+    assert "## Target column" in prompt
+    assert "unconditional" in prompt.lower()
+    assert "every" in prompt.lower() and "branch" in prompt.lower()
 
 
 # -- happy path / artifact contract --
@@ -264,6 +281,113 @@ def test_missing_design_json_degrades_gracefully(
     sent_message = mock_llm.invoke.call_args_list[0][0][0][-1]
     assert "design.json not available" in str(sent_message.content)
     assert delta["experiments"][0]["model"] == "unknown"
+
+
+# -- target column --
+
+
+def test_target_column_read_from_baseline_design_reaches_prompt(
+    patched_llm_factory, patched_settings, patched_coder_settings, mock_llm, tmp_path: Path
+) -> None:
+    """The target column named in `experiments/baseline/design.json` (the
+    only place it is ever written, by Phase 3's `baseline_designer`) must be
+    read and threaded into the message the LLM receives, under its own
+    labeled section."""
+    _seed_design(tmp_path)
+    _seed_baseline_design(tmp_path, target_column="SalePrice")
+
+    with patch("src.nodes.llm.coder.execute", side_effect=_success_execute()):
+        node = CoderNode()
+        node(_build_state(tmp_path))
+
+    assert mock_llm.invoke.call_count == 1
+    sent_message = mock_llm.invoke.call_args_list[0][0][0][-1]
+    content = str(sent_message.content)
+    assert "## Target column" in content
+    assert "SalePrice" in content
+
+
+def test_missing_baseline_design_degrades_to_placeholder_without_raising(
+    patched_llm_factory, patched_settings, patched_coder_settings, mock_llm, tmp_path: Path
+) -> None:
+    """No `experiments/baseline/design.json` on disk at all: the node must
+    still call the LLM (never raise before that point) with a degraded
+    placeholder standing in for the target column."""
+    _seed_design(tmp_path)
+
+    with patch("src.nodes.llm.coder.execute", side_effect=_success_execute()):
+        node = CoderNode()
+        node(_build_state(tmp_path))
+
+    assert mock_llm.invoke.call_count == 1
+    sent_message = mock_llm.invoke.call_args_list[0][0][0][-1]
+    content = str(sent_message.content)
+    assert "## Target column" in content
+    assert "target_column not available from experiments/baseline/design.json" in content
+
+
+def test_malformed_baseline_design_degrades_to_placeholder_without_raising(
+    patched_llm_factory, patched_settings, patched_coder_settings, mock_llm, tmp_path: Path
+) -> None:
+    """`experiments/baseline/design.json` exists but is not valid JSON — same
+    degrade-not-raise contract as the missing-file case."""
+    _seed_design(tmp_path)
+    baseline_dir = tmp_path / "experiments" / "baseline"
+    baseline_dir.mkdir(parents=True, exist_ok=True)
+    (baseline_dir / "design.json").write_text("{not valid json", encoding="utf-8")
+
+    with patch("src.nodes.llm.coder.execute", side_effect=_success_execute()):
+        node = CoderNode()
+        node(_build_state(tmp_path))
+
+    assert mock_llm.invoke.call_count == 1
+    sent_message = mock_llm.invoke.call_args_list[0][0][0][-1]
+    content = str(sent_message.content)
+    assert "target_column not available from experiments/baseline/design.json" in content
+
+
+def test_baseline_design_not_a_json_object_degrades_to_placeholder(
+    patched_llm_factory, patched_settings, patched_coder_settings, mock_llm, tmp_path: Path
+) -> None:
+    """`experiments/baseline/design.json` parses as valid JSON but its
+    top-level value is a list, not an object — still degrades rather than
+    raising or propagating a non-dict value."""
+    _seed_design(tmp_path)
+    baseline_dir = tmp_path / "experiments" / "baseline"
+    baseline_dir.mkdir(parents=True, exist_ok=True)
+    (baseline_dir / "design.json").write_text(json.dumps(["not", "an", "object"]), encoding="utf-8")
+
+    with patch("src.nodes.llm.coder.execute", side_effect=_success_execute()):
+        node = CoderNode()
+        node(_build_state(tmp_path))
+
+    sent_message = mock_llm.invoke.call_args_list[0][0][0][-1]
+    assert "target_column not available from experiments/baseline/design.json" in str(
+        sent_message.content
+    )
+
+
+def test_baseline_design_missing_target_column_field_degrades_to_placeholder(
+    patched_llm_factory, patched_settings, patched_coder_settings, mock_llm, tmp_path: Path
+) -> None:
+    """`experiments/baseline/design.json` is a valid object but has no usable
+    `target_column` string — still degrades rather than sending an empty or
+    non-string value to the LLM."""
+    _seed_design(tmp_path)
+    baseline_dir = tmp_path / "experiments" / "baseline"
+    baseline_dir.mkdir(parents=True, exist_ok=True)
+    (baseline_dir / "design.json").write_text(
+        json.dumps({"model": "gradient_boosting"}), encoding="utf-8"
+    )
+
+    with patch("src.nodes.llm.coder.execute", side_effect=_success_execute()):
+        node = CoderNode()
+        node(_build_state(tmp_path))
+
+    sent_message = mock_llm.invoke.call_args_list[0][0][0][-1]
+    assert "target_column not available from experiments/baseline/design.json" in str(
+        sent_message.content
+    )
 
 
 def test_appends_whole_experiments_list_not_just_new_entry(
@@ -521,6 +645,58 @@ def test_metric_separator_variant_passes_without_retry(
         node(_build_state(tmp_path))
 
     assert mock_llm.invoke.call_count == 1
+
+
+# -- OOF artifact symlink containment --
+
+
+def test_oof_artifact_symlink_escaping_workspace_is_rejected(tmp_path: Path) -> None:
+    """A `results.json['oof_path']` that names a symlink living inside the
+    experiment directory, but whose target resolves outside the workspace
+    root, must be rejected — even though the raw path itself is relative and
+    contains no `..` component, so the earlier string-level checks alone
+    would let it through."""
+    from src.nodes.llm.coder import _oof_artifact_exists
+    from src.workspace.workspace_manager import WorkspaceManager
+
+    workspace_root = tmp_path / "workspace"
+    workspace = WorkspaceManager(str(workspace_root))
+    exp_dir = "experiments/exp_0"
+    (workspace_root / exp_dir).mkdir(parents=True, exist_ok=True)
+
+    outside_target = tmp_path / "outside" / "secret.parquet"
+    outside_target.parent.mkdir(parents=True, exist_ok=True)
+    outside_target.write_bytes(b"oof")
+
+    symlink_path = workspace_root / exp_dir / "oof_predictions.parquet"
+    symlink_path.symlink_to(outside_target)
+
+    results = {"oof_path": f"{exp_dir}/oof_predictions.parquet"}
+
+    assert _oof_artifact_exists(workspace, exp_dir, results) is False
+
+
+def test_oof_artifact_symlink_within_workspace_is_accepted(tmp_path: Path) -> None:
+    """A symlink is not rejected outright — only one that resolves outside
+    the workspace root. A symlink whose target is also inside the workspace
+    must still be treated as present."""
+    from src.nodes.llm.coder import _oof_artifact_exists
+    from src.workspace.workspace_manager import WorkspaceManager
+
+    workspace_root = tmp_path / "workspace"
+    workspace = WorkspaceManager(str(workspace_root))
+    exp_dir = "experiments/exp_0"
+    (workspace_root / exp_dir).mkdir(parents=True, exist_ok=True)
+
+    inside_target = workspace_root / exp_dir / "real_oof.parquet"
+    inside_target.write_bytes(b"oof")
+
+    symlink_path = workspace_root / exp_dir / "oof_predictions.parquet"
+    symlink_path.symlink_to(inside_target)
+
+    results = {"oof_path": f"{exp_dir}/oof_predictions.parquet"}
+
+    assert _oof_artifact_exists(workspace, exp_dir, results) is True
 
 
 # -- critic-feedback threading --

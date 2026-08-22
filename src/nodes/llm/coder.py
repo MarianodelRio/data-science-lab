@@ -3,7 +3,9 @@ experiment — the only node in this pipeline that writes ML implementation code
 
 Runs between `specialist_selector` and `code_critic` in
 `config/phases/phase5_implementation.yaml`'s `sequence`. Reads the specialist's
-`experiments/exp_{iteration}/design.json` and the Phase 4 `feature_spec.json`,
+`experiments/exp_{iteration}/design.json`, the Phase 4 `feature_spec.json`, and
+the target column name from the Phase 3 `experiments/baseline/design.json`
+(the only place `target_column` is ever written — see `_read_target_column`),
 generates a training script via the LLM, writes it to
 `experiments/exp_{iteration}/train.py`, executes it for real through
 `code_executor.execute`, and validates the resulting artifacts
@@ -78,6 +80,17 @@ _SUBMISSION_FILENAME = "submission.csv"
 _OOF_FALLBACK_FILENAME = "oof_predictions.parquet"
 _DESIGN_FILENAME = "design.json"
 
+# The one place `target_column` is ever written in this codebase:
+# `baseline_designer` (Pipeline Phase 3) writes it here, and `baseline_runner`
+# (a different node, same phase) reads it back. Phase 3 always runs before
+# Phase 5's first iteration (CLAUDE.md invariant #4), so this artifact is
+# expected to already exist by the time `coder` runs in any real pipeline
+# execution — but this reader still degrades rather than raises (see
+# `_read_target_column`) so Phase 5 stays invokable standalone.
+_BASELINE_DESIGN_PATH = "experiments/baseline/design.json"
+
+_TARGET_COLUMN_UNAVAILABLE = f"(target_column not available from {_BASELINE_DESIGN_PATH})"
+
 # Bounds coder's own execute-then-re-prompt loop (CLAUDE.md invariant #5, one
 # level down from code_critic's separate design-quality retry budget). Total
 # LLM calls per graph-level `coder` invocation is at most this plus one.
@@ -131,6 +144,30 @@ def _read_design(exp_dir: str, workspace: WorkspaceManager) -> dict[str, Any]:
     return design if isinstance(design, dict) else {}
 
 
+def _read_target_column(workspace: WorkspaceManager) -> str:
+    """The target column name from `experiments/baseline/design.json`, or a
+    placeholder when it cannot be read — never raises. See `DEGRADE_ERRORS`
+    for the caught set.
+
+    This is the *only* place the generated training script can learn which
+    column to exclude from the feature matrix; without it, target-column
+    identity would have to be guessed with zero grounded signal, and a wrong
+    guess produces a plausible-looking but silently leaked/corrupted
+    `cv_score` (see the T-020 precedent this mirrors: the same failure class,
+    one layer up).
+    """
+    try:
+        design = workspace.read_json(_BASELINE_DESIGN_PATH)
+    except DEGRADE_ERRORS:
+        return _TARGET_COLUMN_UNAVAILABLE
+    if not isinstance(design, dict):
+        return _TARGET_COLUMN_UNAVAILABLE
+    target_column = design.get("target_column")
+    if not isinstance(target_column, str) or not target_column.strip():
+        return _TARGET_COLUMN_UNAVAILABLE
+    return target_column
+
+
 def _read_feature_spec(feature_spec_ref: str, workspace: WorkspaceManager) -> str:
     """Pretty-printed `feature_spec.json` text, or a placeholder when it
     cannot be read — never raises. See `DEGRADE_ERRORS` for the caught set."""
@@ -152,6 +189,13 @@ def _oof_artifact_exists(
     path the script chose. Any other value (absent, non-string, escapes the
     workspace) falls back to checking the well-known fallback filename inside
     `exp_dir`, satisfying the "write to this exact name" convention.
+
+    The containment check resolves symlinks before the final `.exists()`
+    check on both sides: a generated script could otherwise set `oof_path` to
+    a symlink that sits inside the experiment directory (so it passes the
+    `..`/absolute-path checks above) but whose target resolves outside the
+    workspace root, e.g. into a caller-writable temp directory. Resolving
+    first closes that gap.
     """
     oof_path = results.get("oof_path")
     if isinstance(oof_path, str) and oof_path.strip():
@@ -163,7 +207,10 @@ def _oof_artifact_exists(
                 return False
         if ".." in candidate.parts:
             return False
-        return (workspace.workspace_path / candidate).exists()
+        resolved = (workspace.workspace_path / candidate).resolve()
+        if not resolved.is_relative_to(workspace.workspace_path.resolve()):
+            return False
+        return resolved.exists()
     return (workspace.workspace_path / exp_dir / _OOF_FALLBACK_FILENAME).exists()
 
 
@@ -217,18 +264,21 @@ def _build_task_message(
     design_text: str,
     feature_spec_text: str,
     folds_summary: str,
+    target_column: str,
     exp_dir: str,
     optuna_n_trials: int,
     optuna_early_stopping_patience: int,
     mlflow_tracking_uri: str,
 ) -> str:
     """The one HumanMessage `coder` receives after the system prompt: the
-    design, the feature spec, a fold summary, the literal run configuration,
-    and the exact output contract — see `config/prompts/coder/v1.md`."""
+    design, the feature spec, a fold summary, the target column, the literal
+    run configuration, and the exact output contract — see
+    `config/prompts/coder/v1.md`."""
     return (
         f"## Experiment design (design.json)\n\n{design_text}\n\n"
         f"## Feature spec (feature_spec.json)\n\n{feature_spec_text}\n\n"
         f"## Frozen CV folds\n\n{folds_summary}\n\n"
+        f"## Target column\n\n{target_column}\n\n"
         "## Run configuration\n\n"
         f"- optuna_n_trials: {optuna_n_trials}\n"
         f"- optuna_early_stopping_patience: {optuna_early_stopping_patience}\n"
@@ -272,6 +322,7 @@ class CoderNode(LLMNode):
         feature_spec_ref = resolve_feature_spec_ref(state, workspace)
         feature_spec_text = _read_feature_spec(feature_spec_ref, workspace)
         folds_summary = read_fold_summary(state, workspace)
+        target_column = _read_target_column(workspace)
 
         trimmed = trim_context(state.get("messages", []), self._max_messages_per_node)
         task_message = HumanMessage(
@@ -279,6 +330,7 @@ class CoderNode(LLMNode):
                 design_text,
                 feature_spec_text,
                 folds_summary,
+                target_column,
                 exp_dir,
                 settings.optuna.n_trials,
                 settings.optuna.early_stopping_patience,

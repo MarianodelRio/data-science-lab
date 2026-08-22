@@ -123,3 +123,58 @@ pr: ~
   framing used elsewhere in this module family (e.g. `resolve_feature_spec_ref`).
 
 - Dependencies added: None.
+
+### Addendum — Phase 4 review fix round (2026-08-22)
+
+Two independent reviewers (`code-quality`, `security`) raised the same BLOCKER: neither
+`design.json` nor `feature_spec.json` ever names the target column, so `coder` had no grounded
+signal for which column to exclude from the feature matrix — a wrong guess produces a
+plausible-looking but silently leaked/corrupted `cv_score` that can become `best_score`
+(invariant #3) with `_validate_run` unable to catch it (it only checks `cv_score` is a finite
+number). This is the exact T-020 failure class (`baseline_designer`/`baseline_runner`'s
+target-column exclusion not being unconditional in every branch) one node downstream, except
+here the column name never reached the node at all.
+
+Fixed:
+- Added `_read_target_column` (`src/nodes/llm/coder.py`), reading
+  `experiments/baseline/design.json["target_column"]` — the only place `target_column` is ever
+  written anywhere in this codebase, by Phase 3's `baseline_designer`, which always runs before
+  Phase 5's first iteration (invariant #4), so the artifact is guaranteed present in every real
+  run. Degrades to a placeholder (`"(target_column not available from
+  experiments/baseline/design.json)"`) on `_experiment_design.DEGRADE_ERRORS`, on a non-dict
+  payload, and on a missing/non-string/blank `target_column` field — never raises, matching
+  every other reader in this module.
+- Threaded it into `_build_task_message` as a new fifth `## Target column` section (both the
+  function signature and its one call site in `__call__` were updated).
+- Added an explicit "Target column exclusion is unconditional" section to
+  `config/prompts/coder/v1.md`, mirroring T-020's exact incident (one feature-selection branch
+  excluded the target, the other silently didn't) and instructing the LLM to exclude the target
+  column in every code path, at the single point the feature column list is finalized. Also
+  updated the "Inputs" section (four → five labeled sections) with a target-column-specific
+  degrade-fallback instruction (record the fallback explicitly in `results.json` rather than
+  guessing silently).
+- Added 7 tests to `tests/unit/nodes/llm/test_coder.py`: target column read from
+  `experiments/baseline/design.json` reaching the LLM message; degrade paths for a missing file,
+  invalid JSON, a non-dict JSON value, and a dict missing/blank `target_column`; a prompt-content
+  assertion for the new instruction.
+
+Also fixed a security `WARNING` (cheap, same pass): `_oof_artifact_exists`'s workspace-containment
+check never resolved symlinks before its final `.exists()` check, so a generated script could set
+`oof_path` to a symlink living inside the experiment directory (passing the existing
+absolute-path/`..` checks) whose target resolved outside the workspace root. Both sides are now
+`.resolve()`d and checked with `Path.is_relative_to` (Python 3.10, per `pyproject.toml`'s
+`requires-python = ">=3.10"`) before the artifact is treated as present. Added
+`test_oof_artifact_symlink_escaping_workspace_is_rejected` and a companion
+`test_oof_artifact_symlink_within_workspace_is_accepted` to confirm a same-workspace symlink is
+still accepted.
+
+Did not touch: `config/prompts/timeseries_specialist/v1.md` (out of scope, T-027's), `code_critic`
+(a separate node's blind spot, not blocking this PR), the deferred consolidated
+`src/features.py`/`src/models.py`/`src/train.py` scope, or the two INFO-level findings
+(prompt-injection-via-column-names, hand-written-vs-real-LLM test coverage) — all per the
+Orchestrator's explicit instructions for this fix round.
+
+Verification: `pytest --cov=src --cov-fail-under=70 -x` → 2133 passed, 97.42% coverage;
+`ruff check . && ruff format --check .` → all checks passed, 141 files already formatted;
+`mypy src/` → no issues found in 78 source files. Commit `a117d6d`, pushed to
+`feature/T-029-node-coder`.

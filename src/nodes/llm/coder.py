@@ -184,18 +184,24 @@ def _oof_artifact_exists(
     """Whether the OOF predictions file the script claims to have written
     actually exists on disk.
 
-    When `results["oof_path"]` is a usable string, it is re-relativized
-    against the workspace root and checked directly — this honors a custom
-    path the script chose. Any other value (absent, non-string, escapes the
-    workspace) falls back to checking the well-known fallback filename inside
+    When `results["oof_path"]` is a usable string, it is used as the
+    candidate path (re-relativized against the workspace root if absolute) —
+    this honors a custom path the script chose. Any other value (absent,
+    non-string, blank) falls back to the well-known fallback filename inside
     `exp_dir`, satisfying the "write to this exact name" convention.
 
-    The containment check resolves symlinks before the final `.exists()`
-    check on both sides: a generated script could otherwise set `oof_path` to
-    a symlink that sits inside the experiment directory (so it passes the
-    `..`/absolute-path checks above) but whose target resolves outside the
+    Both candidates are then run through the *same* containment check before
+    the final `.exists()` — there is deliberately only one copy of this
+    logic, reached by both paths, so it cannot drift out of sync between them
+    (a fallback-only symlink escape is exactly how that happened before: the
+    resolve+containment check was added to the `oof_path` branch alone and
+    the fallback branch kept a bare `.exists()`). The check resolves symlinks
+    before the final `.exists()` on both sides: a generated script could
+    otherwise place a symlink — at a custom `oof_path` *or* at the fallback
+    filename — that sits inside the experiment directory (so it passes the
+    `..`/absolute-path checks) but whose target resolves outside the
     workspace root, e.g. into a caller-writable temp directory. Resolving
-    first closes that gap.
+    first closes that gap for both candidates alike.
     """
     oof_path = results.get("oof_path")
     if isinstance(oof_path, str) and oof_path.strip():
@@ -205,13 +211,15 @@ def _oof_artifact_exists(
                 candidate = candidate.relative_to(workspace.workspace_path)
             except ValueError:
                 return False
-        if ".." in candidate.parts:
-            return False
-        resolved = (workspace.workspace_path / candidate).resolve()
-        if not resolved.is_relative_to(workspace.workspace_path.resolve()):
-            return False
-        return resolved.exists()
-    return (workspace.workspace_path / exp_dir / _OOF_FALLBACK_FILENAME).exists()
+    else:
+        candidate = Path(exp_dir) / _OOF_FALLBACK_FILENAME
+
+    if ".." in candidate.parts:
+        return False
+    resolved = (workspace.workspace_path / candidate).resolve()
+    if not resolved.is_relative_to(workspace.workspace_path.resolve()):
+        return False
+    return resolved.exists()
 
 
 def _validate_run(workspace: WorkspaceManager, exp_dir: str, exec_result: ExecResult) -> str:

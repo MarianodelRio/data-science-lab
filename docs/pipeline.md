@@ -763,13 +763,18 @@ agent, step 3).
   `_build_output_state` hooks, because it owns its own execute-then-re-prompt retry loop — the same
   precedent T-009 established for `code_critic`.
 
-  **Inputs.** One `HumanMessage` with four labeled sections: `## Experiment design (design.json)`
+  **Inputs.** One `HumanMessage` with five labeled sections: `## Experiment design (design.json)`
   (read from `experiments/exp_{iteration}/design.json`, degrading to a placeholder on
   `_experiment_design.DEGRADE_ERRORS`), `## Feature spec (feature_spec.json)` (resolved via the
   shared `resolve_feature_spec_ref`, degrading the same way), `## Frozen CV folds` (the shared
   `read_fold_summary` — a `strategy`/`n_folds`/`seed` summary only; the prompt requires the
   generated script to load `validation/fold_config.json` itself at runtime rather than trust this
-  summary), and `## Run configuration` (the literal `optuna.n_trials`/
+  summary), `## Target column` (the target column name read from the Phase 3 baseline's
+  `experiments/baseline/design.json` via `_read_target_column` — the only place `target_column` is
+  ever written; degrades to a placeholder rather than raising, and the prompt makes exclusion of
+  this column from the feature matrix unconditional regardless of which branch the generated script
+  takes — see `config/prompts/coder/v1.md`'s "Target column exclusion is unconditional" section for
+  the full contract), and `## Run configuration` (the literal `optuna.n_trials`/
   `optuna.early_stopping_patience`/`workspace.mlflow_tracking_uri` values from `Settings.load()`,
   read directly in `__call__` — a **second**, module-local `Settings.load()` call alongside the one
   the inherited `LLMNode.__init__` already makes for `_max_messages_per_node`).

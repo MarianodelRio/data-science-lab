@@ -390,6 +390,48 @@ def test_baseline_design_missing_target_column_field_degrades_to_placeholder(
     )
 
 
+def test_baseline_design_blank_target_column_degrades_to_placeholder(
+    patched_llm_factory, patched_settings, patched_coder_settings, mock_llm, tmp_path: Path
+) -> None:
+    """`target_column` is present but whitespace-only — still degrades rather
+    than sending a blank value to the LLM."""
+    _seed_design(tmp_path)
+    baseline_dir = tmp_path / "experiments" / "baseline"
+    baseline_dir.mkdir(parents=True, exist_ok=True)
+    (baseline_dir / "design.json").write_text(
+        json.dumps({"target_column": "   "}), encoding="utf-8"
+    )
+
+    with patch("src.nodes.llm.coder.execute", side_effect=_success_execute()):
+        node = CoderNode()
+        node(_build_state(tmp_path))
+
+    sent_message = mock_llm.invoke.call_args_list[0][0][0][-1]
+    assert "target_column not available from experiments/baseline/design.json" in str(
+        sent_message.content
+    )
+
+
+def test_baseline_design_non_string_target_column_degrades_to_placeholder(
+    patched_llm_factory, patched_settings, patched_coder_settings, mock_llm, tmp_path: Path
+) -> None:
+    """`target_column` is present but not a string (e.g. a number) — still
+    degrades rather than sending a non-string value to the LLM."""
+    _seed_design(tmp_path)
+    baseline_dir = tmp_path / "experiments" / "baseline"
+    baseline_dir.mkdir(parents=True, exist_ok=True)
+    (baseline_dir / "design.json").write_text(json.dumps({"target_column": 123}), encoding="utf-8")
+
+    with patch("src.nodes.llm.coder.execute", side_effect=_success_execute()):
+        node = CoderNode()
+        node(_build_state(tmp_path))
+
+    sent_message = mock_llm.invoke.call_args_list[0][0][0][-1]
+    assert "target_column not available from experiments/baseline/design.json" in str(
+        sent_message.content
+    )
+
+
 def test_appends_whole_experiments_list_not_just_new_entry(
     patched_llm_factory, patched_settings, patched_coder_settings, mock_llm, tmp_path: Path
 ) -> None:
@@ -695,6 +737,61 @@ def test_oof_artifact_symlink_within_workspace_is_accepted(tmp_path: Path) -> No
     symlink_path.symlink_to(inside_target)
 
     results = {"oof_path": f"{exp_dir}/oof_predictions.parquet"}
+
+    assert _oof_artifact_exists(workspace, exp_dir, results) is True
+
+
+def test_oof_artifact_fallback_filename_symlink_escaping_workspace_is_rejected(
+    tmp_path: Path,
+) -> None:
+    """The default/common case — `results.json` carries no `oof_path` key at
+    all, so `_oof_artifact_exists` falls back to checking the well-known
+    `oof_predictions.parquet` filename directly. That fallback path must go
+    through the same resolve+containment check as the explicit-`oof_path`
+    branch: a symlink at the fallback filename pointing outside the
+    workspace root must be rejected, not silently followed."""
+    from src.nodes.llm.coder import _oof_artifact_exists
+    from src.workspace.workspace_manager import WorkspaceManager
+
+    workspace_root = tmp_path / "workspace"
+    workspace = WorkspaceManager(str(workspace_root))
+    exp_dir = "experiments/exp_0"
+    (workspace_root / exp_dir).mkdir(parents=True, exist_ok=True)
+
+    outside_target = tmp_path / "outside" / "secret.parquet"
+    outside_target.parent.mkdir(parents=True, exist_ok=True)
+    outside_target.write_bytes(b"oof")
+
+    symlink_path = workspace_root / exp_dir / "oof_predictions.parquet"
+    symlink_path.symlink_to(outside_target)
+
+    results = {"cv_score": 0.9}
+
+    assert _oof_artifact_exists(workspace, exp_dir, results) is False
+
+
+def test_oof_artifact_fallback_filename_symlink_within_workspace_is_accepted(
+    tmp_path: Path,
+) -> None:
+    """Mirrors `test_oof_artifact_symlink_within_workspace_is_accepted` for
+    the no-`oof_path` fallback path: a symlink at the well-known filename
+    that resolves to a target still inside the workspace must be treated as
+    present, not rejected outright."""
+    from src.nodes.llm.coder import _oof_artifact_exists
+    from src.workspace.workspace_manager import WorkspaceManager
+
+    workspace_root = tmp_path / "workspace"
+    workspace = WorkspaceManager(str(workspace_root))
+    exp_dir = "experiments/exp_0"
+    (workspace_root / exp_dir).mkdir(parents=True, exist_ok=True)
+
+    inside_target = workspace_root / exp_dir / "real_oof.parquet"
+    inside_target.write_bytes(b"oof")
+
+    symlink_path = workspace_root / exp_dir / "oof_predictions.parquet"
+    symlink_path.symlink_to(inside_target)
+
+    results = {"cv_score": 0.9}
 
     assert _oof_artifact_exists(workspace, exp_dir, results) is True
 

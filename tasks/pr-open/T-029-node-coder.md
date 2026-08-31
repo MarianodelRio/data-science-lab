@@ -305,4 +305,5 @@ Orchestrator's explicit instructions for this fix round), or anything beyond Fin
 
 Verification: `pytest --cov=src --cov-fail-under=70 -x` → 2140 passed, 97.43% coverage;
 `ruff check . && ruff format --check .` → all checks passed, 141 files formatted; `mypy src/` →
-no issues found in 78 source files. Commit TBD, pushed to `feature/T-029-node-coder`.
+no issues found in 78 source files. Commits `b96ad70` (findings 1+3 fix),
+`df53685` (discoveries + this addendum), pushed to `feature/T-029-node-coder`.

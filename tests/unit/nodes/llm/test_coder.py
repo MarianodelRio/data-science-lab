@@ -650,6 +650,59 @@ def test_missing_submission_csv_triggers_retry(
     assert (tmp_path / _EXP_DIR / "submission.csv").is_file()
 
 
+def test_retry_clears_stale_artifacts_between_attempts(
+    patched_llm_factory, patched_settings, patched_coder_settings, mock_llm, tmp_path: Path
+) -> None:
+    """A stale `submission.csv` left by a failed attempt must not survive
+    into the next attempt: if the next attempt's regenerated script has its
+    own, unrelated bug and never writes `submission.csv` at all, the run
+    must not silently pass by finding the previous attempt's leftover file —
+    that would record an internally inconsistent artifact triplet (fresh
+    results.json/OOF from one attempt, stale submission.csv from another) as
+    a successful run. See `_clear_contract_artifacts`."""
+    _seed_design(tmp_path)
+    mock_llm.invoke.side_effect = [
+        AIMessage(content=_VALID_RESPONSE),
+        AIMessage(content=_VALID_RESPONSE_2),
+        AIMessage(content=_VALID_RESPONSE),
+    ]
+    calls = {"count": 0}
+    submission_path = tmp_path / _EXP_DIR / "submission.csv"
+
+    def _write_invalid_cv_score_with_submission(cwd: str) -> None:
+        exp_path = Path(cwd) / _EXP_DIR
+        exp_path.mkdir(parents=True, exist_ok=True)
+        (exp_path / "results.json").write_text(
+            json.dumps({"cv_score": "not-a-number"}), encoding="utf-8"
+        )
+        (exp_path / "submission.csv").write_text("id,target\n1,0\n", encoding="utf-8")
+
+    def _dispatch(code: str, cwd: str) -> ExecResult:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            # Attempt 0: writes submission.csv, but an invalid cv_score fails
+            # validation on an unrelated ground.
+            _write_invalid_cv_score_with_submission(cwd)
+        elif calls["count"] == 2:
+            # Attempt 1: the stale submission.csv from attempt 0 must already
+            # be gone before this attempt's execute() runs — and this attempt
+            # deliberately does not write a new one (its own, unrelated bug).
+            assert not submission_path.exists()
+            _write_success_artifacts(cwd, _EXP_DIR, write_submission=False)
+        else:
+            # Attempt 2: a fully successful run.
+            _write_success_artifacts(cwd, _EXP_DIR)
+        return ExecResult(returncode=0, stdout="", stderr="", timed_out=False)
+
+    with patch("src.nodes.llm.coder.execute", side_effect=_dispatch):
+        node = CoderNode()
+        node(_build_state(tmp_path))
+
+    assert calls["count"] == 3
+    assert mock_llm.invoke.call_count == 3
+    assert submission_path.is_file()
+
+
 def test_metric_field_validated_when_present(
     patched_llm_factory, patched_settings, patched_coder_settings, mock_llm, tmp_path: Path
 ) -> None:
@@ -794,6 +847,48 @@ def test_oof_artifact_fallback_filename_symlink_within_workspace_is_accepted(
     results = {"cv_score": 0.9}
 
     assert _oof_artifact_exists(workspace, exp_dir, results) is True
+
+
+def test_oof_artifact_explicit_oof_path_outside_exp_dir_is_rejected(tmp_path: Path) -> None:
+    """`results.json['oof_path']` must resolve inside the *current*
+    experiment's `exp_dir` — not merely somewhere inside the workspace. A
+    real, non-symlinked, in-workspace file that just happens to live
+    elsewhere (e.g. a different experiment's own OOF artifact) must not be
+    accepted: no traversal or symlink is needed to exploit a workspace-root
+    -only containment check, only a path string naming another file."""
+    from src.nodes.llm.coder import _oof_artifact_exists
+    from src.workspace.workspace_manager import WorkspaceManager
+
+    workspace_root = tmp_path / "workspace"
+    workspace = WorkspaceManager(str(workspace_root))
+    exp_dir = "experiments/exp_1"
+    (workspace_root / exp_dir).mkdir(parents=True, exist_ok=True)
+
+    other_exp_oof = workspace_root / "experiments" / "exp_0" / "oof_predictions.parquet"
+    other_exp_oof.parent.mkdir(parents=True, exist_ok=True)
+    other_exp_oof.write_bytes(b"oof")
+
+    results = {"oof_path": "experiments/exp_0/oof_predictions.parquet"}
+
+    assert _oof_artifact_exists(workspace, exp_dir, results) is False
+
+
+def test_oof_artifact_oof_path_pointing_at_directory_is_rejected(tmp_path: Path) -> None:
+    """A resolved `oof_path` candidate that exists but is a directory, not a
+    file, must be rejected — a bare `.exists()` check would wrongly accept
+    it as a present artifact."""
+    from src.nodes.llm.coder import _oof_artifact_exists
+    from src.workspace.workspace_manager import WorkspaceManager
+
+    workspace_root = tmp_path / "workspace"
+    workspace = WorkspaceManager(str(workspace_root))
+    exp_dir = "experiments/exp_0"
+    directory_masquerading_as_oof = workspace_root / exp_dir / "oof_predictions.parquet"
+    directory_masquerading_as_oof.mkdir(parents=True, exist_ok=True)
+
+    results = {"oof_path": f"{exp_dir}/oof_predictions.parquet"}
+
+    assert _oof_artifact_exists(workspace, exp_dir, results) is False
 
 
 # -- critic-feedback threading --

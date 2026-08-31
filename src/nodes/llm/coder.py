@@ -55,6 +55,7 @@ graph-level iteration, no matter how many times either loop runs internally.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import re
@@ -191,17 +192,29 @@ def _oof_artifact_exists(
     `exp_dir`, satisfying the "write to this exact name" convention.
 
     Both candidates are then run through the *same* containment check before
-    the final `.exists()` — there is deliberately only one copy of this
+    the final `.is_file()` — there is deliberately only one copy of this
     logic, reached by both paths, so it cannot drift out of sync between them
     (a fallback-only symlink escape is exactly how that happened before: the
     resolve+containment check was added to the `oof_path` branch alone and
     the fallback branch kept a bare `.exists()`). The check resolves symlinks
-    before the final `.exists()` on both sides: a generated script could
-    otherwise place a symlink — at a custom `oof_path` *or* at the fallback
-    filename — that sits inside the experiment directory (so it passes the
-    `..`/absolute-path checks) but whose target resolves outside the
-    workspace root, e.g. into a caller-writable temp directory. Resolving
+    before the final containment/file check on both sides: a generated
+    script could otherwise place a symlink — at a custom `oof_path` *or* at
+    the fallback filename — that sits inside the experiment directory (so it
+    passes the `..`/absolute-path checks) but whose target resolves outside
+    the workspace root, e.g. into a caller-writable temp directory. Resolving
     first closes that gap for both candidates alike.
+
+    Containment is scoped to *this experiment's own* `exp_dir`, not merely
+    the workspace root: the fallback candidate is exp_dir-scoped by
+    construction, but an explicit `oof_path` could otherwise legitimately
+    name any pre-existing file anywhere else in the workspace (a different
+    experiment's real OOF file, a raw data file, `validation/fold_config.json`
+    — no traversal or symlink needed) and would pass a workspace-root-only
+    check. Requiring containment inside `exp_dir` closes that gap for both
+    branches uniformly.
+
+    The final check is `.is_file()`, not `.exists()`: a resolved candidate
+    that exists but is a directory is not a valid OOF artifact.
     """
     oof_path = results.get("oof_path")
     if isinstance(oof_path, str) and oof_path.strip():
@@ -217,9 +230,52 @@ def _oof_artifact_exists(
     if ".." in candidate.parts:
         return False
     resolved = (workspace.workspace_path / candidate).resolve()
-    if not resolved.is_relative_to(workspace.workspace_path.resolve()):
+    exp_dir_resolved = (workspace.workspace_path / exp_dir).resolve()
+    if not resolved.is_relative_to(exp_dir_resolved):
         return False
-    return resolved.exists()
+    return resolved.is_file()
+
+
+def _clear_contract_artifacts(workspace: WorkspaceManager, exp_dir: str) -> None:
+    """Delete the three well-known contract artifacts from `exp_dir`, if
+    present, before an `execute()` call.
+
+    Without this, a mixed/inconsistent artifact set from an earlier attempt
+    (or, for the very first attempt, a completely separate prior graph
+    invocation of this same iteration — e.g. after a process restart) could
+    survive to be picked up by `_validate_run` for a *later* attempt: e.g.
+    attempt 0 writes `submission.csv` but fails on a missing OOF file and
+    retries; attempt 1's revised, LLM-regenerated script fixes the OOF bug
+    but has its own unrelated bug and never reaches its own
+    `submission.csv` write — `_validate_run`'s bare `.exists()` check would
+    otherwise silently accept attempt 0's stale `submission.csv` alongside
+    attempt 1's fresh `results.json`/OOF, recording an internally
+    inconsistent triplet as a successful run. Called before every attempt's
+    `execute()`, including the first, so the invariant holds unconditionally:
+    whatever `_validate_run` finds for attempt N either doesn't exist, or was
+    written by attempt N's own `execute()` call.
+
+    Only the well-known filenames are deleted by name — `results.json`,
+    `submission.csv`, `_OOF_FALLBACK_FILENAME` — not an arbitrary custom
+    `oof_path` a *previous* attempt's `results.json` may have named, since
+    that name is only knowable after that attempt's own `execute()` has
+    already run (a chicken-and-egg problem: cleaning it requires having
+    already read the very `results.json` this call is about to delete).
+    Accepted residual limitation: a custom, non-default `oof_path` from a
+    previous attempt is not proactively cleaned, so it could in principle
+    survive into a later attempt's validation if that later attempt's
+    `results.json` happens to name the same custom path without actually
+    (re)writing it. This is narrower than it sounds — `_oof_artifact_exists`
+    now requires any `oof_path` candidate to resolve inside this same
+    `exp_dir` (see that function), so the survivor must already be a
+    same-experiment file, not an arbitrary workspace path — and is judged
+    disproportionate to close fully (e.g. via mtime bookkeeping) versus the
+    default-filename case this closes completely.
+    """
+    exp_path = workspace.workspace_path / exp_dir
+    for filename in (_RESULTS_FILENAME, _SUBMISSION_FILENAME, _OOF_FALLBACK_FILENAME):
+        with contextlib.suppress(FileNotFoundError):
+            (exp_path / filename).unlink()
 
 
 def _validate_run(workspace: WorkspaceManager, exp_dir: str, exec_result: ExecResult) -> str:
@@ -368,6 +424,7 @@ class CoderNode(LLMNode):
                 failure_reason, exec_result = str(exc), None
             else:
                 workspace.write_text(train_relative_path, code)
+                _clear_contract_artifacts(workspace, exp_dir)
                 exec_result = execute(code, cwd=str(workspace.workspace_path))
                 failure_reason = _validate_run(workspace, exp_dir, exec_result)
 

@@ -3,12 +3,12 @@ id: T-029
 phase: 2
 agent: pipeline-agent
 depends_on: [T-010, T-006, T-047]
-status: in-progress
+status: pr-open
 folders: ["src/nodes/llm/", "config/agents/", "config/prompts/"]
 outputs: [coder node, workspace training scripts, results.json, OOF predictions, Optuna inner loop]
 size: M
 branch: feature/T-029-node-coder
-pr: ~
+pr: https://github.com/MarianodelRio/data-science-lab/pull/37
 ---
 
 ## Node: coder (Pipeline Phase 5)

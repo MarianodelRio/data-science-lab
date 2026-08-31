@@ -26,6 +26,7 @@ Each agent-adding task appends one row to the table below. Do not remove or reor
 | `nlp_specialist` | Phase 5 — Implementation | `reasoning` | `experiments/exp_{iteration}/design.json` |
 | `timeseries_specialist` | Phase 5 — Implementation | `reasoning` | `experiments/exp_{iteration}/design.json` |
 | `ensemble_specialist` | Phase 5 — Implementation | `reasoning` | `experiments/exp_{iteration}/design.json` |
+| `coder` | Phase 5 — Implementation | `implementation` | `experiments/exp_{iteration}/train.py` |
 | `code_critic` | Phase 5 — Implementation | `implementation` | `reports/code_critic_verdicts_iter{iteration}.json` |
 | `error_analyst` | Phase 6 — Evaluation | `reasoning` | `reports/error_diagnosis_{iteration}.json` |
 | `hypothesis_generator` | Phase 6 — Evaluation | `reasoning` | `reports/hypotheses_{iteration}.json` |

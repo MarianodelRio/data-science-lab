@@ -41,3 +41,18 @@
 **Folders:** src/nodes/llm/, config/agents/, config/prompts/
 **Lesson:** When two artifacts end up describing the same property, do not widen the older contract to match — align the vocabularies by construction and rule which one wins, so the downstream consumer gets a tie-break instead of a judgement call.
 **Signal:** "Where the two artifacts disagree, **`feature_spec.json`'s `fit_scope` is authoritative**." *(source: context/decisions)*
+
+## L-009 | T-029 | 2026-08-31 | Weight: 3
+**Folders:** src/nodes/llm/, config/agents/, config/prompts/
+**Lesson:** Before treating an open discovery as still-current context for a new task's analysis, check whether a task that landed since it was written already resolved it — an unrevisited discovery can misdirect a scope decision on the very task it names as the follow-up.
+**Signal:** "Open discovery \"nothing in `src/` increments `current_iteration`\" is **stale**: T-032's `experiment_designer._build_output_state` is now the single writer." *(source: context/decisions)*
+
+## L-010 | T-029 | 2026-08-31 | Weight: 3
+**Folders:** src/nodes/llm/, config/agents/, config/prompts/
+**Lesson:** When a node's own internal retry loop can re-invoke against a state field with no LangGraph reducer, require an explicit, documented ruling on what gets overwritten in place versus what gets recorded in state — don't leave a no-reducer-plus-retry interaction implicit for the Coder to improvise.
+**Signal:** "Experiment-directory stability across `code_critic` retries must be an explicit, documented decision. Ruling: **overwrite `experiments/exp_{current_iteration}/` in place** on every retry, and record the *directory* (not a file) in `state[\"experiments\"][-1][\"path\"]`." *(source: context/decisions)*
+
+## L-011 | T-029 | 2026-08-31 | Weight: 3
+**Folders:** src/nodes/llm/, config/agents/, config/prompts/
+**Lesson:** A downstream consumer of a no-reducer state field can silently diverge from disk if it trusts a cached scalar instead of re-reading through the field's own path pointer — when approving a task, check that every consumer of that field follows the same re-read discipline, not just the ones that happen to already do.
+**Signal:** "`score_evaluator` is unaffected — confirmed it re-reads `results.json` fresh from disk via each entry's `path` pointer, never trusting the cached `cv_score`. `report_writer` does not follow that same pattern: it trusts the cached field directly." *(source: context/discoveries)*

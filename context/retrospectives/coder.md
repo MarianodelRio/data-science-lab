@@ -31,3 +31,13 @@
 **Folders:** src/nodes/llm/, config/agents/, config/prompts/
 **Lesson:** When you extend a normalization step, match against the old and the new form both — a normalization that only replaces the old one silently drops matches that depended on the previous reading.
 **Signal:** "`CatBoost encoding` splits to `cat boost encoding`, which no longer matches the concatenated `catboost` keyword — so the split is added on top of the old reading rather than traded for it." *(source: context/decisions)*
+
+## L-007 | T-029 | 2026-08-31 | Weight: 1
+**Folders:** src/nodes/llm/, config/agents/, config/prompts/
+**Lesson:** When a validated field can legitimately be absent or malformed without that being a hard failure, fall back to the module family's established well-known-filename convention rather than treating it as a validation error — match the degrade style sibling readers already use, don't invent a new one.
+**Signal:** "`_oof_artifact_exists` treats a non-string/blank `results.json[\"oof_path\"]` as \"absent\" and falls back to checking the well-known fallback filename, rather than treating it as a hard validation failure — matches the plan's \"falls back... when that path is unset/unusable\" framing used elsewhere in this module family (e.g. `resolve_feature_spec_ref`)." *(source: ## Completed)*
+
+## L-008 | T-029 | 2026-08-31 | Weight: 1
+**Folders:** src/nodes/llm/, config/agents/, config/prompts/
+**Lesson:** A bounded execute-and-retry loop that writes artifacts to a shared directory must clear or isolate each attempt's outputs before the next attempt runs — otherwise a later attempt's validation can silently accept a stale artifact left over from an earlier, different attempt, producing an internally inconsistent result that still passes.
+**Signal:** "`_validate_run`'s bare `.exists()` would then silently accept the *stale* `submission.csv` from the earlier attempt alongside the new attempt's fresh `results.json`/OOF, recording an internally inconsistent artifact triplet as a successful run." *(source: ## Completed)*

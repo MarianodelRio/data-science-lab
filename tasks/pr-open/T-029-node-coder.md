@@ -225,3 +225,84 @@ instructions for this fix round.
 Verification: `pytest --cov=src --cov-fail-under=70 -x` → 2137 passed, 97.42% coverage;
 `ruff check . && ruff format --check .` → all checks passed, 141 files formatted; `mypy src/` →
 no issues found in 78 source files. Commit `3bb16cf`, pushed to `feature/T-029-node-coder`.
+
+### Addendum — Phase 4 adversarial review round 3 fix (2026-08-31)
+
+Adversarial review (round 3, run after the three parallel reviewers found nothing further) found
+3 genuine issues. Two required fixes in this PR; two more are advisory, written as new open
+discovery entries instead.
+
+**Finding 1 (HIGH) — no cleanup between execution-retry attempts, fixed.** `coder`'s own
+execute-then-re-prompt loop (`_MAX_EXECUTION_RETRIES`) never cleared `experiments/exp_{iteration}/`
+between attempts. Each attempt's generated script independently decided which of the three
+contract artifacts to write, and `_validate_run` only checked "does the right-named file exist and
+parse correctly right now" — never "was it written by *this* attempt's execution." Concretely: an
+attempt could write `submission.csv` but fail on a different check and retry; the next,
+LLM-regenerated attempt could fix that check but have its own unrelated bug and never reach its own
+`submission.csv` write — `_validate_run`'s bare `.exists()` would then silently accept the *stale*
+`submission.csv` from the earlier attempt alongside the new attempt's fresh `results.json`/OOF,
+recording an internally inconsistent artifact triplet as a successful run. This is exactly the
+`results.json` that `score_evaluator` later reads as ground truth for `best_score`/
+`best_experiment_path` (CLAUDE.md invariant #3).
+
+Fixed by adding `_clear_contract_artifacts(workspace, exp_dir)`, called immediately before every
+attempt's `execute()` call (including the first, to handle stale state from a wholly separate prior
+graph invocation of the same iteration, e.g. after a process restart). It deletes the three
+well-known filenames (`results.json`, `submission.csv`, `oof_predictions.parquet`) from `exp_dir`
+if present, ignoring `FileNotFoundError` (via `contextlib.suppress`, per `ruff`'s SIM105). This
+establishes the invariant that whatever `_validate_run` finds for attempt N either doesn't exist or
+was written by attempt N's own `execute()` call.
+
+**Accepted residual limitation, documented in `_clear_contract_artifacts`'s docstring rather than
+closed with a full mtime-based solution:** a *custom* `results.json["oof_path"]` named by a
+previous attempt is not proactively deleted by name, since that name is only knowable after that
+attempt's own `execute()` has already run (cleaning it would require having already read the very
+`results.json` this call is about to delete — a chicken-and-egg problem). Judged narrower than it
+sounds and disproportionate to close fully: Finding 3's exp_dir-scoping fix (below) already
+requires any `oof_path` candidate to resolve inside the *same* `exp_dir`, so a survivor must
+already be a same-experiment file, not an arbitrary workspace path. The well-known-filename case —
+the common/default path, and the one the required test exercises — is fully closed.
+
+Added `test_retry_clears_stale_artifacts_between_attempts` to `tests/unit/nodes/llm/test_coder.py`:
+attempt 0 writes `submission.csv` but fails on an invalid `cv_score`; attempt 1 asserts the stale
+`submission.csv` is already gone before its own `execute()` runs, and deliberately does not write a
+new one; attempt 2 succeeds fully. Confirms 3 LLM invocations and a final, freshly-written
+`submission.csv`.
+
+**Finding 3 (MEDIUM) — OOF `oof_path` branch scoped to the workspace root, not `exp_dir`, fixed.**
+`_oof_artifact_exists`'s explicit-`oof_path` branch (the one round 2 fixed for symlink containment)
+only required the resolved candidate to stay inside the workspace root — not inside the *current*
+experiment's own `exp_dir`, unlike the fallback branch (exp_dir-scoped by construction) and unlike
+the `submission.csv` check elsewhere in the same function. So `results.json["oof_path"]` could
+legitimately name any pre-existing file anywhere else in the workspace — no traversal or symlink
+needed — e.g. a different experiment's own real OOF file, or `validation/fold_config.json`.
+
+Fixed by replacing the workspace-root containment check with an exp_dir-scoped one
+(`resolved.is_relative_to((workspace.workspace_path / exp_dir).resolve())`), applied uniformly to
+both the `oof_path` and fallback candidates (they already shared one code path after round 2's
+fix, so this is a one-line change reached by both). While in the function, also changed the final
+`.exists()` to `.is_file()` (round 3 security reviewer's smaller robustness note): a resolved
+candidate that exists but is a directory was previously reported as "present."
+
+Added `test_oof_artifact_explicit_oof_path_outside_exp_dir_is_rejected` (a real, non-symlinked,
+in-workspace file outside `exp_dir` is now rejected) and
+`test_oof_artifact_oof_path_pointing_at_directory_is_rejected` (a resolved candidate that is a
+directory is rejected). Both existing symlink-containment tests still pass unmodified since their
+symlink targets already live inside `exp_dir`.
+
+**Finding 2 (report_writer staleness) and Finding 4 (code_executor sandboxing) — written as
+discoveries, not fixed here (out of scope: different modules/tasks).** Appended two new `## OPEN`
+entries to `context/discoveries/T-029.md`: one addressed to `report_writer.py`'s owner (T-033)
+noting it trusts a cached `cv_score` in `state["experiments"]` that goes stale whenever
+`code_critic` forces an `iterate` cycle — unlike `score_evaluator`, which already re-reads
+`results.json` fresh from disk via each entry's `path`; one addressed to infra-agent noting
+`code_executor.execute()` has no OS-level sandboxing beyond stripping credential env vars, and
+`coder` is the first node combining `implementation`-role LLM output with real subprocess/
+filesystem execution reach.
+
+Did not touch: `report_writer.py`, `code_executor.py` (other tasks'/agents' files, per the
+Orchestrator's explicit instructions for this fix round), or anything beyond Findings 1 and 3.
+
+Verification: `pytest --cov=src --cov-fail-under=70 -x` → 2140 passed, 97.43% coverage;
+`ruff check . && ruff format --check .` → all checks passed, 141 files formatted; `mypy src/` →
+no issues found in 78 source files. Commit TBD, pushed to `feature/T-029-node-coder`.

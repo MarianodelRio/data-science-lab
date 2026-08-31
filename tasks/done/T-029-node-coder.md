@@ -7,7 +7,7 @@ status: done
 folders: ["src/nodes/llm/", "config/agents/", "config/prompts/"]
 outputs: [coder node, workspace training scripts, results.json, OOF predictions, Optuna inner loop]
 size: M
-branch: feature/T-029-node-coder
+branch: ~
 pr: https://github.com/MarianodelRio/data-science-lab/pull/37
 ---
 

@@ -178,3 +178,50 @@ Verification: `pytest --cov=src --cov-fail-under=70 -x` → 2133 passed, 97.42% 
 `ruff check . && ruff format --check .` → all checks passed, 141 files already formatted;
 `mypy src/` → no issues found in 78 source files. Commit `a117d6d`, pushed to
 `feature/T-029-node-coder`.
+
+### Addendum — Phase 4 review round 2 fix (2026-08-31)
+
+Three independent reviewers (`code-quality`, `smoke-tester` — BLOCKED — and `adversarial`
+converging separately) found that round 1's OOF symlink-containment fix only covered the
+explicit-`oof_path` branch of `_oof_artifact_exists`. The far more common fallback branch (no
+`oof_path` key in `results.json`, just the well-known `oof_predictions.parquet` filename in
+`exp_dir` — the path `test_oof_predictions_default_convention` itself exercises) still called
+bare `.exists()` with no `.resolve()`/containment check, so a generated script could place a
+symlink at the fallback filename pointing outside the workspace root and have it reported as a
+present artifact.
+
+Fixed:
+- Restructured `_oof_artifact_exists` so there is structurally only one containment check left
+  in the function, reached by both paths: it now first computes a single `candidate: Path` —
+  either the re-relativized `oof_path` string (if usable) or `Path(exp_dir) /
+  _OOF_FALLBACK_FILENAME` (if not) — and *then* runs the shared `..`-rejection /
+  `.resolve()` / `Path.is_relative_to` / `.exists()` sequence once against whichever candidate
+  was chosen. No duplicated logic remains that could drift out of sync again the way round 1's
+  partial fix did.
+- Added `test_oof_artifact_fallback_filename_symlink_escaping_workspace_is_rejected` and
+  `test_oof_artifact_fallback_filename_symlink_within_workspace_is_accepted` to
+  `tests/unit/nodes/llm/test_coder.py` — the fallback-path mirrors of the two existing
+  explicit-`oof_path` symlink tests, using `results = {"cv_score": 0.9}` (no `oof_path` key) so
+  the code actually exercises the previously-unguarded branch.
+
+Also fixed both WARNING-level findings from the same review round:
+- `docs/pipeline.md`'s `coder` "Inputs" paragraph still said "four labeled sections" and omitted
+  round 1's `## Target column` addition. Updated to five sections with a brief note on the
+  target-column input, its placeholder-on-degrade behavior, and a cross-reference to
+  `config/prompts/coder/v1.md`'s "Target column exclusion is unconditional" section rather than
+  duplicating that contract in the architecture doc.
+- Added `test_baseline_design_blank_target_column_degrades_to_placeholder` and
+  `test_baseline_design_non_string_target_column_degrades_to_placeholder` to
+  `tests/unit/nodes/llm/test_coder.py`, covering the two `_read_target_column` degrade paths
+  (whitespace-only string, non-string value) that were previously exercised by the
+  implementation but not asserted by any test.
+
+Did not touch: `context/decisions/T-029.md` (populated post-merge by the Orchestrator, per
+`coder-complete.md`'s steering rule — not a PR-branch artifact), `code_critic.py` or either
+specialist prompt (other tasks' files, out of scope), or the deferred consolidated
+`src/features.py`/`src/models.py`/`src/train.py` scope — all per the Orchestrator's explicit
+instructions for this fix round.
+
+Verification: `pytest --cov=src --cov-fail-under=70 -x` → 2137 passed, 97.42% coverage;
+`ruff check . && ruff format --check .` → all checks passed, 141 files formatted; `mypy src/` →
+no issues found in 78 source files. Commit `3bb16cf`, pushed to `feature/T-029-node-coder`.

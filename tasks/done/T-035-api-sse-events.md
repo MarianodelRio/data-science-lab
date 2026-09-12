@@ -7,7 +7,7 @@ status: done
 folders: ["src/api/"]
 outputs: [GET /api/runs/{id}/events SSE stream, asyncio.Queue event emitter]
 size: M
-branch: feature/T-035-api-sse-events
+branch: ~
 pr: https://github.com/MarianodelRio/data-science-lab/pull/39
 ---
 

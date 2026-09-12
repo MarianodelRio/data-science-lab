@@ -56,3 +56,13 @@
 **Folders:** src/nodes/llm/, config/agents/, config/prompts/
 **Lesson:** A downstream consumer of a no-reducer state field can silently diverge from disk if it trusts a cached scalar instead of re-reading through the field's own path pointer — when approving a task, check that every consumer of that field follows the same re-read discipline, not just the ones that happen to already do.
 **Signal:** "`score_evaluator` is unaffected — confirmed it re-reads `results.json` fresh from disk via each entry's `path` pointer, never trusting the cached `cv_score`. `report_writer` does not follow that same pattern: it trusts the cached field directly." *(source: context/discoveries)*
+
+## L-012 | T-034 | 2026-09-12 | Weight: 3
+**Folders:** src/api/
+**Lesson:** An implementation can satisfy every literal acceptance criterion in the task file while still violating a stated NFR — when approving a task, check its likely shortcut implementation against the NFRs explicitly, not just against the "Done when" checklist.
+**Signal:** "an in-memory dict passes every acceptance criterion while voiding design.md's Availability NFR — a checkpoint that survives restart becomes unreachable because no endpoint lists it" *(source: context/decisions)*
+
+## L-013 | T-034 | 2026-09-12 | Weight: 3
+**Folders:** src/api/
+**Lesson:** When a task becomes the first code path able to reach an already-landed but never-called module, require it to wire that module up now rather than deferring — the module stays permanently dead if the one task capable of activating it doesn't.
+**Signal:** "T-012 landed the handler with **no caller anywhere in `src/`**. The API is the only code path that ever holds a `run_id` at invocation time, so if T-034 does not attach it, `execution.jsonl` is never written, the module stays dead, and T-035 has no on-disk event source to fall back on." *(source: context/decisions)*

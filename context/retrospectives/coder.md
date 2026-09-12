@@ -41,3 +41,13 @@
 **Folders:** src/nodes/llm/, config/agents/, config/prompts/
 **Lesson:** A bounded execute-and-retry loop that writes artifacts to a shared directory must clear or isolate each attempt's outputs before the next attempt runs — otherwise a later attempt's validation can silently accept a stale artifact left over from an earlier, different attempt, producing an internally inconsistent result that still passes.
 **Signal:** "`_validate_run`'s bare `.exists()` would then silently accept the *stale* `submission.csv` from the earlier attempt alongside the new attempt's fresh `results.json`/OOF, recording an internally inconsistent artifact triplet as a successful run." *(source: ## Completed)*
+
+## L-009 | T-034 | 2026-09-12 | Weight: 1
+**Folders:** src/api/
+**Lesson:** When a factory function builds an object that wraps an unclosed OS resource (e.g. a raw `sqlite3.connect()`), cache the built object per stable key (e.g. run_id) instead of rebuilding it on every call — rebuilding on every request silently leaks the resource even though every functional test still passes.
+**Signal:** "Since the real factory (`_default_graph_factory` -> `GraphBuilder().build` -> `build_checkpointer`) opens a raw, unclosed `sqlite3.connect(...)` per call, this leaked one connection per stored run per `GET /api/runs` poll, unbounded — a real file-descriptor exhaustion path, not a false positive." *(source: ## Completed)*
+
+## L-010 | T-034 | 2026-09-12 | Weight: 1
+**Folders:** src/api/
+**Lesson:** To close a check-then-act race in an async request handler, keep zero `await` points between the state check and the action that depends on it (e.g. registering a background task) — once a coroutine starts running on the event loop it can't be interleaved until it yields, so removing the yield point removes the race entirely.
+**Signal:** "resume_run now builds `graph`/`callback`/`config` synchronously (no `await`), calls `asyncio.create_task(_resume_and_track(...))`, and assigns `request.app.state.active_runs[run_id] = task` on the very next line — zero `await` anywhere between the interrupted-status check and that assignment, closing the race window entirely" *(source: ## Completed)*

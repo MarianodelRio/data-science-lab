@@ -67,9 +67,12 @@ model: claude-sonnet-5
 ```
 
 `name` must match the filename character for character: every sub-agent spawn and every
-`agent:` field in `tasks/*.md` resolves by that string. Nested spawning
-(review-coordinator → its reviewers) additionally needs
-`CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: "2"` in `.claude/settings.json`.
+`agent:` field in `tasks/*.md` resolves by that string. Sub-agents consult the Advisor one
+spawn level down (coder → advisor, reviewer → advisor), which needs
+`CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: "2"` in `.claude/settings.json` — without it those
+consultations silently fail. (Before dev-team 1.9 this depth existed for
+review-coordinator → reviewers nesting; that agent is retired, the setting stays for
+Advisor consultations.)
 
 Check every agent file at once:
 

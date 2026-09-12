@@ -73,37 +73,34 @@ CFG_MUTATION_SCORE_THRESHOLD=$(dt_config quality.mutation_score_threshold "80")
 CFG_SMOKE_TEST_MODE=$(dt_config quality.smoke_test_mode "sandbox")
 CFG_PROJECT_TYPE=$(dt_config project.type "")
 CFG_PROJECT_STACK=$(dt_config project.stack "")
+CFG_CMD_RUN=$(dt_config commands.run "")
 CFG_SPEC_COVERAGE_ENABLED=$(dt_config quality.spec_coverage_enabled "false")
 CFG_SPEC_COVERAGE_THRESHOLD=$(dt_config quality.spec_coverage_threshold "80")
+CFG_REVIEW_TIMEOUT_MIN=$(dt_config orchestration.review_timeout_minutes "15")
 ```
 
 Load steering content:
 ```bash
 STEERING_ALWAYS=$(cat .claude/steering/always.md 2>/dev/null || echo "")
 STEERING_TASK_FORMAT=$(cat .claude/steering/task-format.md 2>/dev/null || echo "")
+STEERING_REVIEW_PIPELINE=$(cat .claude/steering/review-pipeline.md 2>/dev/null || echo "")
 ```
 
 ---
 
-## Step 4 — Review (via review-coordinator)
+## Step 4 — Review (run the review pipeline yourself)
 
-**Registration pre-flight.** The review-coordinator is only spawnable when its definition declares
-`name` and `description`; otherwise the spawn silently falls back to a generic agent:
-
-```bash
-f=".claude/agents/review-coordinator.md"
-[ -f "$f" ] && grep -q "^name: review-coordinator$" "$f" && grep -q "^description: " "$f" \
-  || echo "UNREGISTERED"
-```
-
-If unregistered, stop and report: `REVIEW BLOCKED — review-coordinator is not registered. Fix
-.claude/agents/review-coordinator.md frontmatter (needs name + description) and re-run.`
+There is no `review-coordinator` agent. You run the review pipeline directly, spawning the reviewers
+as background sub-agents. Follow `STEERING_REVIEW_PIPELINE` (`.claude/steering/review-pipeline.md`,
+loaded in Step 3b) exactly.
 
 Inspect the diff for protected files or shared contracts:
 
 ```bash
 git diff --name-only origin/main
 ```
+
+Set `touches_protected` = `true` if any changed file is a protected file or shared contract.
 
 Read `design.md` and extract `code_quality_slice` (three sections: Module DAG, Testing strategy, Documentation plan). If `design.md` is absent (escape-hatch mode for migrated tasks), set `code_quality_slice` to empty.
 
@@ -112,23 +109,34 @@ If `$CFG_SPEC_COVERAGE_ENABLED` is `true` and `spec.md` exists:
 Else:
   Set `SPEC_SECTIONS` to empty.
 
-Launch the `review-coordinator` sub-agent with:
-- Steering context (inline at the top of the prompt, before all other inputs):
-  - Content of `STEERING_ALWAYS`
-  - Content of `STEERING_TASK_FORMAT`
-- `diff` — output of `git diff origin/main` from the feature branch
-- `task_file` — full task file
-- `context_slice` — empty (no Phase 1 context packet available in escape-hatch mode)
-- `code_quality_slice` — Module DAG + Testing strategy + Documentation plan from `design.md`; empty if `design.md` is absent
-- `spec_sections` — `$SPEC_SECTIONS` (empty if spec.md absent, spec_coverage_enabled: false, or no matching module sections)
-- `config`:
-  - `smoke_test_mode`: `$CFG_SMOKE_TEST_MODE`, `project.type`: `$CFG_PROJECT_TYPE`, `project_stack`: `$CFG_PROJECT_STACK`
-  - `require_mutation_tests`: `$CFG_REQUIRE_MUTATION_TESTS`, `critical_modules`: `$CFG_CRITICAL_MODULES`, `mutation_score_threshold`: `$CFG_MUTATION_SCORE_THRESHOLD`
-  - `spec_coverage_enabled`: `$CFG_SPEC_COVERAGE_ENABLED`, `spec_coverage_threshold`: `$CFG_SPEC_COVERAGE_THRESHOLD`
-- `review_profile` — `$CFG_REVIEW_PROFILE`
-- `touches_protected` — `true` if any file in the diff is a protected file or shared contract; `false` otherwise
+Then run the pipeline steps from `STEERING_REVIEW_PIPELINE`:
 
-The coordinator applies the safety override internally: touching protected files or contracts always forces `full` profile regardless of `review_profile`. Wait for the consolidated review report.
+1. **Resolve the effective profile** from `$CFG_REVIEW_PROFILE` and `touches_protected` (protected
+   files / contracts force `full`).
+2. **Reviewer registration pre-flight** — `code-quality`/`security` unregistered → stop with
+   `REVIEW BLOCKED — required agent not registered: [name]. Manual review required.` Others → warn
+   and skip.
+3. **Spawn the active reviewers as background sub-agents**, each with `STEERING_ALWAYS` +
+   `STEERING_TASK_FORMAT` prepended and the return-small / spill-to-`.dt-review/<agent>.md`
+   instruction. Inputs: `diff` (`git diff origin/main`), `task_file`, `code_quality_slice` (empty in
+   escape-hatch mode — there is no Phase 1 context packet), `spec_sections` = `$SPEC_SECTIONS`, and
+   the config values `$CFG_SMOKE_TEST_MODE`, `$CFG_PROJECT_TYPE`, `$CFG_PROJECT_STACK`,
+   `$CFG_CMD_RUN`, `$CFG_REQUIRE_MUTATION_TESTS`, `$CFG_CRITICAL_MODULES`,
+   `$CFG_MUTATION_SCORE_THRESHOLD`, `$CFG_SPEC_COVERAGE_ENABLED`, `$CFG_SPEC_COVERAGE_THRESHOLD`,
+   plus the worktree path (the feature branch is checked out in the main repo dir for /prepare-pr).
+   Reviewers do not read `devteam.config.yml`.
+4. **Collect with a per-reviewer deadline** of `$CFG_REVIEW_TIMEOUT_MIN` minutes — a reviewer past
+   the deadline is `TaskStop`'d and recorded as `TIMEOUT — no output`.
+5. **Build the manifest**, then **run `adversarial` sequentially** (full profile only) with the
+   compact manifest.
+6. **Assemble the consolidated report + Overall verdict** with the required-agent guard.
+
+Touching protected files or contracts always forces the `full` profile regardless of
+`$CFG_REVIEW_PROFILE`.
+
+The reviewers write their full reports under `./.dt-review/` (git-ignored, since /prepare-pr has the
+branch checked out in the repo dir rather than a worktree). Read them if you need detail for a fix,
+then `rm -rf .dt-review` once the PR is open.
 
 ---
 

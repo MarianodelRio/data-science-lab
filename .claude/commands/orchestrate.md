@@ -23,6 +23,7 @@ CFG_PR_MODE=$(dt_config workflow.pr_mode automatic)
 CFG_HUMAN_CHECKPOINT=$(dt_config workflow.human_checkpoint before_code)
 CFG_MAX_BLOCKER_RETRIES=$(dt_config orchestration.max_blocker_retries 2)
 CFG_MAX_PARALLEL_TASKS=$(dt_config orchestration.max_parallel_tasks 5)
+CFG_REVIEW_TIMEOUT_MIN=$(dt_config orchestration.review_timeout_minutes 15)
 CFG_REQUIRE_MUTATION_TESTS=$(dt_config quality.require_mutation_tests false)
 CFG_CRITICAL_MODULES=$(dt_config quality.critical_modules "[]")
 CFG_MUTATION_SCORE_THRESHOLD=$(dt_config quality.mutation_score_threshold 80)
@@ -47,7 +48,7 @@ agent, per-agent model routing is lost, and nothing reports an error. Verify bef
 
 ```bash
 UNREGISTERED=""
-for a in architect planner coder review-coordinator advisor; do
+for a in architect planner coder advisor; do
   f=".claude/agents/$a.md"
   [ -f "$f" ] && grep -q "^name: $a$" "$f" && grep -q "^description: " "$f" || UNREGISTERED="$UNREGISTERED $a"
 done
@@ -57,8 +58,8 @@ echo "UNREGISTERED:$UNREGISTERED"
 If `architect`, `planner` or `coder` is unregistered, stop and report to the user:
 `PIPELINE BLOCKED — agent(s) not registered: [names]. Fix .claude/agents/[name].md frontmatter (needs
 name + description), then re-run /orchestrate.` Do not run the pipeline with generic fallbacks. If
-only `advisor` or `review-coordinator` is unregistered, warn the user and note that Phase 4 (or
-Advisor consultations) will be degraded, then continue.
+only `advisor` is unregistered, warn the user and note that Advisor consultations will be degraded,
+then continue. The Phase 4 reviewers are checked separately, in the review pipeline itself.
 
 Load steering content to pass to sub-agents:
 ```bash
@@ -66,7 +67,12 @@ STEERING_ALWAYS=$(cat .claude/steering/always.md 2>/dev/null || echo "")
 STEERING_TASK_FORMAT=$(cat .claude/steering/task-format.md 2>/dev/null || echo "")
 STEERING_CONTEXT_FORMATS=$(cat .claude/steering/context-formats.md 2>/dev/null || echo "")
 STEERING_CODER_COMPLETE=$(cat .claude/steering/coder-complete.md 2>/dev/null || echo "")
+STEERING_REVIEW_PIPELINE=$(cat .claude/steering/review-pipeline.md 2>/dev/null || echo "")
 ```
+
+`STEERING_REVIEW_PIPELINE` is not relayed to sub-agents — it is the procedure **you** follow in
+Phase 4 to run the review (there is no `review-coordinator` agent). You forward only
+`STEERING_ALWAYS` and `STEERING_TASK_FORMAT` to the reviewers you spawn there.
 
 Read retrospective memory files once here and carry as variables into Phases 1–3:
 ```bash
@@ -303,37 +309,39 @@ bash scripts/dt-verify.sh --worktree ../$PROJECT_SLUG-T-XXX
 ```
 If it fails: spawn a new Coder agent passing the verify error as explicit input context. Do not use SendMessage — the original Coder session has ended. The new Coder agent fixes the issue → verify again.
 
-Determine whether the diff touches protected files or shared contracts (use the Architect's Phase 1 output — `### Protected files` and `### Affected contracts`).
+Determine whether the diff touches protected files or shared contracts (use the Architect's Phase 1 output — `### Protected files` and `### Affected contracts`). Call this `touches_protected`.
 
-Capture the PR diff for the review-coordinator:
+Capture the PR diff:
 ```bash
 PR_DIFF=$(cd ../$PROJECT_SLUG-T-XXX && git diff origin/main)
 ```
 
-Launch the `review-coordinator` sub-agent with:
-- Steering context (inline at the top of the prompt, before all other inputs):
-  - Content of `STEERING_ALWAYS`
-  - Content of `STEERING_TASK_FORMAT`
-- `pr_diff` — `$PR_DIFF` captured above
-- `task_file` — full task file
-- `decisions_context` — the relevant decisions and spec sections assembled during Phase 1
-- `code_quality_slice` from context_packet (Module list/DAG + Testing strategy + Documentation plan)
-- `spec_sections` from context_packet (the module sections extracted from spec.md in Phase 1; may be empty if spec.md is absent)
-- `config`:
-  - `project_type`: CFG_PROJECT_TYPE
-  - `project_stack`: CFG_PROJECT_STACK
-  - `smoke_test_mode`: CFG_SMOKE_TEST_MODE
-  - `require_mutation_tests`: CFG_REQUIRE_MUTATION_TESTS
-  - `critical_modules`: CFG_CRITICAL_MODULES
-  - `mutation_score_threshold`: CFG_MUTATION_SCORE_THRESHOLD
-  - `spec_coverage_enabled`: CFG_SPEC_COVERAGE_ENABLED
-  - `spec_coverage_threshold`: CFG_SPEC_COVERAGE_THRESHOLD
-  - `commands.run`: CFG_CMD_RUN
-- `review_profile`: CFG_REVIEW_PROFILE
-- `touches_protected` — `true` if Phase 1 Architect reported protected files or contract changes; `false` otherwise
-- Do not read `devteam.config.yml` yourself — use only the config values provided above
+**Run the review pipeline yourself.** There is no `review-coordinator` agent — you spawn the
+reviewers directly, as background sub-agents, so you and the user can see, inspect (`TaskOutput`)
+and stop (`TaskStop`) each one. Follow `STEERING_REVIEW_PIPELINE` (`.claude/steering/review-pipeline.md`,
+loaded in Phase 0) exactly:
 
-Wait for the consolidated review report from the coordinator.
+1. **Resolve the effective profile** from `CFG_REVIEW_PROFILE` and `touches_protected` (protected
+   files / contracts force `full`).
+2. **Pre-flight** the reviewer registrations (`code-quality`/`security` unregistered → halt with
+   `REVIEW BLOCKED`; others → warn and skip).
+3. **Spawn the active reviewers as background sub-agents** (`run_in_background: true`) in one batch,
+   each with `STEERING_ALWAYS` + `STEERING_TASK_FORMAT` prepended and the return-small /
+   spill-to-`../$PROJECT_SLUG-T-XXX/.dt-review/<agent>.md` instruction. Per-agent inputs
+   (`PR_DIFF`, `task_file`, `code_quality_slice`, `spec_sections`, and the `CFG_*` values —
+   `CFG_PROJECT_TYPE`, `CFG_PROJECT_STACK`, `CFG_SMOKE_TEST_MODE`, `CFG_CMD_RUN`,
+   `CFG_REQUIRE_MUTATION_TESTS`, `CFG_CRITICAL_MODULES`, `CFG_MUTATION_SCORE_THRESHOLD`,
+   `CFG_SPEC_COVERAGE_ENABLED`, `CFG_SPEC_COVERAGE_THRESHOLD`) are listed per reviewer in the
+   pipeline file. Reviewers do not read `devteam.config.yml`.
+4. **Collect with a per-reviewer deadline** of `CFG_REVIEW_TIMEOUT_MIN` minutes — a reviewer past
+   the deadline is `TaskStop`'d and recorded as `TIMEOUT — no output`. Never block Phase 4
+   indefinitely on one reviewer.
+5. **Build the findings manifest** (deterministic hash IDs).
+6. **Run `adversarial` sequentially** (full profile only) with the compact manifest — never the
+   reviewers' full outputs.
+7. **Assemble the consolidated report + Overall verdict**, applying the required-agent guard
+   (APPROVED needs real results from both code-quality and security; a timeout/failure on either →
+   BLOCKED, manual review).
 
 Synthesize the consolidated review report using this rubric. Track retry count per blocker type.
 Use `CFG_MAX_BLOCKER_RETRIES` as the global ceiling: if a blocker type allows 2 retries but this value is lower,
@@ -395,7 +403,7 @@ Adversarial: [nothing found / found X — already fixed]
 Open the PR?
 ```
 
-Wait for explicit confirmation. If the user requests changes: apply and re-launch the `review-coordinator` before proceeding.
+Wait for explicit confirmation. If the user requests changes: apply and re-run the review pipeline before proceeding.
 If `before_code` (default): skip this checkpoint and proceed immediately.
 
 > **Checkpoint timeout:** If no user response is received within `$(dt_config orchestration.checkpoint_timeout_minutes 30)` minutes, default to Option B (abandon) and run `bash scripts/dt-cancel.sh $TASK_ID --reason "checkpoint timeout"` before exiting.

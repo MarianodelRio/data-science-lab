@@ -375,7 +375,7 @@ Read `devteam.config.yml` and validate tasks/ structure.
 Generate specialized agents for this project's exact modules.
 
 Before creating any agent file, check the proposed name against the reserved framework agent list:
-`orchestrator`, `architect`, `planner`, `coder`, `advisor`, `review-coordinator`, `code-quality`, `security`, `adversarial`, `smoke-tester`, `mutation-tester`, `spec-coverage`
+`orchestrator`, `architect`, `planner`, `coder`, `advisor`, `code-quality`, `security`, `adversarial`, `smoke-tester`, `mutation-tester`, `spec-coverage` (also `review-coordinator` — retired in 1.9, still reserved to avoid confusion)
 
 If any module or service name conflicts with a reserved name, ask the user to rename the module before continuing:
 
@@ -411,11 +411,12 @@ reads it to decide relevance, so write what the agent does and when it is invoke
 
 Generate `CLAUDE.md` customized for this project (replace generic content with project-specific architecture, module list, and rules).
 
-Ensure `.claude/steering/` exists with all four framework steering files. These are not project-specific — copy them from the framework source and do not rewrite them:
+Ensure `.claude/steering/` exists with all five framework steering files. These are not project-specific — copy them from the framework source and do not rewrite them:
 - `always.md` — cross-cutting rules, injected into all agents
 - `task-format.md` — task frontmatter schema, injected into all agents
 - `context-formats.md` — context file formats, injected into orchestrator/architect/coder/planner
 - `coder-complete.md` — completion obligation, injected into the coder only
+- `review-pipeline.md` — the Phase 4 review procedure, read and executed by the Orchestrator (not relayed to sub-agents)
 
 Also keep `.claude/AGENTS.md` (the stub pointing to `steering/`) for backward compatibility.
 
@@ -431,6 +432,7 @@ Add (or append) the following entries to `.gitignore` to prevent temporary frame
 .dt-index.json
 .dt-index.json.tmp
 .dt-claim-*
+.dt-review/
 ```
 
 Generate the test structure and documentation from `design.md`:
@@ -484,8 +486,8 @@ done
 
 Fix every file the check reports before printing the summary below.
 
-Ensure `.claude/settings.json` exists. The review pipeline spawns sub-agents from inside a
-sub-agent (review-coordinator → reviewers), which needs a spawn depth above the default:
+Ensure `.claude/settings.json` exists. Sub-agents consult the Advisor (coder → advisor, reviewer →
+advisor), which is one spawn level below the sub-agent, so the depth must be above the default:
 
 ```json
 {

@@ -1,6 +1,6 @@
 ---
 name: security
-description: Scans the PR diff for security vulnerabilities with an OWASP-based, severity-graded checklist. Invoked by the review-coordinator in Phase 4; always runs.
+description: Scans the PR diff for security vulnerabilities with an OWASP-based, severity-graded checklist. Spawned by the Orchestrator in Phase 4 (per .claude/steering/review-pipeline.md); always runs.
 model: claude-sonnet-5
 ---
 
@@ -10,12 +10,18 @@ model: claude-sonnet-5
 Scan every PR diff for security vulnerabilities before code reaches main. OWASP-based, severity-graded, actionable.
 
 ## When to invoke
-Invoked by the review-coordinator as part of Phase 4.
+Spawned by the Orchestrator as part of Phase 4 (or /prepare-pr), per `.claude/steering/review-pipeline.md`.
 
 ## Inputs
-Receives from the review-coordinator:
+Receives from the Orchestrator:
 - `diff` — full PR diff
 - `task_file` — full task file (including `folders:` frontmatter)
+
+## Output discipline
+Return to the Orchestrator **only**: your `### Verdict` line, your findings as manifest-ready lines
+(`file:line — one-line description (severity)`), and a summary of at most 3 sentences. Write your
+full narrative report to `<worktree>/.dt-review/security.md` — create the directory if needed. Do
+not return the full narrative inline.
 
 ## What this agent checks
 

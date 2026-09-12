@@ -3,7 +3,7 @@
 # Edit this file to customize how the framework works for your project.
 # All settings have sensible defaults — you only need to change what you want different.
 
-devteam_version: "1.8.0"     # Framework version
+devteam_version: "1.9.0"     # Framework version
 
 # ─────────────────────────────────────────
 # PROJECT
@@ -36,8 +36,9 @@ model:
 
   # Model for writing code, implementing tasks and reviewing PRs
   # → agent frontmatter: planner.md, coder.md, code-quality.md, adversarial.md,
-  #   security.md, smoke-tester.md, mutation-tester.md, review-coordinator.md,
-  #   spec-coverage.md
+  #   security.md, smoke-tester.md, mutation-tester.md, spec-coverage.md
+  #   (review-coordinator.md retired in dev-team 1.9 — the Orchestrator runs
+  #   the review pipeline directly; see .claude/steering/review-pipeline.md)
   implementation: claude-sonnet-5
   # alternatives: openai/gpt-4o | local/ollama:codestral
 
@@ -109,6 +110,11 @@ orchestration:
   # Minutes to wait at a human checkpoint before escalating. Any positive integer.
   checkpoint_timeout_minutes: 30
 
+  # Max wait for a single Phase 4 reviewer before the Orchestrator stops it and treats
+  # it as failed (missing code-quality/security then blocks the PR for manual review
+  # via the required-agent guard). Any positive integer.
+  review_timeout_minutes: 15
+
   # Timeout per task size before /restart is suggested (in minutes)
   # The orchestrator warns if a sub-agent exceeds this without reporting.
   timeout_s: 120    # ~2h
@@ -130,7 +136,8 @@ quality:
   # Minimum test coverage on core modules (0-100)
   coverage_threshold: 70
 
-  # How many review sub-agents /prepare-pr runs, scaled to the diff's risk:
+  # How many review sub-agents the Orchestrator runs in Phase 4 (and /prepare-pr),
+  # scaled to the diff's risk:
   #   full — all 5 sub-agents (code quality, adversarial, security, smoke, mutation)
   #   fast — code quality + security only (for trivial diffs)
   #   auto — fast if the diff touches only docs/config, full if it touches code/tests

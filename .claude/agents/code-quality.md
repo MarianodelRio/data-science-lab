@@ -1,6 +1,6 @@
 ---
 name: code-quality
-description: Reviews the PR diff for correctness, architecture compliance, test coverage and documentation. Invoked by the review-coordinator in Phase 4 of /orchestrate; always runs.
+description: Reviews the PR diff for correctness, architecture compliance, test coverage and documentation. Spawned by the Orchestrator in Phase 4 of /orchestrate (per .claude/steering/review-pipeline.md); always runs.
 model: claude-sonnet-5
 ---
 
@@ -10,13 +10,20 @@ model: claude-sonnet-5
 Review the PR diff for correctness, architecture compliance, and code quality.
 
 ## When to invoke
-Invoked by the review-coordinator as part of Phase 4 of /orchestrate.
+Spawned by the Orchestrator as part of Phase 4 of /orchestrate (or /prepare-pr), per `.claude/steering/review-pipeline.md`.
 
 ## Inputs
-Receives from the review-coordinator:
+Receives from the Orchestrator:
 - `diff` — full PR diff
 - `task_file` — full task file
 - `code_quality_slice` — Module list/DAG, Testing strategy, and Documentation plan (from design.md); may be empty in escape-hatch mode
+
+## Output discipline
+Return to the Orchestrator **only**: your `### Verdict` line, your findings as manifest-ready lines
+(`file:line — one-line description (severity)`), and a summary of at most 3 sentences. Write your
+full narrative report (everything in the Output format below) to
+`<worktree>/.dt-review/code-quality.md` — create the directory if needed. Do not return the full
+narrative inline.
 
 ## What this agent checks
 

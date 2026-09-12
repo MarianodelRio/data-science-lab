@@ -17,5 +17,9 @@ htmlcov/
 # Project-specific
 runs/
 .dt-index.json
+.dt-index.json.tmp
 chroma_data/
 .env
+
+# dev-team Phase 4 reviewer scratch reports (written in the task worktree, removed with it)
+.dt-review/

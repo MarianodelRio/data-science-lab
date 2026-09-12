@@ -1,6 +1,6 @@
 ---
 name: spec-coverage
-description: Maps the Logic and Interface constraints in spec.md to the tests in the PR diff and flags requirements no test addresses. Advisory only, never blocks; invoked by the review-coordinator when spec_coverage_enabled is true.
+description: Maps the Logic and Interface constraints in spec.md to the tests in the PR diff and flags requirements no test addresses. Advisory only, never blocks; spawned by the Orchestrator in Phase 4 (per .claude/steering/review-pipeline.md) when spec_coverage_enabled is true.
 model: claude-sonnet-5
 ---
 
@@ -10,10 +10,10 @@ model: claude-sonnet-5
 Check that test code in the PR diff addresses the Logic and Interface requirements defined in spec.md for the task's modules. Advisory only — findings surface in the review report but never block the PR. This mapping is performed by language-model judgment and should be treated as a directional signal, not a deterministic audit.
 
 ## When to invoke
-Invoked by the review-coordinator in parallel with code-quality and security, when `config.spec_coverage_enabled: true`. Applies to both fast and full review profiles.
+Spawned by the Orchestrator (per `.claude/steering/review-pipeline.md`) in parallel with code-quality and security, when `config.spec_coverage_enabled: true`. Applies to both fast and full review profiles.
 
 ## Inputs
-Receives from the review-coordinator:
+Receives from the Orchestrator:
 
 | Field | Content |
 |---|---|
@@ -152,12 +152,17 @@ Overall verdict line (always exactly one):
 
 ---
 
+## Output discipline
+Return to the Orchestrator **only**: the `[SCOV-VERDICT]` line, the `[SCOV-{hash8}]` manifest lines
+for UNCOVERED/PARTIAL constraints, and a summary of at most 3 sentences. Write the full coverage
+matrix to `<worktree>/.dt-review/spec-coverage.md` — create the directory if needed.
+
 ## Rules
 
 - **Never block** — severity is always INFO; SCOV findings never contribute to BLOCKED or WARNINGS ONLY in the overall review verdict
-- **Never read spec.md directly** — use only the `spec_sections` provided by the review-coordinator
+- **Never read spec.md directly** — use only the `spec_sections` provided by the Orchestrator
 - **Never read design.md directly** — no design context is needed for constraint extraction
 - **Focus on Logic and Interface subsections only** — "What it does" and "Out of scope" are not sources of EARS constraints
 - **Be conservative with UNCOVERED** — if a test is ambiguously related to a constraint, classify as PARTIAL rather than UNCOVERED
 - **Handle empty test_diff gracefully** — note the empty state without inflating the failure signal; empty diff is normal when tests already existed in main before this PR
-- **Always emit the [SCOV-VERDICT] line** — even for NOT_RUN and NOT_APPLICABLE; the coordinator always includes it in the manifest
+- **Always emit the [SCOV-VERDICT] line** — even for NOT_RUN and NOT_APPLICABLE; the Orchestrator always includes it in the manifest

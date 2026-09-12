@@ -9,6 +9,8 @@
 > - `task-format.md` — task frontmatter schema (all agents)
 > - `context-formats.md` — context file formats (orchestrator, architect, coder, planner)
 > - `coder-complete.md` — completion obligation (coder only)
+> - `review-pipeline.md` — the Phase 4 review procedure; **not relayed** — the Orchestrator reads and
+>   executes it directly to run the review (there is no `review-coordinator` agent)
 
 ## Agent files
 

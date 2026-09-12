@@ -17,6 +17,7 @@ from typing import Any, Protocol, cast
 
 from fastapi import FastAPI
 
+from src.api.routers.events import router as events_router
 from src.api.routers.runs import router as runs_router
 from src.config.paths import REPO_ROOT
 
@@ -66,7 +67,14 @@ def create_app(runs_dir: Path | None = None, graph_factory: GraphFactory | None 
     # once per request. See `_get_or_build_graph` in `src/api/routers/runs.py`.
     graph_cache: dict[str, Any] = {}
     app.state.graph_cache = graph_cache
+    # Per-run SSE event queues, written by `EventEmitter` and read by
+    # `routers/events.py`. Registered synchronously in `create_run`/
+    # `resume_run` (before the background task starts) and removed lazily
+    # once the SSE generator consumes the terminal `STREAM_END` sentinel.
+    event_queues: dict[str, asyncio.Queue[Any]] = {}
+    app.state.event_queues = event_queues
     app.include_router(runs_router)
+    app.include_router(events_router)
     return app
 
 

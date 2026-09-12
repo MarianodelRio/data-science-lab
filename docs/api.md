@@ -46,6 +46,29 @@ yet finalized — see `src/api/` and `frontend/src/api/types.ts` once those task
 |---|---|
 | `GET /api/runs/{id}/events` | Stream pipeline events in real time |
 
+### GET /api/runs/{id}/events
+Server-Sent Events stream of pipeline execution events for a run — one `data:` frame per
+graph node start/end, in emission order. `404` if `id` is unknown. Returns an immediately-
+closing empty stream if the run has no live event queue right now (e.g. the run finished and
+no client streamed it before the terminal sentinel was consumed) — the durable, complete
+record is always `runs/{id}/execution.jsonl`, never this stream.
+
+**Event shape** (snake_case JSON, one per `data:` line):
+`{timestamp, run_id, iteration, phase, node, event, duration_ms, output_summary}` — same
+field semantics as `execution.jsonl` (docs/pipeline.md § Observability), minus
+`tokens_in`/`tokens_out`/`model`.
+- `event ∈ {start, end}` only — no `error` frame; a run's failure is observable via
+  `GET /api/runs/{id}` → `status: "failed"`, not through this stream.
+- `duration_ms`/`output_summary` are `null` on `start`, populated on the matching `end`.
+
+**Delivery semantics:** the queue is bounded (1000 events) and drops the *oldest* queued
+event to make room for a new one rather than blocking the pipeline or raising — an explicitly
+lossy live view. The stream closes automatically once the run reaches a terminal state
+(completed/interrupted/failed). A client that disconnects is detected and the stream is torn
+down server-side without error. A `: heartbeat` comment line is sent periodically while idle.
+Resuming a run (`POST /api/runs/{id}/resume`) opens a fresh queue — reconnect to this endpoint
+after resuming.
+
 ## WebSocket
 
 | Endpoint | Purpose |

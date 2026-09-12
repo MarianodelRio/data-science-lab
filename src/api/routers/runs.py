@@ -21,9 +21,16 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, Response
+from langchain_core.callbacks import BaseCallbackHandler
 from pydantic import BaseModel, TypeAdapter
 
 from src.api import registry
+from src.api.event_emitter import (
+    STREAM_END,
+    EventEmitter,
+    create_event_queue,
+    put_event_dropping_oldest,
+)
 from src.api.models import (
     ResumeRequest,
     ResumeResponse,
@@ -48,10 +55,12 @@ def _config(run_id: str) -> dict[str, Any]:
     return {"configurable": {"thread_id": run_id}}
 
 
-def _build_config(run_id: str, callback: JsonlCallbackHandler | None = None) -> dict[str, Any]:
+def _build_config(
+    run_id: str, callbacks: list[BaseCallbackHandler] | None = None
+) -> dict[str, Any]:
     config = _config(run_id)
-    if callback is not None:
-        config["callbacks"] = [callback]
+    if callbacks:
+        config["callbacks"] = callbacks
     return config
 
 
@@ -143,6 +152,7 @@ async def _run_and_track(
     graph: Any,
     config: dict[str, Any],
     initial_state: LabState | None,
+    event_queue: asyncio.Queue[Any],
 ) -> None:
     """Drive one graph execution to completion/interruption/failure and keep
     the on-disk registry status in sync.
@@ -155,6 +165,14 @@ async def _run_and_track(
     raise is genuinely unbounded — a broad `except Exception` here is the
     correct boundary (any failure marks the run `"failed"` and is logged),
     not an accidental swallow of a narrower expected error.
+
+    The `finally` block pushes the terminal `STREAM_END` sentinel on all
+    three outcomes (completed/interrupted/failed) so the SSE generator in
+    `routers/events.py` always closes. This runs on `_run_and_track`'s own
+    frame — the event-loop thread — so it calls `put_event_dropping_oldest`
+    directly, not via `call_soon_threadsafe` (only `EventEmitter._emit`,
+    called from hooks firing on the worker thread running `graph.invoke`,
+    needs that thread-safe hop).
     """
     try:
         registry.update_run_status(runs_dir, run_id, "running")
@@ -165,6 +183,8 @@ async def _run_and_track(
     except Exception:
         logger.exception("run %s failed during execution", run_id)
         registry.update_run_status(runs_dir, run_id, "failed")
+    finally:
+        put_event_dropping_oldest(event_queue, STREAM_END)
 
 
 @router.post("", response_model=RunCreateResponse, status_code=201)
@@ -177,13 +197,20 @@ async def create_run(body: RunCreateRequest, request: Request) -> Response:
     registry.create_run_record(runs_dir, run_id, body.competition_name, body.workspace_path)
 
     callback = JsonlCallbackHandler(run_id, runs_dir)
+    loop = asyncio.get_running_loop()
+    event_queue = create_event_queue()
+    request.app.state.event_queues[run_id] = event_queue
+    emitter = EventEmitter(run_id, event_queue, loop)
+
     graph = _get_or_build_graph(request, run_id)
-    config = _build_config(run_id, callback)
+    config = _build_config(run_id, [callback, emitter])
     initial_state = new_state(
         body.competition_name, body.workspace_path, max_iterations=body.max_iterations
     )
 
-    task = asyncio.create_task(_run_and_track(runs_dir, run_id, graph, config, initial_state))
+    task = asyncio.create_task(
+        _run_and_track(runs_dir, run_id, graph, config, initial_state, event_queue)
+    )
     request.app.state.active_runs[run_id] = task
 
     return _json(RunCreateResponse(run_id=run_id, status="pending"), 201)
@@ -215,7 +242,12 @@ async def get_run(run_id: str, request: Request) -> Response:
 
 
 async def _resume_and_track(
-    runs_dir: Path, run_id: str, graph: Any, config: dict[str, Any], feedback: str
+    runs_dir: Path,
+    run_id: str,
+    graph: Any,
+    config: dict[str, Any],
+    feedback: str,
+    event_queue: asyncio.Queue[Any],
 ) -> None:
     """Write the resume feedback into the checkpoint, then drive execution —
     both steps happen inside this one task so nothing can register a second
@@ -228,7 +260,7 @@ async def _resume_and_track(
     config, not `config` (which has the callback attached for the tracked
     run that follows)."""
     await asyncio.to_thread(graph.update_state, _config(run_id), {"human_feedback": feedback})
-    await _run_and_track(runs_dir, run_id, graph, config, None)
+    await _run_and_track(runs_dir, run_id, graph, config, None, event_queue)
 
 
 @router.post("/{run_id}/resume", response_model=ResumeResponse)
@@ -253,13 +285,24 @@ async def resume_run(run_id: str, body: ResumeRequest, request: Request) -> Resp
     # execution, so it carries no callback — only the subsequent tracked run
     # is instrumented.
     callback = JsonlCallbackHandler(run_id, runs_dir)
-    config = _build_config(run_id, callback)
+    loop = asyncio.get_running_loop()
+    # A fresh queue every resume, even if a stale one from the prior run of
+    # this run_id is still sitting in `event_queues` — a client still
+    # streaming the old queue object will not see this run's events
+    # (accepted: SSE is an explicitly lossy live view, not a durable
+    # channel; see context/decisions/T-035.md).
+    event_queue = create_event_queue()
+    request.app.state.event_queues[run_id] = event_queue
+    emitter = EventEmitter(run_id, event_queue, loop)
+    config = _build_config(run_id, [callback, emitter])
 
     # No `await` from here to the `active_runs` registration below: this is
     # what closes the same-run TOCTOU race (two concurrent resume calls could
     # otherwise both pass the checks above before either task registration
     # took effect). The checkpoint write itself now happens inside the task.
-    task = asyncio.create_task(_resume_and_track(runs_dir, run_id, graph, config, body.feedback))
+    task = asyncio.create_task(
+        _resume_and_track(runs_dir, run_id, graph, config, body.feedback, event_queue)
+    )
     request.app.state.active_runs[run_id] = task
 
     return _json(ResumeResponse(run_id=run_id, status="running"))

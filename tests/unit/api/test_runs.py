@@ -9,6 +9,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from src.api import registry
+from src.api.event_emitter import EventEmitter
 from src.api.main import create_app
 from src.observability.jsonl_callback import JsonlCallbackHandler
 from tests.fixtures.fake_graph import FakeCompiledGraph
@@ -251,9 +252,33 @@ def test_jsonl_callback_handler_attached_to_graph_invoke_config(
 
     assert len(fake_graph.invoke_calls) == 1
     callbacks = fake_graph.invoke_calls[0][1]["callbacks"]
-    assert len(callbacks) == 1
-    assert isinstance(callbacks[0], JsonlCallbackHandler)
-    assert callbacks[0].run_id == run_id
+    assert len(callbacks) == 2
+    jsonl_callbacks = [c for c in callbacks if isinstance(c, JsonlCallbackHandler)]
+    assert len(jsonl_callbacks) == 1
+    assert jsonl_callbacks[0].run_id == run_id
+
+
+def test_create_run_attaches_one_jsonl_callback_and_one_event_emitter(
+    client: TestClient, app, fake_graph: FakeCompiledGraph
+) -> None:
+    run_id = _create_run(client)["run_id"]
+    _wait_for_run_task_done(app, run_id)
+
+    callbacks = fake_graph.invoke_calls[0][1]["callbacks"]
+    assert len(callbacks) == 2
+    callback_types = {type(callback) for callback in callbacks}
+    assert callback_types == {JsonlCallbackHandler, EventEmitter}
+
+
+def test_create_run_registers_event_queue_synchronously_before_background_task(
+    client: TestClient, app
+) -> None:
+    """`app.state.event_queues[run_id]` must exist as soon as `POST
+    /api/runs` returns — before the background task has necessarily started
+    or finished — so a client can `GET .../events` immediately."""
+    body = _create_run(client)
+
+    assert body["run_id"] in app.state.event_queues
 
 
 def test_run_id_is_server_generated_uuid_hex(client: TestClient) -> None:

@@ -7,7 +7,7 @@ status: done
 folders: ["src/api/"]
 outputs: [FastAPI app, POST/GET /api/runs, POST /api/runs/{id}/resume]
 size: M
-branch: feature/T-034-api-run-management
+branch: ~
 pr: https://github.com/MarianodelRio/data-science-lab/pull/38
 ---
 

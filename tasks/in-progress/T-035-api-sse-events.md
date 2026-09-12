@@ -3,11 +3,11 @@ id: T-035
 phase: 3
 agent: api-agent
 depends_on: [T-034]
-status: available
+status: in-progress
 folders: ["src/api/"]
 outputs: [GET /api/runs/{id}/events SSE stream, asyncio.Queue event emitter]
 size: M
-branch: ~
+branch: feature/T-035-api-sse-events
 pr: ~
 ---
 

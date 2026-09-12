@@ -51,3 +51,8 @@
 **Folders:** src/api/
 **Lesson:** To close a check-then-act race in an async request handler, keep zero `await` points between the state check and the action that depends on it (e.g. registering a background task) — once a coroutine starts running on the event loop it can't be interleaved until it yields, so removing the yield point removes the race entirely.
 **Signal:** "resume_run now builds `graph`/`callback`/`config` synchronously (no `await`), calls `asyncio.create_task(_resume_and_track(...))`, and assigns `request.app.state.active_runs[run_id] = task` on the very next line — zero `await` anywhere between the interrupted-status check and that assignment, closing the race window entirely" *(source: ## Completed)*
+
+## L-011 | T-035 | 2026-09-12 | Weight: 1
+**Folders:** src/api/
+**Lesson:** Before writing a streaming-endpoint test against Starlette's `TestClient`, verify the installed version actually supports incremental/partial reads — it may buffer the whole ASGI call before returning, in which case drive the async generator directly (with a minimal fake `Request`) instead of hanging the test suite discovering it live.
+**Signal:** "There is no true incremental/partial read available through it, even via `client.stream(...)`." *(source: context/decisions)*

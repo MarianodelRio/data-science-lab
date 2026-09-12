@@ -66,3 +66,8 @@
 **Folders:** src/api/
 **Lesson:** When a task becomes the first code path able to reach an already-landed but never-called module, require it to wire that module up now rather than deferring — the module stays permanently dead if the one task capable of activating it doesn't.
 **Signal:** "T-012 landed the handler with **no caller anywhere in `src/`**. The API is the only code path that ever holds a `run_id` at invocation time, so if T-034 does not attach it, `execution.jsonl` is never written, the module stays dead, and T-035 has no on-disk event source to fall back on." *(source: context/decisions)*
+
+## L-014 | T-035 | 2026-09-12 | Weight: 3
+**Folders:** src/api/
+**Lesson:** When a component's data source runs via `asyncio.to_thread` (a pipeline invocation driven off the event loop), any new consumer that needs to push that data back onto an event-loop-owned structure (`asyncio.Queue`, a WebSocket send, etc.) must be required to use `loop.call_soon_threadsafe` for every write — a bare same-object call from the worker thread is unsafe and fails silently, so a same-thread-only unit test will not catch the regression. This ruling should be inherited by T-036 (WebSocket chat) and any later live-data endpoint rather than rediscovered.
+**Signal:** "a bare `put_nowait` from a non-owning thread is unsafe on `asyncio.Queue` and fails silently, undetected by a same-thread unit test" *(source: context/decisions)*

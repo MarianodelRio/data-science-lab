@@ -3,11 +3,11 @@ id: T-034
 phase: 3
 agent: api-agent
 depends_on: [T-009]
-status: available
+status: in-progress
 folders: ["src/api/"]
 outputs: [FastAPI app, POST/GET /api/runs, POST /api/runs/{id}/resume]
 size: M
-branch: ~
+branch: feature/T-034-api-run-management
 pr: ~
 ---
 

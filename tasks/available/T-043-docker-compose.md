@@ -3,7 +3,7 @@ id: T-043
 phase: 5
 agent: infra-agent
 depends_on: [T-034, T-038]
-status: blocked
+status: available
 folders: ["docker/", ".", "frontend/"]
 outputs: [docker-compose.yml, Dockerfile.api, frontend/Dockerfile, chroma + mlflow services]
 size: M

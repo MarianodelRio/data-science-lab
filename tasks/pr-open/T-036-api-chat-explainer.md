@@ -3,12 +3,12 @@ id: T-036
 phase: 3
 agent: api-agent
 depends_on: [T-034, T-010]
-status: in-progress
+status: pr-open
 folders: ["src/api/"]
 outputs: [WS /api/runs/{id}/chat, explainer agent subgraph]
 size: M
 branch: feature/T-036-api-chat-explainer
-pr: ~
+pr: https://github.com/MarianodelRio/data-science-lab/pull/40
 ---
 
 ## WebSocket chat + explainer agent (src/api/)

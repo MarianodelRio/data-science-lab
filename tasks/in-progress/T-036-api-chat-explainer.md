@@ -3,11 +3,11 @@ id: T-036
 phase: 3
 agent: api-agent
 depends_on: [T-034, T-010]
-status: available
+status: in-progress
 folders: ["src/api/"]
 outputs: [WS /api/runs/{id}/chat, explainer agent subgraph]
 size: M
-branch: ~
+branch: feature/T-036-api-chat-explainer
 pr: ~
 ---
 

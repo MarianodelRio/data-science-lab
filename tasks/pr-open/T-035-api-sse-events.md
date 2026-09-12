@@ -3,12 +3,12 @@ id: T-035
 phase: 3
 agent: api-agent
 depends_on: [T-034]
-status: in-progress
+status: pr-open
 folders: ["src/api/"]
 outputs: [GET /api/runs/{id}/events SSE stream, asyncio.Queue event emitter]
 size: M
 branch: feature/T-035-api-sse-events
-pr: ~
+pr: https://github.com/MarianodelRio/data-science-lab/pull/39
 ---
 
 ## SSE event stream + event emitter (src/api/)

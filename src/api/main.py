@@ -60,6 +60,12 @@ def create_app(runs_dir: Path | None = None, graph_factory: GraphFactory | None 
     app.state.graph_factory = graph_factory or _default_graph_factory()
     active_runs: dict[str, asyncio.Task] = {}
     app.state.active_runs = active_runs
+    # Built graphs (and, in the real factory, their underlying sqlite
+    # checkpoint connection) are expensive and stateful — cache one per
+    # `run_id` so it is built at most once per process lifetime rather than
+    # once per request. See `_get_or_build_graph` in `src/api/routers/runs.py`.
+    graph_cache: dict[str, Any] = {}
+    app.state.graph_cache = graph_cache
     app.include_router(runs_router)
     return app
 

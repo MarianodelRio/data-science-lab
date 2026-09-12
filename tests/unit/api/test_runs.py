@@ -206,6 +206,50 @@ def test_create_run_rejects_empty_competition_name_and_workspace_path(client: Te
     assert empty_path.status_code == 422
 
 
+def test_get_run_builds_graph_at_most_once_across_repeated_requests(tmp_path: Path) -> None:
+    """Regression test for SEC-99f25ece / CQ-6e49f265: `graph_factory` must
+    be called at most once per `run_id` per process lifetime, not once per
+    request — the real factory opens an unclosed sqlite connection every
+    time it runs."""
+    build_calls: list[str] = []
+
+    def counting_factory(run_id: str, runs_dir: Path) -> FakeCompiledGraph:
+        build_calls.append(run_id)
+        return FakeCompiledGraph()
+
+    app = create_app(runs_dir=tmp_path, graph_factory=counting_factory)
+    with TestClient(app) as client:
+        run_id = _create_run(client)["run_id"]
+        _wait_for_run_task_done(app, run_id)
+        assert build_calls == [run_id]  # create_run built (and cached) the graph once
+
+        first = client.get(f"/api/runs/{run_id}")
+        second = client.get(f"/api/runs/{run_id}")
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert build_calls == [run_id]  # both GETs hit the cache — no rebuild
+
+
+def test_list_runs_builds_each_graph_at_most_once_across_repeated_calls(tmp_path: Path) -> None:
+    build_calls: list[str] = []
+
+    def counting_factory(run_id: str, runs_dir: Path) -> FakeCompiledGraph:
+        build_calls.append(run_id)
+        return FakeCompiledGraph()
+
+    app = create_app(runs_dir=tmp_path, graph_factory=counting_factory)
+    with TestClient(app) as client:
+        run_id = _create_run(client)["run_id"]
+        _wait_for_run_task_done(app, run_id)
+        build_calls.clear()  # only care about GET /api/runs behavior below
+
+        client.get("/api/runs")
+        client.get("/api/runs")
+
+        assert build_calls == []  # create_run already cached this run's graph
+
+
 def test_create_run_rejects_non_positive_max_iterations(client: TestClient) -> None:
     response = client.post(
         "/api/runs",

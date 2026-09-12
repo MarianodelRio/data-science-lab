@@ -80,6 +80,37 @@ def _live_values(graph: Any, run_id: str) -> dict[str, Any]:
     return values if values else {}
 
 
+def _get_or_build_graph(request: Request, run_id: str) -> Any:
+    """Return the cached compiled graph for `run_id`, building it (via
+    `graph_factory`) only on first use.
+
+    The real `graph_factory` (`_default_graph_factory` in `src/api/main.py`)
+    builds a `CompiledStateGraph` backed by a raw, unclosed sqlite
+    connection (`build_checkpointer` in `src/graph/checkpointer.py`).
+    Calling it fresh on every request — as `list_runs`/`get_run` used to —
+    leaked one sqlite connection per run per request, unbounded. Caching by
+    `run_id` on `app.state.graph_cache` bounds this to at most one graph
+    (and one connection) per distinct run ever touched by this process,
+    and lets `create_run`, `list_runs`, `get_run` and `resume_run` all
+    share the same graph object for a given run instead of each holding
+    its own connection to the same checkpoint file.
+    """
+    cache: dict[str, Any] = request.app.state.graph_cache
+    if run_id not in cache:
+        cache[run_id] = request.app.state.graph_factory(run_id, request.app.state.runs_dir)
+    return cache[run_id]
+
+
+def _get_or_build_graph_values(request: Request, run_id: str) -> dict[str, Any]:
+    """Lookup-or-build the graph and read its live state, as one blocking
+    unit. Run via `asyncio.to_thread` (like `_run_and_track` already does
+    for `invoke`/`get_state`) so a cache-miss `sqlite3.connect()` — or a
+    blocking checkpoint read inside `get_state` — never runs on the event
+    loop."""
+    graph = _get_or_build_graph(request, run_id)
+    return _live_values(graph, run_id)
+
+
 def _to_summary(record: RunRecord, values: dict[str, Any]) -> RunSummary:
     return RunSummary(
         run_id=record.run_id,
@@ -146,7 +177,7 @@ async def create_run(body: RunCreateRequest, request: Request) -> Response:
     registry.create_run_record(runs_dir, run_id, body.competition_name, body.workspace_path)
 
     callback = JsonlCallbackHandler(run_id, runs_dir)
-    graph = request.app.state.graph_factory(run_id, runs_dir)
+    graph = _get_or_build_graph(request, run_id)
     config = _build_config(run_id, callback)
     initial_state = new_state(
         body.competition_name, body.workspace_path, max_iterations=body.max_iterations
@@ -165,8 +196,7 @@ async def list_runs(request: Request) -> Response:
 
     summaries = []
     for record in records:
-        graph = request.app.state.graph_factory(record.run_id, runs_dir)
-        values = _live_values(graph, record.run_id)
+        values = await asyncio.to_thread(_get_or_build_graph_values, request, record.run_id)
         summaries.append(_to_summary(record, values))
 
     return _json_list(summaries)
@@ -180,8 +210,7 @@ async def get_run(run_id: str, request: Request) -> Response:
     except RunNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    graph = request.app.state.graph_factory(run_id, runs_dir)
-    values = _live_values(graph, run_id)
+    values = await asyncio.to_thread(_get_or_build_graph_values, request, run_id)
     return _json(_to_summary(record, values))
 
 
@@ -199,7 +228,7 @@ async def resume_run(run_id: str, body: ResumeRequest, request: Request) -> Resp
             detail=f"run {run_id!r} is not interrupted (status={record.status!r})",
         )
 
-    graph = request.app.state.graph_factory(run_id, runs_dir)
+    graph = _get_or_build_graph(request, run_id)
     # The checkpoint write itself is not a node execution, so it carries no
     # callback — only the subsequent tracked run (below) is instrumented.
     # A real sqlite write via the checkpointer — wrap in `to_thread` like the

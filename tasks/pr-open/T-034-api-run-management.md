@@ -81,3 +81,44 @@ pr: https://github.com/MarianodelRio/data-science-lab/pull/38
   mypy can't verify the structural match automatically, but it holds at runtime.
 - Dependencies added: None — `fastapi`, `uvicorn[standard]`, and `httpx` (FastAPI
   `TestClient`'s transitive dependency, used directly in tests) were already present.
+
+### Fix round 1 — review blocker (unbounded graph_factory calls, SEC-99f25ece / CQ-6e49f265 / CQ-5f29f0d4)
+
+Two independent reviewers (security, code-quality) found that `list_runs` and `get_run`
+called `request.app.state.graph_factory(...)` fresh on every request, discarding the
+built graph immediately after reading `.get_state(...)`. Since the real factory
+(`_default_graph_factory` -> `GraphBuilder().build` -> `build_checkpointer`) opens a raw,
+unclosed `sqlite3.connect(...)` per call, this leaked one connection per stored run per
+`GET /api/runs` poll, unbounded — a real file-descriptor exhaustion path, not a
+false positive.
+
+Fix: added `app.state.graph_cache: dict[str, Any] = {}` in `src/api/main.py::create_app`,
+alongside the existing `active_runs` dict. Added `_get_or_build_graph(request, run_id)` in
+`src/api/routers/runs.py` — a cache-or-build helper keyed by `run_id` — and routed
+`create_run`, `list_runs`, `get_run` and `resume_run` all through it instead of calling
+`graph_factory` directly. A given run's graph (and its one sqlite connection) is now built
+at most once per process lifetime: once on `create_run` (or, for a run created in an
+earlier process lifetime and first seen via a read, on first `list_runs`/`get_run`/
+`resume_run`), then reused by every later call for that same `run_id` within this
+process — `create_run`'s background task (`_run_and_track`) and a concurrent `GET` now
+share the identical graph object, not two separate connections to the same checkpoint file.
+
+Also fixed `CQ-5f29f0d4`: `list_runs`/`get_run` called `graph_factory`/`get_state`
+synchronously inline on the event loop, unlike the `to_thread`-wrapped equivalent calls in
+`_run_and_track`. Added `_get_or_build_graph_values(request, run_id)`, combining the
+lookup-or-build step with the `get_state` read as one unit, and wrapped that single unit in
+`asyncio.to_thread(...)` in both endpoints — so a cache-miss `sqlite3.connect()` (or a
+blocking checkpoint read inside `get_state`) never blocks the event loop, and a cache hit
+costs one cheap dict lookup inside the thread-pool call rather than two separate
+`to_thread` round trips.
+
+Regression tests added to `tests/unit/api/test_runs.py`:
+`test_get_run_builds_graph_at_most_once_across_repeated_requests` and
+`test_list_runs_builds_each_graph_at_most_once_across_repeated_calls`, both using a
+counting `graph_factory` (distinct from the shared `fake_graph` fixture, which returns a
+singleton and can't observe call count) to assert the factory is invoked exactly once per
+`run_id` even across repeated `GET` calls. All 36 pre-existing `tests/unit/api/` cases
+still pass unchanged — they never asserted on `graph_factory` call count, only on
+`fake_graph`'s own `invoke_calls`/`update_state_calls`, which are unaffected by caching
+the graph object itself. Full suite: 2176 passed, 97.38% coverage; `ruff check`/
+`ruff format --check`/`mypy src/` all clean.

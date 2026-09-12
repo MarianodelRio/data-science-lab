@@ -384,8 +384,15 @@ Supervisor is a pure Python conditional edge function — deterministic, no LLM.
 
 SQLite, always active:
 ```python
-checkpointer = SqliteSaver.from_conn_string(f"runs/{run_id}/checkpoint.db")
-# Resume after crash: graph.invoke(None, config={"thread_id": run_id})
+# As implemented in src/graph/checkpointer.py (T-009): the context-manager form
+# `SqliteSaver.from_conn_string(...)` would close the connection before the compiled
+# graph is used, so the constructor form is used instead.
+checkpointer = SqliteSaver(sqlite3.connect(f"runs/{run_id}/checkpoint.db", check_same_thread=False))
+
+# Resume after an interrupt or a crash — note LangGraph requires the thread id nested
+# under `configurable`; a bare {"thread_id": ...} is silently ignored:
+graph.update_state({"configurable": {"thread_id": run_id}}, {"human_feedback": feedback})
+graph.invoke(None, config={"configurable": {"thread_id": run_id}})
 ```
 
 ### Phase subgraphs

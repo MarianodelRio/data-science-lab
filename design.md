@@ -546,7 +546,7 @@ error diagnoses, validated/invalidated hypotheses.
 | `WS /api/runs/{id}/chat` | WebSocket | Bidirectional chat with explainer agent |
 | `POST /api/runs/{id}/resume` | REST | Submit human_feedback, resume from interrupt |
 | `POST /api/runs/{id}/submit` | REST | Trigger Kaggle submission |
-| `POST /api/mlflow/open` | REST | Launch `mlflow ui` subprocess, return URL |
+| `GET /api/mlflow/url` | REST | Return the browser-reachable MLflow UI URL (the always-on `mlflow` Docker service) |
 
 The LangGraph pipeline runs as an asyncio background task inside the API process.
 Events are emitted to an `asyncio.Queue` and streamed via SSE to the frontend.
@@ -590,7 +590,8 @@ A LangGraph callback fires on every node entry and exit:
 File-based backend: `workspace/{competition}/mlruns/`
 Each training run logs: params, CV scores, OOF predictions path, model artifact path.
 Optuna trials logged via `mlflow-optuna` integration.
-UI: `POST /api/mlflow/open` launches `mlflow ui` subprocess → opens in new browser tab.
+UI: `GET /api/mlflow/url` returns the browser-reachable URL of the always-on `mlflow`
+Docker service (`http://localhost:5000`) → opened in a new browser tab.
 
 ### Layer 3 — LangSmith (opt-in)
 

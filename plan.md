@@ -94,7 +94,7 @@ Shared contracts. Small but they block most of the tree.
 | T-039 | PipelineView (SSE) | M | T-038 |
 | T-040 | ExperimentsTable | S | T-038 |
 | T-041 | Chat component (WebSocket) | M | T-038 |
-| T-042 | FileViewer + ActionBar | S | T-038 |
+| T-042 | FileViewer + ActionBar | S | T-038, T-037 |
 
 ## Build Phase 5 — Integration & Delivery
 
@@ -123,10 +123,12 @@ T-001 → T-003 → T-004 → T-010 → T-029 (coder) → T-046 (smoke)
 
 **Waves:**
 - **Wave 1:** T-001, T-038, T-045
-- **Wave 2:** T-002, T-003, T-005, T-006, T-007, T-008, T-039, T-040, T-041, T-042, T-044
+- **Wave 2:** T-002, T-003, T-005, T-006, T-007, T-008, T-039, T-040, T-041, T-044
 - **Wave 3:** T-004, T-009, T-011, T-012
 - **Wave 4:** T-010, T-034 → T-035, T-036, T-037
-- **Wave 5:** T-013..T-033 (21 pipeline nodes, fully parallel)
+- **Wave 5:** T-013..T-033 (21 pipeline nodes, fully parallel); T-042 (now gated on T-037, added
+  post-hoc when T-037's Architect analysis found the ActionBar would otherwise be built against
+  a stale endpoint contract)
 - **Wave 6:** T-043, T-046
 - **Post-wave (added mid-project):** T-047 (follow-up on T-022)
 
@@ -151,6 +153,7 @@ T-010 → T-013..T-022, T-024..T-030, T-032, T-033, T-036
 T-011 → T-020, T-023, T-031
 T-022 → T-047
 T-034 → T-035, T-036, T-037, T-043
+T-037 → T-042
 T-038 → T-039, T-040, T-041, T-042, T-043
 (T-013..T-033, T-034, T-035) → T-046
 ```

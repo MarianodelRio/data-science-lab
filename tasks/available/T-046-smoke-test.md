@@ -3,7 +3,7 @@ id: T-046
 phase: 5
 agent: pipeline-agent
 depends_on: [T-013, T-014, T-015, T-016, T-017, T-018, T-019, T-020, T-021, T-022, T-023, T-024, T-029, T-030, T-031, T-032, T-033, T-034, T-035]
-status: blocked
+status: available
 folders: ["tests/smoke/", "tests/fixtures/"]
 outputs: [end-to-end smoke test running the full pipeline on a tiny dataset]
 size: M

@@ -3,12 +3,12 @@ id: T-034
 phase: 3
 agent: api-agent
 depends_on: [T-009]
-status: in-progress
+status: pr-open
 folders: ["src/api/"]
 outputs: [FastAPI app, POST/GET /api/runs, POST /api/runs/{id}/resume]
 size: M
 branch: feature/T-034-api-run-management
-pr: ~
+pr: https://github.com/MarianodelRio/data-science-lab/pull/38
 ---
 
 ## FastAPI skeleton + run management (src/api/)

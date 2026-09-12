@@ -214,6 +214,23 @@ async def get_run(run_id: str, request: Request) -> Response:
     return _json(_to_summary(record, values))
 
 
+async def _resume_and_track(
+    runs_dir: Path, run_id: str, graph: Any, config: dict[str, Any], feedback: str
+) -> None:
+    """Write the resume feedback into the checkpoint, then drive execution —
+    both steps happen inside this one task so nothing can register a second
+    task for this run_id in the gap between them (the TOCTOU race this
+    fixes: see `resume_run`, which schedules this task and registers it into
+    `active_runs` with zero `await` in between).
+
+    The checkpoint write itself is not a node execution, so — same as
+    before this fix — it carries no callback: it uses the bare thread
+    config, not `config` (which has the callback attached for the tracked
+    run that follows)."""
+    await asyncio.to_thread(graph.update_state, _config(run_id), {"human_feedback": feedback})
+    await _run_and_track(runs_dir, run_id, graph, config, None)
+
+
 @router.post("/{run_id}/resume", response_model=ResumeResponse)
 async def resume_run(run_id: str, body: ResumeRequest, request: Request) -> Response:
     runs_dir: Path = request.app.state.runs_dir
@@ -222,6 +239,9 @@ async def resume_run(run_id: str, body: ResumeRequest, request: Request) -> Resp
     except RunNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    if _has_active_run(request) is not None:
+        raise HTTPException(status_code=409, detail="another run is already active")
+
     if record.status != "interrupted":
         raise HTTPException(
             status_code=409,
@@ -229,15 +249,17 @@ async def resume_run(run_id: str, body: ResumeRequest, request: Request) -> Resp
         )
 
     graph = _get_or_build_graph(request, run_id)
-    # The checkpoint write itself is not a node execution, so it carries no
-    # callback — only the subsequent tracked run (below) is instrumented.
-    # A real sqlite write via the checkpointer — wrap in `to_thread` like the
-    # `invoke`/`get_state` calls in `_run_and_track`.
-    await asyncio.to_thread(graph.update_state, _config(run_id), {"human_feedback": body.feedback})
-
+    # The checkpoint write (inside `_resume_and_track`) is not a node
+    # execution, so it carries no callback — only the subsequent tracked run
+    # is instrumented.
     callback = JsonlCallbackHandler(run_id, runs_dir)
     config = _build_config(run_id, callback)
-    task = asyncio.create_task(_run_and_track(runs_dir, run_id, graph, config, None))
+
+    # No `await` from here to the `active_runs` registration below: this is
+    # what closes the same-run TOCTOU race (two concurrent resume calls could
+    # otherwise both pass the checks above before either task registration
+    # took effect). The checkpoint write itself now happens inside the task.
+    task = asyncio.create_task(_resume_and_track(runs_dir, run_id, graph, config, body.feedback))
     request.app.state.active_runs[run_id] = task
 
     return _json(ResumeResponse(run_id=run_id, status="running"))

@@ -122,3 +122,59 @@ still pass unchanged — they never asserted on `graph_factory` call count, only
 `fake_graph`'s own `invoke_calls`/`update_state_calls`, which are unaffected by caching
 the graph object itself. Full suite: 2176 passed, 97.38% coverage; `ruff check`/
 `ruff format --check`/`mypy src/` all clean.
+
+### Fix round 2 — review blocker (resume_run missing active-run gate + TOCTOU race, ADV-09702150)
+
+The adversarial reviewer found `resume_run` never called `_has_active_run` (unlike
+`create_run`), so resuming an interrupted run could start it executing concurrently with
+an already-active run — no gate enforced the "single active run" concurrency NFR on this
+path at all. Independently, `resume_run`'s own sequence was itself racy for the *same*
+run_id: it awaited `graph.update_state(...)` (a yield point) *before* creating and
+registering the background task into `active_runs`, so two near-simultaneous resume calls
+for the same run_id could both pass the `status != "interrupted"` check before either
+task registration took effect, both call `update_state`, and both schedule their own
+`_run_and_track` task against the same LangGraph checkpoint — the second one silently
+overwriting (and orphaning) the first in `active_runs`.
+
+Fix, in `src/api/routers/runs.py`:
+- Added the missing `_has_active_run(request)` 409 check to `resume_run`, right after the
+  404 check and before the interrupted-status 409 check — same pattern and same
+  precedence as `create_run`.
+- Added `_resume_and_track(runs_dir, run_id, graph, config, feedback)`, a new coroutine
+  that does the `graph.update_state(...)` write *and* drives the subsequent tracked
+  execution (`_run_and_track`) as one unit. `resume_run` now builds `graph`/`callback`/
+  `config` synchronously (no `await`), calls
+  `asyncio.create_task(_resume_and_track(...))`, and assigns
+  `request.app.state.active_runs[run_id] = task` on the very next line — zero `await`
+  anywhere between the interrupted-status check and that assignment, closing the race
+  window entirely (once `resume_run` starts running on the event loop it runs to
+  completion without yielding, so no other coroutine can interleave inside it).
+  Preserved the pre-existing behavior that the checkpoint write itself carries no
+  callback (`_resume_and_track` builds a bare `_config(run_id)` for the `update_state`
+  call specifically, and only the callback-bearing `config` passed in is used for the
+  tracked `_run_and_track` run that follows) — this was called out as a deliberate
+  deviation in the original implementation notes above and stays intact.
+- Updated `test_resume_passes_feedback_into_graph`: `update_state` now happens inside the
+  background task rather than being synchronously observable right after the HTTP
+  response, so the assertion polls (`_wait_until`) for `fake_graph.update_state_calls`
+  before checking its contents, instead of asserting immediately — same polling pattern
+  already used elsewhere in the file for `active_runs[run_id].done()`.
+- Added `test_resume_conflicts_with_active_run_returns_409` (cross-run case: an active
+  run from `create_run` blocks a concurrent `resume_run` on a separate interrupted run —
+  deterministic via a `SlowFakeGraph.invoke` that sleeps, same technique as the existing
+  `test_create_run_conflicts_with_active_run_returns_409`) and
+  `test_resume_same_run_twice_only_schedules_one_execution` (same-run case: two resume
+  calls for the same run_id, asserting exactly one succeeds with 200, the other with 409,
+  and only one `update_state`/`invoke` pair ever reaches the graph — deterministic
+  because the second call is turned away either by the new `_has_active_run` gate or by
+  the interrupted-status check, whichever the first task's progress makes true by the
+  time the second call runs).
+- Out of scope for this round (per the Orchestrator's blocker report, left untouched):
+  unbounded `graph_cache`/`active_runs` growth (ADV-9f400ebb), synchronous
+  `update_run_status` calls inside `_run_and_track` (ADV-d76c0221), `create_run`'s
+  synchronous graph build (CQ-95dfe3b3), `_get_or_build_graph`'s non-thread-safe
+  check-then-act (CQ-fc809918/SEC-c7d1a204), and the accepted 0.0.0.0 bind /
+  process-local active-run tracking tradeoffs (SEC-3a9b77cc, SEC-4b539ff9/CQ-e308af13).
+
+Full suite: 2178 passed, 97.38% coverage; `ruff check .`/`ruff format --check .`/
+`mypy src/` all clean.

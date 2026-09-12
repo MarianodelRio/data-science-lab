@@ -80,11 +80,16 @@ def test_resume_passes_feedback_into_graph(
     response = client.post(f"/api/runs/{run_id}/resume", json={"feedback": "proceed"})
 
     assert response.status_code == 200
-    _wait_for_run_task_done(app, run_id)
+    # `update_state` now runs inside the background task (see
+    # `_resume_and_track`), so it is no longer guaranteed to have happened
+    # by the time the HTTP response comes back — poll for it instead of
+    # asserting synchronously.
+    assert _wait_until(lambda: fake_graph.update_state_calls)
     assert fake_graph.update_state_calls[-1] == (
         {"configurable": {"thread_id": run_id}},
         {"human_feedback": "proceed"},
     )
+    _wait_for_run_task_done(app, run_id)
 
 
 def test_get_unknown_run_returns_404(client: TestClient) -> None:
@@ -137,6 +142,76 @@ def test_create_run_conflicts_with_active_run_returns_409(tmp_path: Path) -> Non
 
         assert response.status_code == 409
         _wait_for_run_task_done(app, first["run_id"])  # let the background task finish cleanly
+
+
+def test_resume_conflicts_with_active_run_returns_409(tmp_path: Path) -> None:
+    """Regression test for ADV-09702150: `resume_run` had no active-run gate
+    at all (unlike `create_run`), so resuming one (different) interrupted run
+    could start it executing concurrently with an already-active run."""
+
+    class SlowFakeGraph(FakeCompiledGraph):
+        def invoke(self, input, config):
+            time.sleep(0.3)
+            return super().invoke(input, config)
+
+    slow_graph = SlowFakeGraph()
+    app = create_app(runs_dir=tmp_path, graph_factory=lambda *_a, **_k: slow_graph)
+    with TestClient(app) as client:
+        active = _create_run(client)
+        assert not app.state.active_runs[active["run_id"]].done()
+
+        interrupted_run_id = "other-interrupted-run"
+        registry.create_run_record(tmp_path, interrupted_run_id, "spaceship", "/ws/spaceship")
+        registry.update_run_status(tmp_path, interrupted_run_id, "interrupted")
+
+        response = client.post(
+            f"/api/runs/{interrupted_run_id}/resume", json={"feedback": "proceed"}
+        )
+
+        assert response.status_code == 409
+        assert interrupted_run_id not in app.state.active_runs
+        _wait_for_run_task_done(app, active["run_id"])  # let the background task finish cleanly
+
+
+def test_resume_same_run_twice_only_schedules_one_execution(tmp_path: Path) -> None:
+    """Regression test for ADV-09702150's same-run TOCTOU race: the previous
+    implementation awaited `graph.update_state` *before* registering the
+    background task in `active_runs`, leaving a window where a second
+    `resume` call for the same run_id could pass the interrupted-status check
+    before the first call's task was registered, scheduling two concurrent
+    executions against the same checkpoint (and orphaning the first one in
+    `active_runs`).
+
+    The fix removes every `await` between the interrupted-status check and
+    the `active_runs[run_id] = task` assignment in `resume_run` (the whole
+    `update_state` + execution flow now happens inside the scheduled task,
+    see `_resume_and_track`), so nothing can interleave in that window: the
+    first call to actually reach the checks registers its task, and the
+    second call is turned away with 409 before it ever reaches
+    `update_state` — either by the new `_has_active_run` gate (if the first
+    task is still running) or by the interrupted-status check (if the first
+    task has already finished and advanced the recorded status). Either way,
+    only one `update_state`/`invoke` pair ever happens.
+    """
+    run_id = "double-resume-run"
+    registry.create_run_record(tmp_path, run_id, "titanic", "/ws/titanic")
+    registry.update_run_status(tmp_path, run_id, "interrupted")
+
+    fake_graph = FakeCompiledGraph()
+    app = create_app(runs_dir=tmp_path, graph_factory=lambda *_a, **_k: fake_graph)
+    with TestClient(app) as client:
+        first = client.post(f"/api/runs/{run_id}/resume", json={"feedback": "first"})
+        second = client.post(f"/api/runs/{run_id}/resume", json={"feedback": "second"})
+
+        statuses = sorted([first.status_code, second.status_code])
+        assert statuses == [200, 409]
+
+        _wait_for_run_task_done(app, run_id)
+        # Exactly one `update_state` call ever reached the graph, from the
+        # one request that won the gate — never two concurrent executions
+        # against the same checkpoint.
+        assert len(fake_graph.update_state_calls) == 1
+        assert len(fake_graph.invoke_calls) == 1
 
 
 def test_list_runs_returns_all_runs_with_status(client: TestClient, app) -> None:

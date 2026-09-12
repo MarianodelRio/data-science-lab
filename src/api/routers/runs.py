@@ -1,0 +1,265 @@
+"""`/api/runs` endpoints — create, list, inspect and resume pipeline runs.
+
+The compiled graph is never imported directly here: `request.app.state.graph_factory`
+is the injection seam (see `src/api/main.py`), so unit tests substitute a fake graph
+with no LangGraph/sqlite dependency.
+
+Every response is built through `_json`/`_json_list`, which serialize with Pydantic's
+own JSON encoder (`model_dump_json()` / `TypeAdapter.dump_json()`) rather than the
+`response_model=` + `jsonable_encoder` path FastAPI would otherwise take — the latter
+would emit the invalid JSON token `-Infinity` for a fresh run's `best_score`
+(`float("-inf")`, see `src/api/models.py`). `response_model=` stays on each decorator
+purely so it still shows up in the generated OpenAPI docs.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import uuid
+from pathlib import Path
+from typing import Any
+
+from fastapi import APIRouter, HTTPException, Request, Response
+from pydantic import BaseModel, TypeAdapter
+
+from src.api import registry
+from src.api.models import (
+    ResumeRequest,
+    ResumeResponse,
+    RunCreateRequest,
+    RunCreateResponse,
+    RunSummary,
+)
+from src.api.registry import RunNotFoundError, RunRecord
+from src.observability.jsonl_callback import JsonlCallbackHandler
+from src.state import LabState, new_state
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/api/runs", tags=["runs"])
+
+_RUN_SUMMARY_LIST_ADAPTER: TypeAdapter[list[RunSummary]] = TypeAdapter(list[RunSummary])
+
+
+def _config(run_id: str) -> dict[str, Any]:
+    """The LangGraph thread config for `run_id` — always nested under
+    `"configurable"`, never a bare `{"thread_id": ...}`."""
+    return {"configurable": {"thread_id": run_id}}
+
+
+def _build_config(run_id: str, callback: JsonlCallbackHandler | None = None) -> dict[str, Any]:
+    config = _config(run_id)
+    if callback is not None:
+        config["callbacks"] = [callback]
+    return config
+
+
+def _json(model: BaseModel, status_code: int = 200) -> Response:
+    """Serialize `model` via Pydantic's own JSON encoder, bypassing
+    `jsonable_encoder`/stdlib `json.dumps` (which would emit invalid
+    `-Infinity` for a `-inf` `best_score`)."""
+    return Response(
+        content=model.model_dump_json(), media_type="application/json", status_code=status_code
+    )
+
+
+def _json_list(items: list[RunSummary], status_code: int = 200) -> Response:
+    """Same rationale as `_json`, for the bare-list `GET /api/runs` response."""
+    return Response(
+        content=_RUN_SUMMARY_LIST_ADAPTER.dump_json(items),
+        media_type="application/json",
+        status_code=status_code,
+    )
+
+
+def _live_values(graph: Any, run_id: str) -> dict[str, Any]:
+    """Read the live `LabState` values from the graph's checkpoint, or `{}`
+    if the run has no checkpoint yet (e.g. still `"pending"`)."""
+    values = graph.get_state(_config(run_id)).values
+    return values if values else {}
+
+
+def _get_or_build_graph(request: Request, run_id: str) -> Any:
+    """Return the cached compiled graph for `run_id`, building it (via
+    `graph_factory`) only on first use.
+
+    The real `graph_factory` (`_default_graph_factory` in `src/api/main.py`)
+    builds a `CompiledStateGraph` backed by a raw, unclosed sqlite
+    connection (`build_checkpointer` in `src/graph/checkpointer.py`).
+    Calling it fresh on every request — as `list_runs`/`get_run` used to —
+    leaked one sqlite connection per run per request, unbounded. Caching by
+    `run_id` on `app.state.graph_cache` bounds this to at most one graph
+    (and one connection) per distinct run ever touched by this process,
+    and lets `create_run`, `list_runs`, `get_run` and `resume_run` all
+    share the same graph object for a given run instead of each holding
+    its own connection to the same checkpoint file.
+    """
+    cache: dict[str, Any] = request.app.state.graph_cache
+    if run_id not in cache:
+        cache[run_id] = request.app.state.graph_factory(run_id, request.app.state.runs_dir)
+    return cache[run_id]
+
+
+def _get_or_build_graph_values(request: Request, run_id: str) -> dict[str, Any]:
+    """Lookup-or-build the graph and read its live state, as one blocking
+    unit. Run via `asyncio.to_thread` (like `_run_and_track` already does
+    for `invoke`/`get_state`) so a cache-miss `sqlite3.connect()` — or a
+    blocking checkpoint read inside `get_state` — never runs on the event
+    loop."""
+    graph = _get_or_build_graph(request, run_id)
+    return _live_values(graph, run_id)
+
+
+def _to_summary(record: RunRecord, values: dict[str, Any]) -> RunSummary:
+    return RunSummary(
+        run_id=record.run_id,
+        competition_name=record.competition_name,
+        workspace_path=record.workspace_path,
+        status=record.status,
+        phase=values.get("phase", ""),
+        current_iteration=values.get("current_iteration", 0),
+        best_score=values.get("best_score", float("-inf")),
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+    )
+
+
+def _has_active_run(request: Request) -> str | None:
+    """Return the first run_id with a not-yet-`.done()` background task, or
+    `None` if no run is currently active. This is a cheap in-memory check —
+    run it before any filesystem/registry work in `create_run` so a
+    conflicting request never touches disk."""
+    active_runs: dict[str, asyncio.Task] = request.app.state.active_runs
+    for run_id, task in active_runs.items():
+        if not task.done():
+            return run_id
+    return None
+
+
+async def _run_and_track(
+    runs_dir: Path,
+    run_id: str,
+    graph: Any,
+    config: dict[str, Any],
+    initial_state: LabState | None,
+) -> None:
+    """Drive one graph execution to completion/interruption/failure and keep
+    the on-disk registry status in sync.
+
+    Takes plain values, never a `Request` — this coroutine is scheduled via
+    `asyncio.create_task` and outlives the request/response cycle that
+    started it, so it must not hold a reference to that request.
+
+    The graph runs arbitrary pipeline node code, so the exception type it can
+    raise is genuinely unbounded — a broad `except Exception` here is the
+    correct boundary (any failure marks the run `"failed"` and is logged),
+    not an accidental swallow of a narrower expected error.
+    """
+    try:
+        registry.update_run_status(runs_dir, run_id, "running")
+        await asyncio.to_thread(graph.invoke, initial_state, config)
+        snapshot = await asyncio.to_thread(graph.get_state, config)
+        status = "interrupted" if snapshot.next else "completed"
+        registry.update_run_status(runs_dir, run_id, status)
+    except Exception:
+        logger.exception("run %s failed during execution", run_id)
+        registry.update_run_status(runs_dir, run_id, "failed")
+
+
+@router.post("", response_model=RunCreateResponse, status_code=201)
+async def create_run(body: RunCreateRequest, request: Request) -> Response:
+    if _has_active_run(request) is not None:
+        raise HTTPException(status_code=409, detail="another run is already active")
+
+    runs_dir: Path = request.app.state.runs_dir
+    run_id = uuid.uuid4().hex
+    registry.create_run_record(runs_dir, run_id, body.competition_name, body.workspace_path)
+
+    callback = JsonlCallbackHandler(run_id, runs_dir)
+    graph = _get_or_build_graph(request, run_id)
+    config = _build_config(run_id, callback)
+    initial_state = new_state(
+        body.competition_name, body.workspace_path, max_iterations=body.max_iterations
+    )
+
+    task = asyncio.create_task(_run_and_track(runs_dir, run_id, graph, config, initial_state))
+    request.app.state.active_runs[run_id] = task
+
+    return _json(RunCreateResponse(run_id=run_id, status="pending"), 201)
+
+
+@router.get("", response_model=list[RunSummary])
+async def list_runs(request: Request) -> Response:
+    runs_dir: Path = request.app.state.runs_dir
+    records = sorted(registry.list_run_records(runs_dir), key=lambda r: r.created_at)
+
+    summaries = []
+    for record in records:
+        values = await asyncio.to_thread(_get_or_build_graph_values, request, record.run_id)
+        summaries.append(_to_summary(record, values))
+
+    return _json_list(summaries)
+
+
+@router.get("/{run_id}", response_model=RunSummary)
+async def get_run(run_id: str, request: Request) -> Response:
+    runs_dir: Path = request.app.state.runs_dir
+    try:
+        record = registry.read_run_record(runs_dir, run_id)
+    except RunNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    values = await asyncio.to_thread(_get_or_build_graph_values, request, run_id)
+    return _json(_to_summary(record, values))
+
+
+async def _resume_and_track(
+    runs_dir: Path, run_id: str, graph: Any, config: dict[str, Any], feedback: str
+) -> None:
+    """Write the resume feedback into the checkpoint, then drive execution —
+    both steps happen inside this one task so nothing can register a second
+    task for this run_id in the gap between them (the TOCTOU race this
+    fixes: see `resume_run`, which schedules this task and registers it into
+    `active_runs` with zero `await` in between).
+
+    The checkpoint write itself is not a node execution, so — same as
+    before this fix — it carries no callback: it uses the bare thread
+    config, not `config` (which has the callback attached for the tracked
+    run that follows)."""
+    await asyncio.to_thread(graph.update_state, _config(run_id), {"human_feedback": feedback})
+    await _run_and_track(runs_dir, run_id, graph, config, None)
+
+
+@router.post("/{run_id}/resume", response_model=ResumeResponse)
+async def resume_run(run_id: str, body: ResumeRequest, request: Request) -> Response:
+    runs_dir: Path = request.app.state.runs_dir
+    try:
+        record = registry.read_run_record(runs_dir, run_id)
+    except RunNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    if _has_active_run(request) is not None:
+        raise HTTPException(status_code=409, detail="another run is already active")
+
+    if record.status != "interrupted":
+        raise HTTPException(
+            status_code=409,
+            detail=f"run {run_id!r} is not interrupted (status={record.status!r})",
+        )
+
+    graph = _get_or_build_graph(request, run_id)
+    # The checkpoint write (inside `_resume_and_track`) is not a node
+    # execution, so it carries no callback — only the subsequent tracked run
+    # is instrumented.
+    callback = JsonlCallbackHandler(run_id, runs_dir)
+    config = _build_config(run_id, callback)
+
+    # No `await` from here to the `active_runs` registration below: this is
+    # what closes the same-run TOCTOU race (two concurrent resume calls could
+    # otherwise both pass the checks above before either task registration
+    # took effect). The checkpoint write itself now happens inside the task.
+    task = asyncio.create_task(_resume_and_track(runs_dir, run_id, graph, config, body.feedback))
+    request.app.state.active_runs[run_id] = task
+
+    return _json(ResumeResponse(run_id=run_id, status="running"))

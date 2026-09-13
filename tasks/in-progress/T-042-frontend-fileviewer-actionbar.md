@@ -3,11 +3,11 @@ id: T-042
 phase: 4
 agent: frontend-agent
 depends_on: [T-038, T-037]
-status: available
+status: in-progress
 folders: ["frontend/"]
 outputs: [FileViewer component, ActionBar component]
 size: S
-branch: ~
+branch: feature/T-042-frontend-fileviewer-actionbar
 pr: ~
 ---
 

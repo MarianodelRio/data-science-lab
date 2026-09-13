@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol, cast
@@ -20,10 +21,15 @@ from fastapi import FastAPI
 
 from src.api.routers.chat import router as chat_router
 from src.api.routers.events import router as events_router
+from src.api.routers.kaggle import router as kaggle_router
+from src.api.routers.mlflow import router as mlflow_router
 from src.api.routers.runs import router as runs_router
 from src.config.paths import REPO_ROOT
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_MLFLOW_URL = "http://localhost:5000"
+_MLFLOW_PUBLIC_URL_ENV_VAR = "MLFLOW_PUBLIC_URL"
 
 
 class CompiledGraphLike(Protocol):
@@ -103,6 +109,7 @@ def create_app(
     graph_factory: GraphFactory | None = None,
     explainer_factory: ExplainerFactory | None = None,
     rag_store_factory: RagStoreFactory | None = None,
+    mlflow_url: str | None = None,
 ) -> FastAPI:
     """Build the FastAPI app.
 
@@ -116,12 +123,22 @@ def create_app(
     injection seam for the chat WebSocket (`src/api/routers/chat.py`): tests
     inject a factory returning a fake explainer / `None` rag store, with zero
     LLM/network/model-download dependency.
+
+    `mlflow_url` seeds `app.state.mlflow_url` (read by `GET /api/mlflow/url`):
+    the param takes precedence over the `MLFLOW_PUBLIC_URL` env var, which
+    takes precedence over the `http://localhost:5000` default.
     """
     app = FastAPI(title="Data Science Lab API")
     app.state.runs_dir = runs_dir if runs_dir is not None else REPO_ROOT / "runs"
     app.state.graph_factory = graph_factory or _default_graph_factory()
     app.state.explainer_factory = explainer_factory or _default_explainer_factory()
     app.state.rag_store_factory = rag_store_factory or _default_rag_store_factory()
+    resolved_mlflow_url = mlflow_url
+    if resolved_mlflow_url is None:
+        resolved_mlflow_url = os.environ.get(_MLFLOW_PUBLIC_URL_ENV_VAR)
+    if resolved_mlflow_url is None:
+        resolved_mlflow_url = _DEFAULT_MLFLOW_URL
+    app.state.mlflow_url = resolved_mlflow_url
     active_runs: dict[str, asyncio.Task] = {}
     app.state.active_runs = active_runs
     # Built graphs (and, in the real factory, their underlying sqlite
@@ -139,6 +156,8 @@ def create_app(
     app.include_router(runs_router)
     app.include_router(events_router)
     app.include_router(chat_router)
+    app.include_router(kaggle_router)
+    app.include_router(mlflow_router)
     return app
 
 

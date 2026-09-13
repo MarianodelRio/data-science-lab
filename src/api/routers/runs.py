@@ -22,7 +22,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from langchain_core.callbacks import BaseCallbackHandler
-from pydantic import BaseModel, TypeAdapter
+from pydantic import TypeAdapter
 from starlette.requests import HTTPConnection
 
 from src.api import registry
@@ -40,6 +40,7 @@ from src.api.models import (
     RunSummary,
 )
 from src.api.registry import RunNotFoundError, RunRecord
+from src.api.responses import json_response as _json
 from src.observability.jsonl_callback import JsonlCallbackHandler
 from src.state import LabState, new_state
 
@@ -63,15 +64,6 @@ def _build_config(
     if callbacks:
         config["callbacks"] = callbacks
     return config
-
-
-def _json(model: BaseModel, status_code: int = 200) -> Response:
-    """Serialize `model` via Pydantic's own JSON encoder, bypassing
-    `jsonable_encoder`/stdlib `json.dumps` (which would emit invalid
-    `-Infinity` for a `-inf` `best_score`)."""
-    return Response(
-        content=model.model_dump_json(), media_type="application/json", status_code=status_code
-    )
 
 
 def _json_list(items: list[RunSummary], status_code: int = 200) -> Response:

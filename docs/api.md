@@ -12,7 +12,7 @@ changes an endpoint.
 | `GET /api/runs/{id}` | One run's state summary |
 | `POST /api/runs/{id}/resume` | Submit human_feedback, resume from interrupt |
 | `POST /api/runs/{id}/submit` | Trigger Kaggle submission |
-| `POST /api/mlflow/open` | Launch `mlflow ui` subprocess, return URL |
+| `GET /api/mlflow/url` | Return the browser-reachable MLflow UI URL |
 
 ### POST /api/runs
 Create and start a new run. Body: `{competition_name, workspace_path, max_iterations?}`
@@ -33,12 +33,39 @@ Body: `{feedback}`. Injects `human_feedback` into the paused checkpoint and resu
 graph as a background task. `404` if `id` is unknown, `409` if the run is not currently
 interrupted. Returns `200 {run_id, status: "running"}`.
 
+### POST /api/runs/{id}/submit
+Trigger a Kaggle submission of the run's best experiment (`state["best_experiment_path"]`,
+resolved via `WorkspaceManager.experiment_dir`). No request body. Both Kaggle calls
+(`submit`, `get_score`) run off the event loop via `asyncio.to_thread`.
+
+Returns `200 {public_score: float | null, submission_file: string, message: string | null}`.
+`public_score` is `null` when Kaggle has accepted the submission but not yet scored it
+(`message` explains this — not an error). `submission_file` is workspace-relative
+(`experiments/exp_N/submission.csv`).
+
+- `404` — unknown `run_id`.
+- `409` — no best experiment yet (`best_experiment_path` unset); `submission.csv` missing
+  from the resolved experiment directory (message names the path checked); invalid Kaggle
+  competition slug.
+- `503` — Kaggle credentials not configured on the server.
+- `502` — any other Kaggle API failure during submit or score lookup.
+
+Note: this reads the live checkpoint's `best_experiment_path`, never
+`reports/kaggle_submission.json` (that file is a separate record of the automated Phase 7
+submission flow, not this endpoint's input) and never falls back to
+`experiments/exp_{current_iteration - 1}/submission.csv` — an absent file is always a 409.
+
+### GET /api/mlflow/url
+Return the browser-reachable MLflow UI URL — never `workspace.mlflow_tracking_uri`
+(`http://mlflow:5000`, only resolvable inside the Docker compose network). Resolved once at
+app construction, no `Settings.load()` call in this endpoint's path: `create_app(mlflow_url=...)`
+param → `MLFLOW_PUBLIC_URL` env var → `http://localhost:5000` default.
+
+Returns `200 {url: string}`. No error responses.
+
 **RunSummary shape:** `{run_id, competition_name, workspace_path, status, phase,
 current_iteration, best_score, created_at, updated_at}` — all snake_case,
 `status ∈ {pending, running, interrupted, completed, failed}`.
-
-_`POST /api/runs/{id}/submit` and `POST /api/mlflow/open` request/response schemas are not
-yet finalized — see `src/api/` and `frontend/src/api/types.ts` once those tasks land._
 
 ## SSE
 

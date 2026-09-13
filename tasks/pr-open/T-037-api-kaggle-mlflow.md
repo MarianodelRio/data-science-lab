@@ -79,9 +79,23 @@ pr: https://github.com/MarianodelRio/data-science-lab/pull/41
     `_read_leaderboard_score` shape rather than importing them, and a follow-up
     shared-helper promotion is suggested if a third caller ever appears.
 
-- Deviations from plan: None. Implementation follows the Planner's plan and the
-  Architect's decision record precisely, including the exact function bodies,
-  error-mapping table, and file structure specified.
+- Deviations from plan: One, made by the Orchestrator during the Phase 4 rebase onto
+  `main`, not by the Coder. T-036 (merged to main while this branch was in progress)
+  independently widened `runs.py`'s `_config`/`_get_or_build_graph`/
+  `_get_or_build_graph_values`/`_live_values` to accept `HTTPConnection` (so the chat
+  WebSocket handler could reuse them) and kept them local to `runs.py`, with
+  `src/api/routers/chat.py` importing them directly
+  (`from src.api.routers.runs import _config, _get_or_build_graph, do_resume`). This
+  conflicted mechanically with the Coder's `src/api/graph_access.py` extraction of the
+  same functions (under the narrower pre-T-036 `Request` typing). Resolved by dropping
+  `graph_access.py` entirely and having `src/api/routers/kaggle.py` import
+  `_get_or_build_graph_values` directly from `src.api.routers.runs`, matching
+  `chat.py`'s existing precedent — one shared implementation, one import pattern,
+  `HTTPConnection`-typed (a `Request` is-a `HTTPConnection`, so `kaggle.py`'s `Request`
+  argument is still accepted unchanged). `src/api/responses.py` (the `_json` /
+  `json_response` extraction) had no such conflict and was kept as originally planned.
+  No behavior change to any endpoint; `docs/api.md`'s content is unaffected. Full test/
+  lint/type-check suite re-run clean after the rebase (see below).
 
 - Key decisions: None beyond what the Architect's decision record
   (`context/decisions/T-037.md`) already documents — implementation follows those

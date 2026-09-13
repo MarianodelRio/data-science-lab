@@ -116,3 +116,8 @@
 **Folders:** frontend/
 **Lesson:** Before resetting a `useRef` value directly inside a component's render-time state-reset block (the `if (prop !== prevProp) { ...resets... }` idiom), check this project's actual lint config — `eslint-plugin-react-hooks`'s `react-hooks/refs` rule hard-errors on `ref.current` mutation during render here, contradicting the general "React technically allows mutating a ref not read during this render" caveat. Reset such refs at the top of the effect that owns them instead (an effect keyed on the same prop re-runs exactly once per change and never on an in-effect reconnect/retry).
 **Signal:** "`eslint-plugin-react-hooks`'s `react-hooks/refs` rule (already enabled in this project's config) flags direct `ref.current` mutation during render as a hard error (\"Cannot access refs during render\"), not just a style nit — the \"technically allowed by React\" caveat in the task description doesn't hold against this project's actual lint config." *(source: ## Completed)*
+
+## L-024 | T-042 | 2026-09-13 | Weight: 1
+**Folders:** frontend/
+**Lesson:** Before locking in a parser for an external response's error-body shape (e.g. assuming a `{"detail": ...}` key), verify the assumption by grepping the actual producer's code for how it raises errors, and always degrade gracefully — never throw a second error — if the body doesn't match.
+**Signal:** "confirmed via `grep -rn HTTPException src/api/` that every raise site uses FastAPI's default `{\"detail\": ...}` shape and no `src/api/` router installs a custom exception handler that would override it." *(source: ## Completed)*

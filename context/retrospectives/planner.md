@@ -46,3 +46,8 @@
 **Folders:** docker/, ., frontend/
 **Lesson:** Do not lock a plan's exact command for probing a third-party Docker image's runtime behavior (e.g. a healthcheck) based on the vendor's own docs or web research alone — flag it as "verify empirically against the actual pinned image tag at implementation time" instead, since a vendor's example can be wrong about what binaries a specific tag actually ships.
 **Signal:** "chromadb/chroma:1.5.9 ships neither curl, wget, nor a python interpreter on $PATH (verified empirically via docker exec)." *(source: ## Completed / Deviations from plan)*
+
+## L-010 | T-042 | 2026-09-13 | Weight: 2
+**Folders:** frontend/
+**Lesson:** When a plan changes a component's prop signature from optional/none to a required shape (e.g. a discriminated union), enumerate every existing call site of that component and add each one to the plan's file list — not just the component file itself — or the Coder discovers the break as an unplanned deviation.
+**Signal:** "`Layout.tsx` previously rendered `<FileViewer />` propless, which no longer type-checks." *(source: ## Completed)*

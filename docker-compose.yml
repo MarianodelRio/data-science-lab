@@ -44,8 +44,8 @@ services:
       - chroma_data:/chroma/chroma
     healthcheck:
       # chromadb/chroma:1.5.9 ships neither curl nor wget nor python (verified empirically —
-      # see context/decisions/T-043.md); it does ship bash, so the heartbeat is probed via
-      # bash's /dev/tcp instead of an external HTTP client.
+      # see tasks/*/T-043-docker-compose.md's ## Completed section); it does ship bash, so
+      # the heartbeat is probed via bash's /dev/tcp instead of an external HTTP client.
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8000 && printf 'GET /api/v2/heartbeat HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q '200 OK' <&3"]
       interval: 10s
       timeout: 5s

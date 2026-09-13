@@ -7,7 +7,7 @@ status: done
 folders: ["frontend/"]
 outputs: [Chat component over WebSocket]
 size: M
-branch: feature/T-041-frontend-chat
+branch: ~
 pr: https://github.com/MarianodelRio/data-science-lab/pull/46
 ---
 

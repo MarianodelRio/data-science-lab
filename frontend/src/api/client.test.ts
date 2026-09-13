@@ -177,7 +177,9 @@ describe('request<T>() error-detail attachment', () => {
   it('attaches status and the backend detail to the thrown error, without changing its message', async () => {
     const fetchImpl = vi
       .fn<FetchLike>()
-      .mockResolvedValue(errorResponse(409, { detail: 'no best experiment yet' }))
+      .mockResolvedValue(
+        errorResponse(409, { detail: 'no best experiment yet' }),
+      )
 
     try {
       await submitRun('run-1', fetchImpl)
@@ -196,7 +198,8 @@ describe('request<T>() error-detail attachment', () => {
     const fetchImpl = vi.fn<FetchLike>().mockResolvedValue({
       ok: false,
       status: 502,
-      json: () => Promise.reject(new SyntaxError('Unexpected end of JSON input')),
+      json: () =>
+        Promise.reject(new SyntaxError('Unexpected end of JSON input')),
     } as unknown as Response)
 
     await expect(submitRun('run-1', fetchImpl)).rejects.toThrow(
@@ -205,7 +208,9 @@ describe('request<T>() error-detail attachment', () => {
   })
 
   it('leaves detail undefined when the JSON error body has no detail key', async () => {
-    const fetchImpl = vi.fn<FetchLike>().mockResolvedValue(errorResponse(500, {}))
+    const fetchImpl = vi
+      .fn<FetchLike>()
+      .mockResolvedValue(errorResponse(500, {}))
 
     try {
       await submitRun('run-1', fetchImpl)

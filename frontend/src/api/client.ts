@@ -38,10 +38,16 @@ export type ApiError = Error & { status: number; detail?: string }
  * Returns `undefined` — rather than throwing a second, more confusing error
  * — when the body is empty, not JSON, or JSON without a string `detail`.
  */
-async function extractErrorDetail(response: Response): Promise<string | undefined> {
+async function extractErrorDetail(
+  response: Response,
+): Promise<string | undefined> {
   try {
     const body: unknown = await response.json()
-    if (body && typeof body === 'object' && typeof (body as { detail?: unknown }).detail === 'string') {
+    if (
+      body &&
+      typeof body === 'object' &&
+      typeof (body as { detail?: unknown }).detail === 'string'
+    ) {
       return (body as { detail: string }).detail
     }
     return undefined
@@ -228,5 +234,9 @@ export function submitRun(
 export function openMlflow(
   fetchImpl: FetchLike = fetch,
 ): Promise<MlflowOpenResponse> {
-  return request<MlflowOpenResponse>('/api/mlflow/url', { method: 'GET' }, fetchImpl)
+  return request<MlflowOpenResponse>(
+    '/api/mlflow/url',
+    { method: 'GET' },
+    fetchImpl,
+  )
 }

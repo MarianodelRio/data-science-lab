@@ -18,7 +18,14 @@ const TABS: TabDef[] = [
     label: 'Experiments',
     render: () => <ExperimentsTable />,
   },
-  { id: 'files', label: 'Files', render: () => <FileViewer /> },
+  {
+    id: 'files',
+    label: 'Files',
+    // No endpoint serves workspace file content yet (see FileViewer.tsx) —
+    // rendered with no content, same "propless tab" pattern as
+    // ExperimentsTable/Chat/PipelineView above, until a real source is wired.
+    render: () => <FileViewer format="markdown" content={null} />,
+  },
   { id: 'chat', label: 'Chat', render: () => <Chat /> },
 ]
 

@@ -37,7 +37,7 @@ describe('Layout', () => {
 
     await user.click(screen.getByRole('tab', { name: /files/i }))
     expect(screen.getByRole('tabpanel')).toHaveTextContent(
-      /file viewer is not implemented yet/i,
+      /no content available/i,
     )
 
     await user.click(screen.getByRole('tab', { name: /chat/i }))

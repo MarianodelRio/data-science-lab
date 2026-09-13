@@ -3,12 +3,12 @@ id: T-043
 phase: 5
 agent: infra-agent
 depends_on: [T-034, T-038]
-status: in-progress
+status: pr-open
 folders: ["docker/", ".", "frontend/"]
 outputs: [docker-compose.yml, Dockerfile.api, frontend/Dockerfile, chroma + mlflow services]
 size: M
 branch: feature/T-043-docker-compose
-pr: ~
+pr: https://github.com/MarianodelRio/data-science-lab/pull/43
 ---
 
 ## docker-compose + Dockerfiles + services

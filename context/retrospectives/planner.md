@@ -31,3 +31,13 @@
 **Folders:** src/api/
 **Lesson:** When planning to extract a shared private helper out of a router/module into a new file, check `tasks/in-progress/` for other tasks touching the same file or folder — a concurrently in-progress task can independently widen or relocate the same functions before your branch merges, turning what should be a clean extraction into a rebase conflict the Orchestrator has to resolve by hand.
 **Signal:** "This conflicted mechanically with the Coder's `src/api/graph_access.py` extraction of the same functions (under the narrower pre-T-036 `Request` typing)." *(source: ## Completed)*
+
+## L-007 | T-039 | 2026-09-13 | Weight: 2
+**Folders:** frontend/
+**Lesson:** When planning a React component's connection/subscription lifecycle, default to deriving initial/reset state at render time (comparing a prop against its previous value) rather than calling `setState` synchronously at the top of the `useEffect` that owns the subscription — the latter trips `eslint-plugin-react-hooks`'s rule against deriving state an effect could compute directly.
+**Signal:** "The plan's initial component sketch called `setConnectionState('no_run')` / `setConnectionState('connecting')` synchronously as the first statements inside the subscription `useEffect`. `eslint-plugin-react-hooks`'s `set-state-in-effect` rule flagged this (deriving state that render can compute directly, rather than an effect reacting to an external event)." *(source: ## Completed)*
+
+## L-008 | T-039 | 2026-09-13 | Weight: 2
+**Folders:** frontend/
+**Lesson:** When a plan calls for updating stale assertions in an existing shared test file as fallout of a change, grep/count the actual matching assertions rather than estimating — an undercount leaves a failing test in the same PR.
+**Signal:** "`Layout.test.tsx` had three stale assertions referencing the removed placeholder copy, not two as the plan described (see above) — updated all three." *(source: ## Completed)*

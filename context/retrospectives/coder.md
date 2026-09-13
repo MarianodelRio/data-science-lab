@@ -66,3 +66,13 @@
 **Folders:** src/api/
 **Lesson:** When a shared dependency's constructor has an established, codebase-wide side effect (e.g. always creating a directory tree), don't try to work around it locally in a new caller — check whether every other call site already accepts the same behavior and whether the side effect is actually a no-op given your caller's real preconditions before treating it as a problem to solve.
 **Signal:** "every other `WorkspaceManager` call site in the codebase (all pipeline nodes) accepts the same constructor-creates-root behavior" *(source: ## Completed)*
+
+## L-014 | T-039 | 2026-09-13 | Weight: 1
+**Folders:** frontend/
+**Lesson:** When correcting a shared, multi-type file that other tasks also depend on (e.g. a provisional `types.ts`), edit only the types your own task actually consumes and leave the rest explicitly marked as still unreconciled — don't opportunistically fix everything in the file just because you're already in there.
+**Signal:** "`types.ts`'s edit was kept narrow to `PipelineEvent` and `Run` only, per the approved scope — `ChatMessage`, `CreateRunPayload`, `ResumePayload`, `SubmitResponse`, and `MlflowOpenResponse` are untouched and still named as unreconciled in the file's top doc-comment." *(source: ## Completed)*
+
+## L-015 | T-039 | 2026-09-13 | Weight: 1
+**Folders:** frontend/, src/api/
+**Lesson:** If an Orchestrator prompt instruction conflicts with this project's own steering docs (`context-formats.md`, `coder-complete.md`), follow the steering docs and say so in `## Completed` rather than silently complying with the conflicting instruction.
+**Signal:** "the Orchestrator prompt's step asking for that conflicts with those two steering docs' explicit \"Coder does NOT write directly to `context/decisions/` during implementation\" rule, so this `## Completed` section is the sole decision record, as designed." *(source: ## Completed)*

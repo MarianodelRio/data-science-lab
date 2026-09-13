@@ -30,6 +30,13 @@ export function Chat({ runId }: { runId?: string }) {
   const [inputValue, setInputValue] = useState('')
   const [feedbackValue, setFeedbackValue] = useState('')
 
+  const connectionRef = useRef<ReturnType<typeof connectChat> | null>(null)
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const reconnectAttemptsRef = useRef(0)
+  const lastCheckpointRef = useRef<{ phase: string; summary: string } | null>(null)
+  const nextEntryIdRef = useRef(0)
+  const feedbackRef = useRef<HTMLTextAreaElement | null>(null)
+
   // Render-time reset on runId change only (avoids a setState-in-effect
   // eslint-plugin-react-hooks violation) — switching to a different run
   // clears history and connection state; a same-runId reconnect must NOT
@@ -45,14 +52,17 @@ export function Chat({ runId }: { runId?: string }) {
     setFeedbackValue('')
   }
 
-  const connectionRef = useRef<ReturnType<typeof connectChat> | null>(null)
-  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const reconnectAttemptsRef = useRef(0)
-  const lastCheckpointRef = useRef<{ phase: string; summary: string } | null>(null)
-  const nextEntryIdRef = useRef(0)
-  const feedbackRef = useRef<HTMLTextAreaElement | null>(null)
-
   useEffect(() => {
+    // This effect re-runs exactly once per runId change (its dependency
+    // array is [runId]; a same-runId reconnect happens inside connect()/
+    // scheduleReconnect() below without re-running the effect), so
+    // resetting these two refs here — rather than in the render-time
+    // block above, which eslint-plugin-react-hooks forbids mutating refs
+    // in — still fires exactly once per new run and never on a same-run
+    // reconnect.
+    reconnectAttemptsRef.current = 0
+    lastCheckpointRef.current = null
+
     if (!runId) return
 
     let cancelled = false
@@ -65,6 +75,12 @@ export function Chat({ runId }: { runId?: string }) {
         case 'checkpoint': {
           const current = { phase: frame.phase, summary: frame.summary }
           setActiveCheckpoint(current)
+          // A checkpoint frame means the run is (still) interrupted, so any
+          // pending approve/redirect from before a drop was never applied —
+          // clear it on every arrival (including a re-announced/deduped
+          // one after reconnect), not just the first time, so the controls
+          // don't stay permanently disabled.
+          setPendingAction(null)
           const last = lastCheckpointRef.current
           if (last && last.phase === current.phase && last.summary === current.summary) {
             return // dedupe: same checkpoint re-announced after a reconnect
@@ -123,7 +139,12 @@ export function Chat({ runId }: { runId?: string }) {
         }
       })
       connection.onClose(() => {
-        connectionRef.current = null
+        // Native WebSocket.close() fires onclose asynchronously, so a
+        // connection closed during cleanup can report its close after a
+        // newer connection (for a new runId) is already the active one.
+        // Only clear the ref if it still points at *this* connection —
+        // otherwise this stale close would null out the live connection.
+        if (connectionRef.current === connection) connectionRef.current = null
         if (cancelled || intentionalClose) return
         scheduleReconnect()
       })

@@ -96,3 +96,72 @@ pr: https://github.com/MarianodelRio/data-science-lab/pull/46
 
 ### Dependencies added
 None.
+
+## Completed — review-fix round (adversarial findings)
+
+Fixed one HIGH-severity, verified, production-reachable bug plus one related MEDIUM bug and
+two adjacent WARNING-level code-quality issues, all in `frontend/src/components/Chat.tsx`, per
+the adversarial reviewer's findings. New commit on `feature/T-041-frontend-chat`, does not amend
+the original implementation commit (`ee0eaef`).
+
+- **Finding 1 (HIGH) — stale `onClose` nulls the live connection after a `runId` switch.**
+  `connect()`'s `onClose` handler unconditionally set `connectionRef.current = null`. Native
+  `WebSocket.close()` fires `onclose` asynchronously, so the old connection's deferred close
+  (triggered by the effect cleanup on a `runId` change) could arrive *after* the new connection
+  for the new `runId` was already live and referenced by `connectionRef`, nulling out the
+  current, working connection. Result: `connectionState === 'open'` (UI fully enabled) but
+  `connectionRef.current === null`, so `sendFrame` silently dropped every message for the rest of
+  that run's session. Fixed by capturing the connection identity in a local `connection` const at
+  `connect()` time and only clearing the ref if it still points at that same connection:
+  `if (connectionRef.current === connection) connectionRef.current = null`. Regression test added
+  to `Chat — runId changes`: opens connection A, switches `runId`, opens connection B, then fires
+  A's close listener (simulating the deferred native close arriving late), then asserts a send
+  goes to B (`connections[1].sent`), not silently dropped. Verified the test fails against the
+  pre-fix code (drops the message, asserts `[]`) and passes against the fix.
+
+- **Finding 2 (MEDIUM) — `pendingAction` never cleared by a re-announced checkpoint.** The
+  backend re-sends the same `checkpoint` frame on every reconnect while a run is still
+  interrupted. If a user's Approve/Redirect was sent but the connection dropped before a
+  `resumed`/`error` reply arrived, `pendingAction` stayed set forever — the re-announced
+  checkpoint after reconnect never cleared it, permanently disabling Approve/Redirect with no
+  recovery short of a page reload. Fixed by resetting `pendingAction` to `null` at the top of the
+  `'checkpoint'` case in `handleFrame`, before the dedupe check, so it fires on every checkpoint
+  arrival (including a deduped repeat), not just the first. Regression test added to
+  `Chat — checkpoint controls`: checkpoint arrives, Approve is clicked (button disabled), the
+  same checkpoint is re-emitted, then asserts Approve/Redirect are enabled again. Verified the
+  test fails against the pre-fix code and passes against the fix.
+
+- **CQ-6def14dd (WARNING, bundled) — `reconnectAttemptsRef` not reset on `runId` change.** A new
+  run inherited a leftover reconnect-attempt count from the previous run, reducing how many
+  reconnect attempts the new run gets before "Unable to reconnect" if its first connection
+  attempt fails before opening.
+- **CQ-4c032ef9 (WARNING, bundled) — `lastCheckpointRef` not reset on `runId` change.** Could
+  wrongly dedupe a new run's first checkpoint if it happened to share the exact same
+  `{phase, summary}` as the last one seen for the previous run.
+
+  Both fixed by resetting `reconnectAttemptsRef.current = 0` and `lastCheckpointRef.current =
+  null`. **Deviation from the task description's suggested placement:** the description offered
+  resetting these directly in the render-time `prevRunId`-change block (alongside the existing
+  `setEntries([])` etc. calls), noting it was "almost certainly fine" but deferring to judgment
+  after reading the code. That placement was tried first and fails lint: `eslint-plugin-react-
+  hooks`'s `react-hooks/refs` rule (already enabled in this project's config) flags direct
+  `ref.current` mutation during render as a hard error ("Cannot access refs during render"), not
+  just a style nit — the "technically allowed by React" caveat in the task description doesn't
+  hold against this project's actual lint config. Moved the two resets instead to the top of the
+  main `useEffect` body (before the `if (!runId) return` guard). That effect's dependency array
+  is `[runId]`, so it re-runs exactly once per `runId` change and never on a same-`runId`
+  reconnect (which happens via `connect()`/`scheduleReconnect()` calls *within* one effect
+  execution, not a re-run) — same reset semantics as the render-time block would have had,
+  without the lint violation.
+
+- **Not fixed (explicitly out of scope per the review-fix instructions):** ADV Finding 3
+  (error-frame reconnect churn on unknown `run_id` — needs a backend contract change),
+  CQ-1e823b48 (feedback textarea refocus nitpick), CQ-a7c20eea (stale docstring nitpick),
+  SEC-104cb40d/SEC-e869118b (sanctioned framework mechanism / INFO-level, not real issues).
+
+### Verification
+`npm run lint` (0 errors, 1 pre-existing unrelated warning), `npm test` (72/72 passing across 5
+files, including 19 in `Chat.test.tsx` — 17 original + 2 new regression tests), `npm run build`
+(clean). Run via `docker run ... node:22-bullseye` per the established pattern (host Node v16.17.0
+is below the `>=20.19.0` engines requirement). Both new regression tests confirmed to fail against
+the pre-fix code and pass against the fix.

@@ -248,6 +248,28 @@ describe('Chat — checkpoint controls', () => {
     ).toHaveLength(1)
   })
 
+  it('re-enables Approve/Redirect when the same checkpoint is re-announced after a reconnect', () => {
+    // Regression: the backend re-sends the still-open checkpoint on every
+    // reconnect. If a prior Approve/Redirect never got a resumed/error
+    // reply before the connection dropped, pendingAction must be cleared
+    // by the re-announced checkpoint too — not just by resumed/error —
+    // otherwise the controls stay disabled forever with no way to retry.
+    const connections: StubConnection[] = []
+    stubNextConnection(connections)
+    render(<Chat runId="run-1" />)
+    connections[0].open()
+    connections[0].emit(checkpointFrame())
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
+    expect(screen.getByRole('button', { name: 'Approve' })).toBeDisabled()
+
+    // Connection drops and reconnects before a resumed/error frame arrives,
+    // then the server re-announces the same (still-interrupted) checkpoint.
+    connections[0].emit(checkpointFrame())
+
+    expect(screen.getByRole('button', { name: 'Approve' })).not.toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Redirect' })).not.toBeDisabled()
+  })
+
   it('focuses the feedback textarea when a checkpoint frame first arrives', () => {
     const connections: StubConnection[] = []
     stubNextConnection(connections)
@@ -345,5 +367,34 @@ describe('Chat — runId changes', () => {
     expect(connections[0].closeSpy).toHaveBeenCalledTimes(1)
     expect(connectChat).toHaveBeenNthCalledWith(2, 'run-2')
     expect(screen.queryByText('Explainer: first run answer')).toBeNull()
+  })
+
+  it('keeps sending on the new connection when the old one reports its close after the switch', () => {
+    // Regression for the deferred-onclose race: native WebSocket.close()
+    // (called from the effect cleanup for run-1) does not fire onclose
+    // synchronously. If it arrives after run-2's connection is already
+    // live, an unconditional `connectionRef.current = null` in that stale
+    // handler would null out the *current* connection and silently drop
+    // every subsequent send.
+    const connections: StubConnection[] = []
+    stubNextConnection(connections)
+    stubNextConnection(connections)
+    const { rerender } = render(<Chat runId="run-1" />)
+    connections[0].open()
+
+    rerender(<Chat runId="run-2" />)
+    connections[1].open()
+    // Simulate connection A's deferred native close arriving after B is
+    // already the active connection for run-2.
+    connections[0].close()
+
+    fireEvent.change(screen.getByLabelText('Message'), {
+      target: { value: 'still works on run-2' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+    expect(connections[1].sent).toEqual([
+      { type: 'question', text: 'still works on run-2' },
+    ])
   })
 })

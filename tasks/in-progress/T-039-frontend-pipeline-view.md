@@ -3,11 +3,11 @@ id: T-039
 phase: 4
 agent: frontend-agent
 depends_on: [T-038]
-status: available
+status: in-progress
 folders: ["frontend/"]
 outputs: [PipelineView component consuming SSE]
 size: M
-branch: ~
+branch: feature/T-039-frontend-pipeline-view
 pr: ~
 ---
 

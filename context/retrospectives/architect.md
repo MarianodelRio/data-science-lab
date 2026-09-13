@@ -101,3 +101,18 @@
 **Folders:** frontend/
 **Lesson:** A task file's literal `Scope:` line can lag behind an already-established repo convention (e.g. naming a component subdirectory when every sibling component is a flat file) — check the actual convention in the codebase before approving the scope as written, and flag the task template itself if the same correction recurs across consecutive tasks in the same family.
 **Signal:** "the task file's literal `frontend/src/components/ExperimentsTable/` — stale planning-time wording, third task in a row to carry it (T-041/T-042 will need the same call)." *(source: context/decisions)*
+
+## L-021 | T-044 | 2026-09-13 | Weight: 3
+**Folders:** .github/, README.md
+**Lesson:** Before letting a task provision a CI service container for a dependency design.md describes as tested against a real instance, verify some test in the repo actually connects to it programmatically — an aspirational testing-strategy sentence is not evidence the wiring exists, and an unexercised service container is cost plus a false coverage signal.
+**Signal:** "Provisioning a GitHub Actions service container would therefore start a Chroma nobody dials." *(source: context/decisions)*
+
+## L-022 | T-044 | 2026-09-13 | Weight: 2
+**Folders:** .github/, README.md
+**Lesson:** When a task's own Done-when checklist references a file or path outside its declared `folders:`, treat that as a Rule-1 self-contradiction to resolve in Phase 1 (widen `folders:` to the minimum needed) rather than leaving it for the Coder to either violate Rule 1 or silently fail the criterion.
+**Signal:** "Rule 1 (\"never write outside assigned folders:\") would otherwise make the task self-contradictory." *(source: context/decisions)*
+
+## L-023 | T-044 | 2026-09-13 | Weight: 3
+**Folders:** .github/, README.md
+**Lesson:** CLAUDE.md's protected-contracts clause governs *changes* to an already-established contract, not the designated task that brings it into existence for the first time (e.g. a `batteries: true`-driven scaffold task) — reading it as requiring separate approval for the creation itself would make every battery task unexecutable; the standard Phase 1 checkpoint is the approval.
+**Signal:** "that reading makes every battery task unexecutable." *(source: context/decisions)*

@@ -3,7 +3,7 @@ id: T-040
 phase: 4
 agent: frontend-agent
 depends_on: [T-038]
-status: pr-open
+status: done
 folders: ["frontend/"]
 outputs: [ExperimentsTable component]
 size: S

@@ -91,3 +91,13 @@
 **Folders:** docker/, ., frontend/
 **Lesson:** When a task turns a design.md diagram/example into real running infrastructure (e.g. Docker Compose making a previously-conceptual service topology actually execute), re-check design.md's stated assumptions against the new runtime reality — a diagram can carry a latent scoping gap (e.g. multi-tenant/per-competition isolation) that only becomes a real bug once the thing it describes actually runs.
 **Signal:** "the resulting behavior contradicts the per-competition design intent now that it is a real running system instead of a diagram in a doc." *(source: context/discoveries)*
+
+## L-019 | T-040 | 2026-09-13 | Weight: 3
+**Folders:** frontend/
+**Lesson:** When a shared state field's server-side seed value is a real, legitimate reading (e.g. `0.0`) rather than an unambiguous sentinel (e.g. `-inf`/`None`), a consumer cannot treat that seed as "not yet populated" — require the consumer to use `null`/`undefined` as the sole "unpopulated" signal at the type boundary, never a default equal to a value the server can also genuinely produce.
+**Signal:** "`src/state.py:77` seeds `baseline_score=0.0` (not `-inf`, unlike `best_score`), so server-side \"no baseline has run yet\" and \"the baseline genuinely scored 0.0\" are indistinguishable. A component that treats a missing baseline as 0.0 renders a fabricated delta equal to the raw CV score for every row." *(source: context/decisions)*
+
+## L-020 | T-040 | 2026-09-13 | Weight: 2
+**Folders:** frontend/
+**Lesson:** A task file's literal `Scope:` line can lag behind an already-established repo convention (e.g. naming a component subdirectory when every sibling component is a flat file) — check the actual convention in the codebase before approving the scope as written, and flag the task template itself if the same correction recurs across consecutive tasks in the same family.
+**Signal:** "the task file's literal `frontend/src/components/ExperimentsTable/` — stale planning-time wording, third task in a row to carry it (T-041/T-042 will need the same call)." *(source: context/decisions)*

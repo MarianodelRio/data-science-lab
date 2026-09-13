@@ -86,3 +86,18 @@
 **Folders:** docker/, ., frontend/
 **Lesson:** For tasks that build large (multi-GB) Docker images, avoid redundant full rebuilds across parallel or resumed agent sessions/reviewers, prune build cache after builds, and prefer a config-only check (e.g. `docker compose config`) over a full rebuild to validate a small post-review fix — repeated heavy rebuilds can exhaust host disk and block all tool use.
 **Signal:** "the combined disk usage of this task's Docker builds across several parallel agent attempts (repeated ~8GB `dsl-api` image builds, build cache, and a killed smoke-tester's own build) filled the host's root filesystem to 0 bytes free, blocking all tool use (Bash/Write) for a period." *(source: ## Completed)*
+
+## L-018 | T-040 | 2026-09-13 | Weight: 1
+**Folders:** frontend/
+**Lesson:** When testing a table's row order or row count with React Testing Library, remember `screen.getAllByRole('row')` also matches the `<thead>` header row, not just `<tbody>` data rows — index data rows starting at 1 (or filter by role scope), not 0.
+**Signal:** "my first draft of the sort tests asserted the baseline row at `rows[0]`, forgetting that `screen.getAllByRole('row')` also matches the `<thead>` header row — fixed to assert the header at index 0 and the pinned baseline at index 1, sorted experiment rows following." *(source: ## Completed)*
+
+## L-019 | T-040 | 2026-09-13 | Weight: 1
+**Folders:** frontend/
+**Lesson:** When rendering a computed numeric delta with an explicit `+`/`-` sign, derive the sign from the rounded/displayed value, not the raw pre-rounding value — an exact tie must render as neutral, not as a false "+" improvement, and a sub-precision negative must not render as a "-0.0000" glitch.
+**Signal:** "`formatDelta` previously derived its `+`/`-` sign from the raw `delta` (`delta >= 0 ? '+' : ''`), which misrepresented two cases: an exact tie (`delta === 0`) rendered as `\"+0.0000\"` (reads as an improvement, not a tie), and a sub-precision negative delta (e.g. `-0.00001`) rendered as `\"-0.0000\"` via `toFixed`'s sign-preserving rounding (reads as a display glitch). Fixed by rounding first (`Number(delta.toFixed(4))`) and branching sign display on the *rounded* value." *(source: ## Completed)*
+
+## L-020 | T-040 | 2026-09-13 | Weight: 1
+**Folders:** frontend/
+**Lesson:** This machine's ambient Node.js is below `frontend/package.json`'s `engines` requirement and cannot run the installed test/build toolchain — run `npm install`/`npm run lint`/`npm test`/`npm run build` inside a disposable `node:22-bullseye` Docker container (matching host uid/gid to avoid root-owned files) instead, and revert any incidental `package-lock.json` diff the container's npm introduces (e.g. a `libc` field) before committing.
+**Signal:** "this machine's ambient Node.js (v16.17.0 at `~/.local/bin/node`, v12.22.9 at `/usr/bin/node`) is below `frontend/package.json`'s `engines` requirement (`^20.19.0 || >=22.12.0`) and cannot run the installed jsdom 30/undici 8 toolchain... Verification... was instead run inside a disposable `node:22-bullseye` Docker container... matching the host user's uid/gid to avoid root-owned files." *(source: ## Completed)*

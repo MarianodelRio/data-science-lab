@@ -3,7 +3,7 @@ id: T-039
 phase: 4
 agent: frontend-agent
 depends_on: [T-038]
-status: pr-open
+status: done
 folders: ["frontend/"]
 outputs: [PipelineView component consuming SSE]
 size: M

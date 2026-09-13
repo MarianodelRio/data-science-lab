@@ -56,3 +56,20 @@ class ResumeRequest(BaseModel):
 class ResumeResponse(BaseModel):
     run_id: str
     status: str
+
+
+class SubmitResponse(BaseModel):
+    """Response of `POST /api/runs/{id}/submit`. `public_score` is `None` when
+    Kaggle has accepted the submission but not yet scored it — the normal
+    state in the seconds-to-minutes window right after submitting (see
+    `routers/kaggle.py`), not an error."""
+
+    model_config = ConfigDict(ser_json_inf_nan="null")
+
+    public_score: float | None
+    submission_file: str
+    message: str | None
+
+
+class MlflowUrlResponse(BaseModel):
+    url: str

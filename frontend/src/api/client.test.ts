@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   connectChat,
   createRun,
+  getRun,
   listRuns,
   resumeRun,
   subscribeToRunEvents,
@@ -27,14 +28,15 @@ describe('REST methods', () => {
   it('listRuns issues a GET to /api/runs and returns the parsed JSON', async () => {
     const runs: Run[] = [
       {
-        id: 'run-1',
-        competitionName: 'titanic',
+        run_id: 'run-1',
+        competition_name: 'titanic',
+        workspace_path: '/workspaces/titanic',
         status: 'running',
-        currentPhase: 'phase2_research',
-        currentIteration: 1,
-        bestScore: null,
-        createdAt: '2026-08-04T00:00:00Z',
-        updatedAt: '2026-08-04T00:00:00Z',
+        phase: 'phase2_research',
+        current_iteration: 1,
+        best_score: null,
+        created_at: '2026-08-04T00:00:00Z',
+        updated_at: '2026-08-04T00:00:00Z',
       },
     ]
     const fetchImpl = vi.fn<FetchLike>().mockResolvedValue(jsonResponse(runs))
@@ -58,14 +60,15 @@ describe('REST methods', () => {
       datasetPath: '/data/titanic',
     }
     const created: Run = {
-      id: 'run-2',
-      competitionName: payload.competitionName,
+      run_id: 'run-2',
+      competition_name: payload.competitionName,
+      workspace_path: '/workspaces/titanic',
       status: 'pending',
-      currentPhase: null,
-      currentIteration: 0,
-      bestScore: null,
-      createdAt: '2026-08-04T00:00:00Z',
-      updatedAt: '2026-08-04T00:00:00Z',
+      phase: '',
+      current_iteration: 0,
+      best_score: null,
+      created_at: '2026-08-04T00:00:00Z',
+      updated_at: '2026-08-04T00:00:00Z',
     }
     const fetchImpl = vi
       .fn<FetchLike>()
@@ -96,6 +99,29 @@ describe('REST methods', () => {
       .mockResolvedValue(jsonResponse({ detail: 'nope' }, 500))
 
     await expect(listRuns(fetchImpl)).rejects.toThrow(/status 500/)
+  })
+
+  it('getRun issues a GET to /api/runs/{id} and returns the parsed JSON', async () => {
+    const run: Run = {
+      run_id: 'run-1',
+      competition_name: 'titanic',
+      workspace_path: '/workspaces/titanic',
+      status: 'running',
+      phase: 'phase2_research',
+      current_iteration: 1,
+      best_score: null,
+      created_at: '2026-08-04T00:00:00Z',
+      updated_at: '2026-08-04T00:00:00Z',
+    }
+    const fetchImpl = vi.fn<FetchLike>().mockResolvedValue(jsonResponse(run))
+
+    const result = await getRun('run-1', fetchImpl)
+
+    expect(result).toEqual(run)
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchImpl.mock.calls[0]
+    expect(url).toBe('/api/runs/run-1')
+    expect(init).toMatchObject({ method: 'GET' })
   })
 })
 
@@ -131,11 +157,13 @@ describe('subscribeToRunEvents (SSE)', () => {
 
     const event: PipelineEvent = {
       timestamp: '2026-08-04T00:00:00Z',
-      runId: 'run-1',
+      run_id: 'run-1',
       iteration: 1,
       phase: 'phase2_research',
       node: 'researcher',
       event: 'end',
+      duration_ms: null,
+      output_summary: null,
     }
     source.onmessage?.({ data: JSON.stringify(event) } as MessageEvent<string>)
 

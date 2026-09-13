@@ -60,6 +60,18 @@ export function createRun(
   )
 }
 
+/** GET /api/runs/{id} — fetch a single run's current status. */
+export function getRun(
+  runId: string,
+  fetchImpl: FetchLike = fetch,
+): Promise<Run> {
+  return request<Run>(
+    `/api/runs/${encodeURIComponent(runId)}`,
+    { method: 'GET' },
+    fetchImpl,
+  )
+}
+
 /** Handlers for a live SSE subscription created by subscribeToRunEvents. */
 export interface RunEventHandlers {
   onEvent: (event: PipelineEvent) => void

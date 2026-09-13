@@ -23,7 +23,7 @@ describe('Layout', () => {
   it('shows the Pipeline panel by default', () => {
     render(<Layout />)
     const panel = screen.getByRole('tabpanel')
-    expect(panel).toHaveTextContent(/pipeline view is not implemented yet/i)
+    expect(panel).toHaveTextContent(/no run selected/i)
   })
 
   it('switches the visible tabpanel when another tab is clicked', async () => {
@@ -69,9 +69,7 @@ describe('Layout', () => {
     await user.keyboard('{ArrowLeft}')
     expect(pipelineTab).toHaveFocus()
     expect(pipelineTab).toHaveAttribute('aria-selected', 'true')
-    expect(screen.getByRole('tabpanel')).toHaveTextContent(
-      /pipeline view is not implemented yet/i,
-    )
+    expect(screen.getByRole('tabpanel')).toHaveTextContent(/no run selected/i)
 
     // Wraps backward from the first tab to the last.
     await user.keyboard('{ArrowLeft}')
@@ -105,8 +103,6 @@ describe('Layout', () => {
     await user.keyboard('{Home}')
     expect(pipelineTab).toHaveFocus()
     expect(pipelineTab).toHaveAttribute('aria-selected', 'true')
-    expect(screen.getByRole('tabpanel')).toHaveTextContent(
-      /pipeline view is not implemented yet/i,
-    )
+    expect(screen.getByRole('tabpanel')).toHaveTextContent(/no run selected/i)
   })
 })

@@ -3,11 +3,11 @@ id: T-044
 phase: 5
 agent: infra-agent
 depends_on: [T-001]
-status: available
+status: in-progress
 folders: [".github/", "README.md"]
 outputs: [.github/workflows/ci.yml]
 size: S
-branch: ~
+branch: feature/T-044-ci-workflow
 pr: ~
 ---
 

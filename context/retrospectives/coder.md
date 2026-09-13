@@ -76,3 +76,13 @@
 **Folders:** frontend/, src/api/
 **Lesson:** If an Orchestrator prompt instruction conflicts with this project's own steering docs (`context-formats.md`, `coder-complete.md`), follow the steering docs and say so in `## Completed` rather than silently complying with the conflicting instruction.
 **Signal:** "the Orchestrator prompt's step asking for that conflicts with those two steering docs' explicit \"Coder does NOT write directly to `context/decisions/` during implementation\" rule, so this `## Completed` section is the sole decision record, as designed." *(source: ## Completed)*
+
+## L-016 | T-043 | 2026-09-13 | Weight: 1
+**Folders:** docker/, ., frontend/
+**Lesson:** In an nginx reverse proxy that targets another container by service name, use a `resolver` + variable `proxy_pass` instead of a static `proxy_pass` hostname, so nginx defers DNS resolution to request time rather than failing to start if the upstream container's name isn't yet resolvable when this container boots.
+**Signal:** "`frontend/nginx.conf` uses a `resolver 127.0.0.11` + variable `proxy_pass` (`set $upstream_api api:8000; proxy_pass http://$upstream_api$request_uri;`) instead of a static `proxy_pass`, so nginx defers hostname resolution to request time rather than failing to start if `frontend` boots before `api`'s DNS entry exists." *(source: ## Completed / Key decisions)*
+
+## L-017 | T-043 | 2026-09-13 | Weight: 1
+**Folders:** docker/, ., frontend/
+**Lesson:** For tasks that build large (multi-GB) Docker images, avoid redundant full rebuilds across parallel or resumed agent sessions/reviewers, prune build cache after builds, and prefer a config-only check (e.g. `docker compose config`) over a full rebuild to validate a small post-review fix — repeated heavy rebuilds can exhaust host disk and block all tool use.
+**Signal:** "the combined disk usage of this task's Docker builds across several parallel agent attempts (repeated ~8GB `dsl-api` image builds, build cache, and a killed smoke-tester's own build) filled the host's root filesystem to 0 bytes free, blocking all tool use (Bash/Write) for a period." *(source: ## Completed)*

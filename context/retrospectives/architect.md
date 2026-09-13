@@ -86,3 +86,8 @@
 **Folders:** src/api/
 **Lesson:** When ruling that a task must reimplement a thin subset of another agent's private logic instead of importing it (to respect a folder-ownership boundary), require an open discovery documenting the resulting duplication and a concrete trigger for promoting it to a shared module — don't let the boundary-respecting call silently create an unrecorded second implementation of the same shape.
 **Signal:** "The two implementations now duplicate this shape (not the code — the node's version also handles a previous-iteration fallback the API route deliberately does not use, see decision #4)." *(source: context/discoveries)*
+
+## L-018 | T-043 | 2026-09-13 | Weight: 3
+**Folders:** docker/, ., frontend/
+**Lesson:** When a task turns a design.md diagram/example into real running infrastructure (e.g. Docker Compose making a previously-conceptual service topology actually execute), re-check design.md's stated assumptions against the new runtime reality — a diagram can carry a latent scoping gap (e.g. multi-tenant/per-competition isolation) that only becomes a real bug once the thing it describes actually runs.
+**Signal:** "the resulting behavior contradicts the per-competition design intent now that it is a real running system instead of a diagram in a doc." *(source: context/discoveries)*

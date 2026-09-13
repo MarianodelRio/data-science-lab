@@ -41,3 +41,8 @@
 **Folders:** frontend/
 **Lesson:** When a plan calls for updating stale assertions in an existing shared test file as fallout of a change, grep/count the actual matching assertions rather than estimating — an undercount leaves a failing test in the same PR.
 **Signal:** "`Layout.test.tsx` had three stale assertions referencing the removed placeholder copy, not two as the plan described (see above) — updated all three." *(source: ## Completed)*
+
+## L-009 | T-043 | 2026-09-13 | Weight: 2
+**Folders:** docker/, ., frontend/
+**Lesson:** Do not lock a plan's exact command for probing a third-party Docker image's runtime behavior (e.g. a healthcheck) based on the vendor's own docs or web research alone — flag it as "verify empirically against the actual pinned image tag at implementation time" instead, since a vendor's example can be wrong about what binaries a specific tag actually ships.
+**Signal:** "chromadb/chroma:1.5.9 ships neither curl, wget, nor a python interpreter on $PATH (verified empirically via docker exec)." *(source: ## Completed / Deviations from plan)*

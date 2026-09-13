@@ -41,9 +41,7 @@ describe('Layout', () => {
     )
 
     await user.click(screen.getByRole('tab', { name: /chat/i }))
-    expect(screen.getByRole('tabpanel')).toHaveTextContent(
-      /chat is not implemented yet/i,
-    )
+    expect(screen.getByRole('tabpanel')).toHaveTextContent(/no run selected/i)
   })
 
   it('moves focus and selection with ArrowRight/ArrowLeft, wrapping at the ends', async () => {
@@ -75,9 +73,7 @@ describe('Layout', () => {
     await user.keyboard('{ArrowLeft}')
     expect(chatTab).toHaveFocus()
     expect(chatTab).toHaveAttribute('aria-selected', 'true')
-    expect(screen.getByRole('tabpanel')).toHaveTextContent(
-      /chat is not implemented yet/i,
-    )
+    expect(screen.getByRole('tabpanel')).toHaveTextContent(/no run selected/i)
 
     // Wraps forward from the last tab back to the first.
     await user.keyboard('{ArrowRight}')
@@ -96,9 +92,7 @@ describe('Layout', () => {
     await user.keyboard('{End}')
     expect(chatTab).toHaveFocus()
     expect(chatTab).toHaveAttribute('aria-selected', 'true')
-    expect(screen.getByRole('tabpanel')).toHaveTextContent(
-      /chat is not implemented yet/i,
-    )
+    expect(screen.getByRole('tabpanel')).toHaveTextContent(/no run selected/i)
 
     await user.keyboard('{Home}')
     expect(pipelineTab).toHaveFocus()

@@ -6,13 +6,17 @@
  * and "GET /api/runs/{id}/events" sections, and
  * context/discoveries/T-034.md / T-035.md for the reconciliation history.
  *
- * PROVISIONAL: the remaining types below (`ChatMessage`, `CreateRunPayload`,
+ * PROVISIONAL: the remaining types below (`CreateRunPayload`,
  * `ResumePayload`, `SubmitResponse`, `MlflowOpenResponse`, `Experiment`) are
  * still best-effort guesses based on design.md's endpoint contract, not yet
  * checked against a real backend response. `Experiment` is a stronger case
  * than the rest: no HTTP response has ever carried this shape — it mirrors
  * `LabState.experiments` (src/state.py) verbatim pending a real endpoint
  * (see context/discoveries/T-040.md).
+ *
+ * `ChatClientFrame`/`ChatServerFrame` are reconciled against the live
+ * backend (`docs/api.md` § WebSocket / `src/api/routers/chat.py`), not
+ * provisional.
  */
 
 /** High-level lifecycle status of a pipeline run. */
@@ -68,13 +72,18 @@ export interface Experiment {
   model: string
 }
 
-/** A single chat message exchanged over WS /api/runs/{id}/chat. */
-export interface ChatMessage {
-  id: string
-  role: 'user' | 'assistant'
-  content: string
-  timestamp: string
-}
+/** A single client -> server frame sent over WS /api/runs/{id}/chat. */
+export type ChatClientFrame =
+  | { type: 'question'; text: string }
+  | { type: 'approve'; feedback: string }
+  | { type: 'redirect'; feedback: string }
+
+/** A single server -> client frame received over WS /api/runs/{id}/chat. */
+export type ChatServerFrame =
+  | { type: 'checkpoint'; phase: string; summary: string }
+  | { type: 'answer'; text: string }
+  | { type: 'resumed'; run_id: string; status: string }
+  | { type: 'error'; detail: string }
 
 /** Payload for POST /api/runs/{id}/resume. */
 export interface ResumePayload {

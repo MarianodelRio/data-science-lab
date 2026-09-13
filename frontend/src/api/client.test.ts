@@ -8,7 +8,7 @@ import {
   subscribeToRunEvents,
   type FetchLike,
 } from './client'
-import type { ChatMessage, PipelineEvent, Run } from './types'
+import type { ChatClientFrame, ChatServerFrame, PipelineEvent, Run } from './types'
 
 /**
  * These tests exercise client.ts without a mocking framework — every method
@@ -225,6 +225,7 @@ describe('connectChat (WebSocket)', () => {
     url: string
     sent: string[] = []
     onmessage: ((event: MessageEvent<string>) => void) | null = null
+    onopen: (() => void) | null = null
     onerror: ((event: Event) => void) | null = null
     onclose: ((event: CloseEvent) => void) | null = null
     closed = false
@@ -243,21 +244,28 @@ describe('connectChat (WebSocket)', () => {
     }
   }
 
-  it('sends JSON-encoded content', () => {
+  it('sends a JSON-encoded client frame', () => {
     FakeWebSocket.instances = []
     const connection = connectChat(
       'run-1',
       FakeWebSocket as unknown as typeof WebSocket,
     )
 
-    connection.send('hello')
+    const frames: ChatClientFrame[] = [
+      { type: 'question', text: 'hello' },
+      { type: 'approve', feedback: 'looks good' },
+      { type: 'redirect', feedback: 'try again' },
+    ]
+    for (const frame of frames) {
+      connection.send(frame)
+    }
 
-    expect(FakeWebSocket.instances[0].sent).toEqual([
-      JSON.stringify({ content: 'hello' }),
-    ])
+    expect(FakeWebSocket.instances[0].sent).toEqual(
+      frames.map((frame) => JSON.stringify(frame)),
+    )
   })
 
-  it('parses incoming messages and forwards them to the registered listener', () => {
+  it('parses incoming server frames and forwards them to the registered listener', () => {
     FakeWebSocket.instances = []
     const connection = connectChat(
       'run-1',
@@ -266,17 +274,16 @@ describe('connectChat (WebSocket)', () => {
     const listener = vi.fn()
     connection.onMessage(listener)
 
-    const message: ChatMessage = {
-      id: 'msg-1',
-      role: 'assistant',
-      content: 'hi there',
-      timestamp: '2026-08-04T00:00:00Z',
+    const frame: ChatServerFrame = {
+      type: 'checkpoint',
+      phase: 'phase3_baseline',
+      summary: '',
     }
     FakeWebSocket.instances[0].onmessage?.({
-      data: JSON.stringify(message),
+      data: JSON.stringify(frame),
     } as MessageEvent<string>)
 
-    expect(listener).toHaveBeenCalledWith(message)
+    expect(listener).toHaveBeenCalledWith(frame)
   })
 
   it('routes a malformed message payload to onError instead of throwing', () => {
@@ -295,6 +302,20 @@ describe('connectChat (WebSocket)', () => {
       } as MessageEvent<string>),
     ).not.toThrow()
     expect(onError).toHaveBeenCalledTimes(1)
+  })
+
+  it('forwards socket open events to the registered onOpen listener', () => {
+    FakeWebSocket.instances = []
+    const connection = connectChat(
+      'run-1',
+      FakeWebSocket as unknown as typeof WebSocket,
+    )
+    const onOpen = vi.fn()
+    connection.onOpen(onOpen)
+
+    FakeWebSocket.instances[0].onopen?.()
+
+    expect(onOpen).toHaveBeenCalledTimes(1)
   })
 
   it('forwards socket errors to onError', () => {

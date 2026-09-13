@@ -41,4 +41,46 @@ See [`design.md`](design.md) for the full system architecture and
 
 ## Docker / CI
 
-Not yet available — deferred to tasks T-043 and T-044.
+### Prerequisites
+
+- Docker Engine
+- Docker Compose v2 (`docker compose version`)
+
+### Setup
+
+```bash
+cp .env.example .env   # fill in API keys and WORKSPACE_ROOT
+```
+
+Edit `.env` and fill in the API keys you have. **`WORKSPACE_ROOT` must be an absolute path.**
+Docker Compose variable substitution does **not** tilde-expand `~` — leaving the
+`.env.example` placeholder `WORKSPACE_ROOT=~/competitions` unedited bind-mounts a literal
+directory named `~` into the containers, not your home directory. Use something like
+`WORKSPACE_ROOT=/home/you/competitions` instead.
+
+### Run
+
+```bash
+docker compose up --build   # first run, or after changing Dockerfile.api / frontend/Dockerfile
+docker compose up           # subsequent runs
+docker compose down         # stop everything (add -v to also delete the chroma volume — this
+                             # discards all indexed RAG data, so use it deliberately)
+```
+
+### Services
+
+| Service | URL | Notes |
+|---|---|---|
+| frontend | http://localhost:5173 | The UI. Normally reach the API through this — it proxies `/api/*` same-origin to the `api` container (see `docs/adr/0003-frontend-nginx-same-origin-proxy.md`), so no CORS setup is needed |
+| api | http://localhost:8000 | FastAPI backend; reachable directly for debugging, but the frontend proxy is the intended path |
+| mlflow | http://localhost:5000 | Experiment tracking UI |
+| chroma | localhost:8001 | RAG vector store; internal-only in normal use, exposed for debugging |
+
+### Verify
+
+```bash
+curl http://localhost:8000/api/runs   # → [] on a clean install
+```
+
+Chroma's indexed data persists across `docker compose down` / `up` in the named
+`chroma_data` volume (only `down -v` removes it).

@@ -7,7 +7,7 @@ status: done
 folders: [".github/", "README.md"]
 outputs: [.github/workflows/ci.yml]
 size: S
-branch: feature/T-044-ci-workflow
+branch: ~
 pr: https://github.com/MarianodelRio/data-science-lab/pull/45
 ---
 

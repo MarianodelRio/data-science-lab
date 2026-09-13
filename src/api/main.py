@@ -118,6 +118,10 @@ def create_app(
     dependency. `app.state.active_runs` is a process-local cache of live
     background tasks (never the source of truth — the on-disk registry is)
     used only to reject a second concurrent run with 409.
+    `app.state.active_submissions` is the analogous per-`run_id` guard for
+    `POST /api/runs/{id}/submit` (`src/api/routers/kaggle.py`) — a distinct
+    concept (in-flight Kaggle submissions, not pipeline runs) tracked in its
+    own collection.
 
     `explainer_factory` and `rag_store_factory` are the same kind of
     injection seam for the chat WebSocket (`src/api/routers/chat.py`): tests
@@ -141,6 +145,11 @@ def create_app(
     app.state.mlflow_url = resolved_mlflow_url
     active_runs: dict[str, asyncio.Task] = {}
     app.state.active_runs = active_runs
+    # Per-run_id in-flight guard for `POST /api/runs/{id}/submit`, checked
+    # before any state-mutating work and cleared in a `finally` on every exit
+    # path — see `src/api/routers/kaggle.py`.
+    active_submissions: set[str] = set()
+    app.state.active_submissions = active_submissions
     # Built graphs (and, in the real factory, their underlying sqlite
     # checkpoint connection) are expensive and stateful — cache one per
     # `run_id` so it is built at most once per process lifetime rather than

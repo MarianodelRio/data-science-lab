@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 
 from src.api import registry
 from src.api.routers import kaggle as kaggle_router
+from src.workspace.workspace_manager import WorkspaceManager
 from tests.fixtures.fake_graph import FakeCompiledGraph
 
 _NO_BEST_EXPERIMENT_DETAIL = "run has no best experiment yet"
@@ -82,6 +83,22 @@ def test_submit_returns_409_for_malformed_experiment_pointer(
     # basename ".." makes `WorkspaceManager.experiment_dir` raise `ValueError`
     # (path traversal guard) rather than resolving to a real directory.
     fake_graph._values.update({"best_experiment_path": str(workspace_path / "experiments" / "..")})
+
+    response = client.post(f"/api/runs/{run_id}/submit")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == _NO_BEST_EXPERIMENT_DETAIL
+
+
+def test_submit_returns_409_when_experiment_name_is_empty(
+    client: TestClient, app, fake_graph: FakeCompiledGraph, tmp_path: Path
+) -> None:
+    # `Path("/").name == ""` — a `best_experiment_path` that resolves to just
+    # the filesystem root has no final component, so `experiment_name` would
+    # be empty. Must not build a malformed "experiments//submission.csv"
+    # message; treated the same as an unset `best_experiment_path`.
+    run_id, _ = _create_run(app, tmp_path)
+    fake_graph._values.update({"best_experiment_path": "/"})
 
     response = client.post(f"/api/runs/{run_id}/submit")
 
@@ -299,3 +316,140 @@ def test_submit_uses_asyncio_to_thread_and_does_not_block_event_loop(
     assert concurrent_duration < _SUBMIT_SLEEP_SECONDS / 2
     assert results["status_code"] == 200
     assert results["duration"] >= _SUBMIT_SLEEP_SECONDS
+
+
+def test_submit_returns_409_when_submission_already_in_progress(
+    client: TestClient,
+    app,
+    fake_graph: FakeCompiledGraph,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADV-7ba87f78: a second request for a `run_id` already mid-submission
+    must be rejected with 409 before it can fire a real Kaggle call, not just
+    eventually agree on the same result."""
+    run_id, workspace_path = _create_run(app, tmp_path)
+    _write_submission(workspace_path, "exp_1")
+    fake_graph._values.update(
+        {"best_experiment_path": str(workspace_path / "experiments" / "exp_1")}
+    )
+    submit_calls: list[str] = []
+    monkeypatch.setattr(
+        kaggle_router.kaggle_client,
+        "submit",
+        lambda competition, file_path, message: submit_calls.append(competition),
+    )
+    # Simulate a submission already in flight for this run_id (as if a first
+    # request registered it and is still awaiting Kaggle).
+    app.state.active_submissions.add(run_id)
+
+    response = client.post(f"/api/runs/{run_id}/submit")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "a submission for this run is already in progress"
+    assert submit_calls == []
+
+
+def test_submit_clears_in_flight_guard_on_success(
+    client: TestClient,
+    app,
+    fake_graph: FakeCompiledGraph,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The guard must be released on the success path so a later, unrelated
+    submit for the same run_id is never permanently locked out."""
+    run_id, workspace_path = _create_run(app, tmp_path)
+    _write_submission(workspace_path, "exp_1")
+    fake_graph._values.update(
+        {"best_experiment_path": str(workspace_path / "experiments" / "exp_1")}
+    )
+    monkeypatch.setattr(
+        kaggle_router.kaggle_client, "submit", lambda competition, file_path, message: None
+    )
+    monkeypatch.setattr(
+        kaggle_router.kaggle_client,
+        "get_score",
+        lambda competition: {"public_score": 0.5, "submitted_at": "2026-01-01T00:00:00+00:00"},
+    )
+
+    response = client.post(f"/api/runs/{run_id}/submit")
+
+    assert response.status_code == 200
+    assert run_id not in app.state.active_submissions
+
+
+def test_submit_clears_in_flight_guard_on_error_exit(
+    client: TestClient, app, tmp_path: Path
+) -> None:
+    """The guard must also clear on every failure exit (the `finally` in
+    `submit_run`), not only the success path — checked here via a 409 that
+    fires before any Kaggle call."""
+    run_id, _ = _create_run(app, tmp_path)
+
+    response = client.post(f"/api/runs/{run_id}/submit")
+
+    assert response.status_code == 409
+    assert run_id not in app.state.active_submissions
+
+
+def test_submit_resolves_submission_path_off_event_loop(
+    client: TestClient,
+    app,
+    fake_graph: FakeCompiledGraph,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADV-2e66cc85: extends
+    `test_submit_uses_asyncio_to_thread_and_does_not_block_event_loop` to
+    cover the `WorkspaceManager`/`experiment_dir`/`is_file` resolution step
+    specifically — a slow `WorkspaceManager` construction must not block the
+    event loop either, proving that step also runs via `asyncio.to_thread`."""
+    _RESOLVE_SLEEP_SECONDS = 0.3
+
+    run_id, workspace_path = _create_run(app, tmp_path)
+    _write_submission(workspace_path, "exp_1")
+    fake_graph._values.update(
+        {"best_experiment_path": str(workspace_path / "experiments" / "exp_1")}
+    )
+    monkeypatch.setattr(
+        kaggle_router.kaggle_client, "submit", lambda competition, file_path, message: None
+    )
+    monkeypatch.setattr(
+        kaggle_router.kaggle_client,
+        "get_score",
+        lambda competition: {"public_score": 0.5, "submitted_at": "2026-01-01T00:00:00+00:00"},
+    )
+
+    class _SlowWorkspaceManager(WorkspaceManager):
+        def __init__(self, workspace_path: str) -> None:
+            time.sleep(_RESOLVE_SLEEP_SECONDS)
+            super().__init__(workspace_path)
+
+    monkeypatch.setattr(kaggle_router, "WorkspaceManager", _SlowWorkspaceManager)
+
+    results: dict[str, object] = {}
+
+    def do_submit() -> None:
+        start = time.monotonic()
+        response = client.post(f"/api/runs/{run_id}/submit")
+        results["status_code"] = response.status_code
+        results["duration"] = time.monotonic() - start
+
+    submit_thread = threading.Thread(target=do_submit)
+    submit_thread.start()
+    time.sleep(0.05)  # let the submit request enter the slow constructor
+
+    concurrent_start = time.monotonic()
+    concurrent_response = client.get("/api/runs")
+    concurrent_duration = time.monotonic() - concurrent_start
+
+    submit_thread.join(timeout=2.0)
+
+    assert concurrent_response.status_code == 200
+    # Proves the event loop stayed free while `WorkspaceManager.__init__` was
+    # sleeping in its worker thread: a concurrent request completes well
+    # under the sleep.
+    assert concurrent_duration < _RESOLVE_SLEEP_SECONDS / 2
+    assert results["status_code"] == 200
+    assert results["duration"] >= _RESOLVE_SLEEP_SECONDS

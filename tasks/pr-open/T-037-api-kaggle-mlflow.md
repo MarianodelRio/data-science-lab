@@ -110,3 +110,84 @@ pr: https://github.com/MarianodelRio/data-science-lab/pull/41
 - `ruff check . && ruff format --check .` — all checks passed, 162 files already
   formatted.
 - `mypy src/` — Success: no issues found in 89 source files.
+
+## Completed — 2026-09-13 review-fix pass
+
+Fixed the 2 BLOCKER + 3 WARNING/NITPICK/INFO findings from T-037's adversarial/
+code-quality/security review pass (`ADV-7ba87f78`, `ADV-2e66cc85`, `CQ-dd870741`,
+`CQ-4c535a46`, `CQ-7a60b5fe`, `SEC-336b6da1`). `CQ-5318acd4` and `SEC-8a1ce12f` were
+left as-is per the review's own guidance (no change needed).
+
+- **`[ADV-7ba87f78]`** — added a per-`run_id` in-flight guard for
+  `POST /api/runs/{id}/submit`. `app.state.active_submissions: set[str]` is
+  initialized in `create_app` (`src/api/main.py`), alongside `active_runs` but kept
+  as its own collection (a distinct concept — in-flight submissions, not pipeline
+  runs). `submit_run` (`src/api/routers/kaggle.py`) now checks-and-409s
+  (`"a submission for this run is already in progress"`) before its first `await`,
+  adds `run_id` to the set with zero `await` in between (same zero-`await` discipline
+  `resume_run` established for `active_runs`, per retrospective L-010), and the rest
+  of the original handler body was extracted into `_do_submit`/`_submit_and_score` so
+  it could be wrapped in a `try/finally` that clears the guard on every exit path
+  (success, every `HTTPException`, any unexpected exception).
+- **`[ADV-2e66cc85]`** — `WorkspaceManager(...)` construction, `.experiment_dir(...)`
+  resolution and `submission_path.is_file()` are now bundled into one
+  `_resolve_submission_path` helper run via a single `asyncio.to_thread(...)` call,
+  matching the handler's existing threading pattern. Read `workspace_manager.py`
+  before deciding the boundary: `WorkspaceManager.__init__` does blocking
+  `mkdir(parents=True, exist_ok=True)` (real I/O); `.experiment_dir()` itself is pure
+  path computation (`_resolve` does no I/O, no `mkdir`) but is bundled in anyway since
+  it must run after the constructor and before `.is_file()` in the same thread-hop;
+  `.is_file()` is blocking disk I/O. Design call on the mkdir side effect: kept as-is
+  rather than avoiding it, because (a) every other `WorkspaceManager` call site in the
+  codebase (all pipeline nodes) accepts the same constructor-creates-root behavior,
+  (b) `WorkspaceManager`'s public API is a protected contract this task must not
+  change without explicit human approval, and (c) in practice `record.workspace_path`
+  already exists by the time a run can reach `submit` (it was created at
+  `create_run`/`resume_run` time), so the `mkdir(exist_ok=True)` is a no-op in the
+  common case — the endpoint's read-only *intent* is preserved in effect even though
+  the call itself is not side-effect-free in principle.
+- **`[CQ-dd870741]` + `[CQ-4c535a46]`** — added `logger = logging.getLogger(__name__)`
+  at module scope (one addition serves both findings). The `OSError`/`ValueError`
+  path now `logger.warning`s the original exception (with `run_id`/`experiment_name`)
+  before the generic 409; the 503 (missing Kaggle credentials) and both 502 paths
+  (submission failure, leaderboard read failure) now log with `run_id` +
+  `competition_name` context (`logger.warning` for the expected-configuration-error
+  503, `logger.exception` for the two unexpected-failure 502s, to capture a trace).
+- **`[CQ-7a60b5fe]`** — added an explicit empty-`experiment_name` guard (same 409 as
+  an unset `best_experiment_path`) right after computing
+  `Path(best_experiment_path).name`, before building `relative_submission` — prevents
+  a malformed `experiments//submission.csv` message.
+- **`[SEC-336b6da1]`** — folded into `_resolve_submission_path` (see ADV-2e66cc85
+  above): `.is_file()` now runs inside the same function whose `OSError`/`ValueError`
+  the caller already catches and maps to the generic 409, so a `ValueError` from
+  `Path.is_file()` (e.g. an embedded NUL byte) is no longer uncaught.
+
+Tests added to `tests/unit/api/test_kaggle.py` (all pass):
+- `test_submit_returns_409_when_submission_already_in_progress` — pre-populates
+  `app.state.active_submissions` to simulate an in-flight request and asserts a 409
+  with zero calls to the (monkeypatched) `kaggle_client.submit`.
+- `test_submit_clears_in_flight_guard_on_success` /
+  `test_submit_clears_in_flight_guard_on_error_exit` — confirm the guard is released
+  on both the success path and an early-409 failure path.
+- `test_submit_resolves_submission_path_off_event_loop` — extends the existing
+  `test_submit_uses_asyncio_to_thread_and_does_not_block_event_loop` pattern with a
+  `_SlowWorkspaceManager` subclass (sleeps in `__init__`) monkeypatched in for
+  `kaggle_router.WorkspaceManager`, proving a concurrent `GET /api/runs` completes
+  well under the sleep while the submit request is resolving the submission path.
+- `test_submit_returns_409_when_experiment_name_is_empty` — covers `CQ-7a60b5fe`
+  (`best_experiment_path="/"` → `Path("/").name == ""`).
+- Left `test_submit_uses_asyncio_to_thread_and_does_not_block_event_loop`
+  (`CQ-5318acd4`) unmodified: it exercises a concurrent `GET /api/runs`, not a second
+  `submit` for the same `run_id`, so the new `active_submissions` guard does not
+  interact with it — confirmed by running it after the change; still passes with the
+  same margin.
+
+No new external dependencies. No changes outside `src/api/`; nothing new found for
+`context/discoveries/T-037.md`.
+
+**Verification (from the worktree root):**
+- `pytest --cov=src --cov-fail-under=70 -x` — 2242 passed, 97.24% total coverage
+  (threshold 70%); `src/api/routers/kaggle.py` at 100% line coverage.
+- `ruff check . && ruff format --check .` — all checks passed, 165 files formatted
+  (kaggle.py reformatted once by `ruff format` after the edits, then verified clean).
+- `mypy src/` — Success: no issues found in 90 source files.

@@ -7,7 +7,7 @@ status: done
 folders: ["frontend/"]
 outputs: [ExperimentsTable component]
 size: S
-branch: feature/T-040-frontend-experiments-table
+branch: ~
 pr: https://github.com/MarianodelRio/data-science-lab/pull/44
 ---
 

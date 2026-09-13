@@ -116,3 +116,13 @@
 **Folders:** .github/, README.md
 **Lesson:** CLAUDE.md's protected-contracts clause governs *changes* to an already-established contract, not the designated task that brings it into existence for the first time (e.g. a `batteries: true`-driven scaffold task) — reading it as requiring separate approval for the creation itself would make every battery task unexecutable; the standard Phase 1 checkpoint is the approval.
 **Signal:** "that reading makes every battery task unexecutable." *(source: context/decisions)*
+
+## L-024 | T-041 | 2026-09-13 | Weight: 3
+**Folders:** frontend/
+**Lesson:** Before approving a task's scope on the strength of spec.md's "out of scope / not yet built" claim for a dependency module, verify that claim against `tasks/done/` and the actual repo state — spec.md can silently lag behind merged work until a `/refine` pass catches up, and an unrevisited stale section can misdirect a task into repeating an already-obsolete pattern (e.g. building a presentational-only component because a dependency API "doesn't exist" when it has, in fact, already shipped).
+**Signal:** "`spec.md`'s \"API backend (`src/api/`)\" section states `src/api/` \"contains only an empty `__init__.py`\" and lists T-034–T-037 as not yet built; in reality all four are merged and `src/api/routers/{chat,runs,events,kaggle,mlflow}.py` exist." *(source: context/decisions)*
+
+## L-025 | T-041 | 2026-09-13 | Weight: 2
+**Folders:** frontend/
+**Lesson:** When a task resembles a recently-approved sibling task's precedent (e.g. "ship presentational-only, no backend endpoint exists"), re-verify the precedent's underlying condition against current repo state for *this* task rather than assuming the ruling carries over automatically — the condition that justified it for the sibling may no longer hold, or may never have applied here.
+**Signal:** "T-040's \"no endpoint exists, so ship presentational\" rationale does not transfer." *(source: context/decisions)*

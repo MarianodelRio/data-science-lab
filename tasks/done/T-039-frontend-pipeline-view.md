@@ -7,7 +7,7 @@ status: done
 folders: ["frontend/"]
 outputs: [PipelineView component consuming SSE]
 size: M
-branch: feature/T-039-frontend-pipeline-view
+branch: ~
 pr: https://github.com/MarianodelRio/data-science-lab/pull/42
 ---
 

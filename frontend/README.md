@@ -140,3 +140,50 @@ clears it when `runId` itself changes (switching to a different run), not
 on a same-run reconnect. Repeated `checkpoint` frames for the same
 `{phase, summary}` (re-announced on reconnect while still interrupted) are
 deduplicated rather than appended twice.
+
+## FileViewer: markdown & JSON rendering
+
+`FileViewer` (`src/components/FileViewer.tsx`) is purely presentational — no
+fetch, no `client.ts` call, no SSE/WebSocket subscription. No backend endpoint
+serves workspace file content today (e.g. `eda_report.md`, `final_report.md`,
+`feature_importance.json`), so the caller is responsible for sourcing
+`content` and passing it in as a prop.
+
+Which renderer runs is chosen via the required `format` prop (`'markdown'` or
+`'json'`) — never auto-detected from `content`'s shape:
+
+- `format="markdown"` renders `content` through `react-markdown` with its
+  default configuration only. No raw-HTML support is enabled (no
+  `rehype-raw`, no `dangerouslySetInnerHTML` anywhere in this component) —
+  a `<script>` tag in the source renders as inert, escaped text.
+- `format="json"` renders `content` through a small internal recursive
+  component (`dl`/`ul` over `unknown`) — no new dependency.
+- Both formats show an explicit "No content available." state when `content`
+  is absent, `null`, or (for markdown) blank — mirroring `PipelineView`'s
+  "No run selected." empty-state convention.
+
+## ActionBar: Kaggle submission & MLflow launch
+
+`ActionBar` (`src/components/ActionBar.tsx`) is fully wired against
+`client.ts`: `submitRun` (`POST /api/runs/{id}/submit`) for the "Submit to
+Kaggle" button, `openMlflow` (`GET /api/mlflow/url`) for "Open MLflow". Both
+calls take an optional injected `fetchImpl` prop, the same pattern
+`client.test.ts` and `Chat.test.tsx` use to test without a mocking framework
+or real network calls.
+
+The MLflow URL is fetched exactly once, in a mount effect — never inside the
+click handler — so the click handler's first statement can be a synchronous
+`window.open(url, '_blank', 'noopener,noreferrer')` with nothing awaited
+before it. Browsers attribute a popup to the user gesture that triggered it
+only when `window.open` runs synchronously within that gesture's event
+handler; fetching first and opening after an `await` would risk the popup
+blocker.
+
+`public_score` on a successful submission is checked with a strict `=== null`
+(never `??` or a truthy check): `null` means Kaggle accepted the submission
+but hasn't scored it yet, and renders a distinct "Accepted — not yet scored"
+state showing the response's `message` — a real score of `0` renders as `0`
+and must never be coerced into that branch. Submit errors (404 unknown run,
+409 no best experiment / submission already in progress, 503 Kaggle
+credentials not configured, 502 Kaggle submission or scoring failure) surface
+the backend's `detail` field from `client.ts`'s `ApiError`.

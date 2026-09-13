@@ -23,6 +23,39 @@ export const API_BASE: string = import.meta.env.VITE_API_BASE ?? ''
 
 export type FetchLike = typeof fetch
 
+/**
+ * Thrown by `request<T>()` on a non-ok response. Stays a real `Error` — with
+ * the same `.message` format existing call sites already assert on — with
+ * `status`/`detail` attached as additive properties rather than replacing
+ * the thrown value's type.
+ */
+export type ApiError = Error & { status: number; detail?: string }
+
+/**
+ * Best-effort extraction of FastAPI's `{"detail": "..."}` error body shape
+ * (the default for a raised `HTTPException(status_code=..., detail=...)`,
+ * confirmed against every `src/api/routers/*.py` call site as of T-042).
+ * Returns `undefined` — rather than throwing a second, more confusing error
+ * — when the body is empty, not JSON, or JSON without a string `detail`.
+ */
+async function extractErrorDetail(
+  response: Response,
+): Promise<string | undefined> {
+  try {
+    const body: unknown = await response.json()
+    if (
+      body &&
+      typeof body === 'object' &&
+      typeof (body as { detail?: unknown }).detail === 'string'
+    ) {
+      return (body as { detail: string }).detail
+    }
+    return undefined
+  } catch {
+    return undefined
+  }
+}
+
 async function request<T>(
   path: string,
   init: RequestInit = {},
@@ -34,7 +67,13 @@ async function request<T>(
   })
 
   if (!response.ok) {
-    throw new Error(`Request to ${path} failed with status ${response.status}`)
+    const detail = await extractErrorDetail(response)
+    const error = new Error(
+      `Request to ${path} failed with status ${response.status}`,
+    ) as ApiError
+    error.status = response.status
+    error.detail = detail
+    throw error
   }
 
   if (response.status === 204) {
@@ -191,13 +230,13 @@ export function submitRun(
   )
 }
 
-/** POST /api/mlflow/open — launch `mlflow ui` subprocess, return its URL. */
+/** GET /api/mlflow/url — resolved MLflow UI URL (fixed at app construction). */
 export function openMlflow(
   fetchImpl: FetchLike = fetch,
 ): Promise<MlflowOpenResponse> {
   return request<MlflowOpenResponse>(
-    '/api/mlflow/open',
-    { method: 'POST' },
+    '/api/mlflow/url',
+    { method: 'GET' },
     fetchImpl,
   )
 }

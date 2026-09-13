@@ -7,9 +7,12 @@
  * context/discoveries/T-034.md / T-035.md for the reconciliation history.
  *
  * PROVISIONAL: the remaining types below (`ChatMessage`, `CreateRunPayload`,
- * `ResumePayload`, `SubmitResponse`, `MlflowOpenResponse`) are still
- * best-effort guesses based on design.md's endpoint contract, not yet
- * checked against a real backend response.
+ * `ResumePayload`, `SubmitResponse`, `MlflowOpenResponse`, `Experiment`) are
+ * still best-effort guesses based on design.md's endpoint contract, not yet
+ * checked against a real backend response. `Experiment` is a stronger case
+ * than the rest: no HTTP response has ever carried this shape — it mirrors
+ * `LabState.experiments` (src/state.py) verbatim pending a real endpoint
+ * (see context/discoveries/T-040.md).
  */
 
 /** High-level lifecycle status of a pipeline run. */
@@ -49,6 +52,20 @@ export interface PipelineEvent {
   duration_ms: number | null
   /** `null` on `start`, populated on the matching `end`. */
   output_summary: string | null
+}
+
+/**
+ * A single completed experiment, as recorded server-side in
+ * `LabState.experiments` (src/state.py) — mirrored verbatim, snake_case.
+ * PROVISIONAL: no HTTP endpoint currently returns this shape (see
+ * context/discoveries/T-040.md).
+ */
+export interface Experiment {
+  id: string
+  path: string
+  cv_score: number
+  iteration: number
+  model: string
 }
 
 /** A single chat message exchanged over WS /api/runs/{id}/chat. */

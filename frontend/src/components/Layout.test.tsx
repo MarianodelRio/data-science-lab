@@ -32,7 +32,7 @@ describe('Layout', () => {
 
     await user.click(screen.getByRole('tab', { name: /experiments/i }))
     expect(screen.getByRole('tabpanel')).toHaveTextContent(
-      /experiments table is not implemented yet/i,
+      /no experiments yet/i,
     )
 
     await user.click(screen.getByRole('tab', { name: /files/i }))
@@ -63,7 +63,7 @@ describe('Layout', () => {
     expect(pipelineTab).toHaveAttribute('aria-selected', 'false')
     expect(pipelineTab).toHaveAttribute('tabindex', '-1')
     expect(screen.getByRole('tabpanel')).toHaveTextContent(
-      /experiments table is not implemented yet/i,
+      /no experiments yet/i,
     )
 
     await user.keyboard('{ArrowLeft}')

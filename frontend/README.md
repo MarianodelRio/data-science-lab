@@ -57,3 +57,23 @@ A malformed SSE message (a JSON parse failure) is reported through the same `onE
 as a real connection drop, but as a JS `Error` instead of a DOM `Event` — `PipelineView` only
 runs the `getRun` disambiguation above for a genuine `Event`; an `Error` is ignored, since the
 stream itself is still alive.
+
+## Experiments table: presentational, fixture-driven (unwired)
+
+`ExperimentsTable` (`src/components/ExperimentsTable.tsx`) takes two optional props —
+`experiments?: Experiment[]` and `baselineScore?: number | null` — and has no fetch, API
+client function, or SSE/WebSocket subscription of its own. There is currently no backend
+endpoint that returns an experiments list or a baseline score (`GET /api/runs/{id}` only
+returns a scalar `best_score`), so `Layout.tsx` renders `<ExperimentsTable />` with no
+props and the component always shows its "No experiments yet." empty state in the running
+app today.
+
+The component itself is fully built and tested against fixture data
+(`ExperimentsTable.test.tsx`): it renders one row per experiment plus a pinned baseline
+row, marks the highest-`cv_score` experiment (ties broken by lowest `iteration`) as best,
+computes `delta = cv_score - baselineScore` with an explicit sign, renders `—` for the
+delta and a "No baseline yet" baseline row when `baselineScore` is `null`/`undefined`, and
+supports sorting by score and by iteration.
+
+See `context/discoveries/T-040.md` for the proposed `GET /api/runs/{run_id}/experiments`
+endpoint that would wire this component up for real.

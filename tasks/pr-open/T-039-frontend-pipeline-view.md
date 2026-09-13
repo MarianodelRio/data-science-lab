@@ -3,12 +3,12 @@ id: T-039
 phase: 4
 agent: frontend-agent
 depends_on: [T-038]
-status: in-progress
+status: pr-open
 folders: ["frontend/"]
 outputs: [PipelineView component consuming SSE]
 size: M
 branch: feature/T-039-frontend-pipeline-view
-pr: ~
+pr: https://github.com/MarianodelRio/data-science-lab/pull/42
 ---
 
 ## PipelineView component (frontend/)

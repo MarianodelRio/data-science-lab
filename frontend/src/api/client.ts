@@ -10,7 +10,8 @@
  * passing a stub function, without pulling in a mocking framework.
  */
 import type {
-  ChatMessage,
+  ChatClientFrame,
+  ChatServerFrame,
   CreateRunPayload,
   MlflowOpenResponse,
   PipelineEvent,
@@ -109,11 +110,11 @@ export function subscribeToRunEvents(
 
 /** A live WS connection returned by connectChat. */
 export interface ChatConnection {
-  send: (content: string) => void
-  onMessage: (listener: (message: ChatMessage) => void) => void
-  /** Fired when the socket errors, including malformed message payloads. */
+  send: (frame: ChatClientFrame) => void
+  onMessage: (listener: (frame: ChatServerFrame) => void) => void
+  /** Fired once the underlying socket's handshake completes (native `onopen`). */
+  onOpen: (listener: () => void) => void
   onError: (listener: (error: Event | Error) => void) => void
-  /** Fired when the socket closes, for any reason (including a clean close). */
   onClose: (listener: (event: CloseEvent) => void) => void
   close: () => void
 }
@@ -122,6 +123,9 @@ export interface ChatConnection {
  * WS /api/runs/{id}/chat — bidirectional chat with the explainer agent.
  * No reconnect logic here by design — that is a future task's job; onClose
  * only surfaces the event so a future caller can decide what to do.
+ * `onOpen` surfaces the native handshake completion so callers can gate
+ * `send` on the socket actually being open (`WebSocket.send()` throws
+ * `InvalidStateError` before `readyState === OPEN`).
  */
 export function connectChat(
   runId: string,
@@ -139,15 +143,18 @@ export function connectChat(
   }
 
   return {
-    send: (content: string) => socket.send(JSON.stringify({ content })),
-    onMessage: (listener: (message: ChatMessage) => void) => {
+    send: (frame: ChatClientFrame) => socket.send(JSON.stringify(frame)),
+    onMessage: (listener: (frame: ChatServerFrame) => void) => {
       socket.onmessage = (message: MessageEvent<string>) => {
         try {
-          listener(JSON.parse(message.data) as ChatMessage)
+          listener(JSON.parse(message.data) as ChatServerFrame)
         } catch (error) {
           errorListener?.(error as Error)
         }
       }
+    },
+    onOpen: (listener: () => void) => {
+      socket.onopen = () => listener()
     },
     onError: (listener: (error: Event | Error) => void) => {
       errorListener = listener

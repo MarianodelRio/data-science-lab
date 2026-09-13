@@ -77,3 +77,66 @@ supports sorting by score and by iteration.
 
 See `context/discoveries/T-040.md` for the proposed `GET /api/runs/{run_id}/experiments`
 endpoint that would wire this component up for real.
+
+## Chat: WebSocket protocol, reconnect, and history ownership
+
+`Chat` (`src/components/Chat.tsx`) opens a bidirectional connection to
+`WS /api/runs/{id}/chat` via `connectChat` (`src/api/client.ts`) whenever it
+receives a `runId` prop; with no `runId` it renders a "No run selected."
+empty state and never opens a socket (mirrors `PipelineView`'s pattern —
+see `Layout.tsx`, which still renders `<Chat />` propless for now).
+
+### Frame protocol
+
+Client → server (`ChatClientFrame`, `src/api/types.ts`):
+- `{"type": "question", "text": "..."}` — ask the explainer a question.
+  Blank/whitespace-only input is rejected client-side (send is disabled)
+  before it would be rejected server-side.
+- `{"type": "approve", "feedback": "..."}` / `{"type": "redirect", "feedback": "..."}`
+  — resolve the current checkpoint. Both call the same underlying server
+  operation (`POST /api/runs/{id}/resume` equivalent) — `redirect` only
+  differs in the `feedback` text, neither re-runs the completed phase.
+  Chat never calls the REST `resumeRun` directly — calling both would risk
+  a double resume.
+
+Server → client (`ChatServerFrame`):
+- `{"type": "checkpoint", "phase": "...", "summary": "..."}` — sent once,
+  automatically, right after connecting, only if the run is currently
+  interrupted; re-sent on every reconnect while still interrupted.
+  `phase`/`summary` can legitimately be `""` — that is not a "no
+  checkpoint" sentinel, so the approve/redirect controls are gated on
+  *receiving this frame at all*, never on its fields being non-empty.
+- `{"type": "answer", "text": "..."}` — the explainer's full answer,
+  delivered as one complete frame. The backend does not token-stream (the
+  explainer call runs via `asyncio.to_thread`); there is nothing to render
+  incrementally.
+- `{"type": "resumed", "run_id": "...", "status": "running"}` — confirms a
+  pending approve/redirect was accepted; clears the pending state on those
+  buttons and dismisses the checkpoint controls until the next
+  `checkpoint` frame.
+- `{"type": "error", "detail": "..."}` — malformed frame, unknown type, or
+  a rejected approve/redirect. The socket stays open after this **except**
+  for an unknown `run_id`, which triggers exactly one `error` frame and
+  then a server-side close.
+
+### Reconnect behavior
+
+`connectChat` performs no reconnect logic itself. `Chat` reconnects by
+calling `connectChat` again on an unintentional socket close, with a fixed
+backoff schedule (1s, 2s, 4s, 8s, 10s) capped at 5 attempts — a 6th failed
+connection (e.g. against an unknown `run_id`, which the server closes
+after one `error` frame) stops retrying and shows a terminal
+"Unable to reconnect" state rather than hammering a dead endpoint forever.
+A deliberate close (switching `runId`, or unmounting) does not trigger a
+reconnect.
+
+### History ownership
+
+Conversation history lives only in the WS connection's server-side memory
+for that connection's lifetime — it is never persisted to `LabState` or
+the workspace. The frontend is the sole owner of chat history across
+reconnects: `Chat` keeps its message list in component state and only
+clears it when `runId` itself changes (switching to a different run), not
+on a same-run reconnect. Repeated `checkpoint` frames for the same
+`{phase, summary}` (re-announced on reconnect while still interrupted) are
+deduplicated rather than appended twice.

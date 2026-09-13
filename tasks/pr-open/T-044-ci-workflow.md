@@ -3,12 +3,12 @@ id: T-044
 phase: 5
 agent: infra-agent
 depends_on: [T-001]
-status: in-progress
+status: pr-open
 folders: [".github/", "README.md"]
 outputs: [.github/workflows/ci.yml]
 size: S
 branch: feature/T-044-ci-workflow
-pr: ~
+pr: https://github.com/MarianodelRio/data-science-lab/pull/45
 ---
 
 ## CI workflow (.github/workflows/ci.yml)

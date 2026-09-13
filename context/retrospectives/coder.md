@@ -56,3 +56,8 @@
 **Folders:** src/api/
 **Lesson:** Before writing a streaming-endpoint test against Starlette's `TestClient`, verify the installed version actually supports incremental/partial reads — it may buffer the whole ASGI call before returning, in which case drive the async generator directly (with a minimal fake `Request`) instead of hanging the test suite discovering it live.
 **Signal:** "There is no true incremental/partial read available through it, even via `client.stream(...)`." *(source: context/decisions)*
+
+## L-012 | T-036 | 2026-09-13 | Weight: 1
+**Folders:** src/api/
+**Lesson:** When testing an endpoint whose actual state-mutating work runs inside a background `asyncio.create_task` scheduled before the response is sent, never assert on that work's side effects immediately after receiving the response — poll for it (e.g. a `_wait_until` helper) instead, since the response is sent once the task is registered, not once it completes.
+**Signal:** "test_approve_triggers_resume and test_redirect_forwards_feedback_text asserted on fake_graph.update_state_calls[-1] immediately after receiving the "resumed" frame, but graph.update_state(...) runs inside a background asyncio.create_task-scheduled coroutine that is not guaranteed to have completed by then." *(source: ## Completed)*

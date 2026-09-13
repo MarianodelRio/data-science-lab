@@ -71,3 +71,13 @@
 **Folders:** src/api/
 **Lesson:** When a component's data source runs via `asyncio.to_thread` (a pipeline invocation driven off the event loop), any new consumer that needs to push that data back onto an event-loop-owned structure (`asyncio.Queue`, a WebSocket send, etc.) must be required to use `loop.call_soon_threadsafe` for every write — a bare same-object call from the worker thread is unsafe and fails silently, so a same-thread-only unit test will not catch the regression. This ruling should be inherited by T-036 (WebSocket chat) and any later live-data endpoint rather than rediscovered.
 **Signal:** "a bare `put_nowait` from a non-owning thread is unsafe on `asyncio.Queue` and fails silently, undetected by a same-thread unit test" *(source: context/decisions)*
+
+## L-015 | T-036 | 2026-09-13 | Weight: 2
+**Folders:** src/api/
+**Lesson:** When one binding condition requires every blocking read to go through `asyncio.to_thread` and a separate TOCTOU guard requires zero `await` between a check and the action it gates, resolve the tension by moving the blocking reads to run entirely *before* the check-then-act span — never by skipping the offload or by accepting the reopened race.
+**Signal:** "record read → graph build → guard checks → task registration, all via asyncio.to_thread where blocking — satisfies condition #3 without introducing an await between the interrupted-status check and active_runs[run_id] = task" *(source: context/decisions)*
+
+## L-016 | T-036 | 2026-09-13 | Weight: 3
+**Folders:** src/api/
+**Lesson:** A handler that captures a status/state snapshot before running slow sequential async setup work, then gates a client-visible decision on that snapshot at the end, has a real staleness race — re-check the status fresh immediately before acting on it, not from the pre-setup snapshot. This generalizes to any future live-data endpoint with an async session-build step between connect and first decision.
+**Signal:** "the automatic checkpoint frame was gated on record.status captured before _build_explainer_session ran. That helper does several sequential asyncio.to_thread calls (graph lookup — a cache-miss sqlite3.connect(), WorkspaceManager construction, RAG store factory — can build a real Chroma client) that take real, unbounded wall-clock time, so record.status could be stale by the time the checkpoint-frame decision ran" *(source: ## Completed)*

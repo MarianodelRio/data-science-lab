@@ -1,12 +1,15 @@
 /**
  * Client-side API types.
  *
- * PROVISIONAL: design.md documents the endpoint contract (method, path,
- * protocol, purpose) but not the JSON response schemas — the backend
- * (`src/api/`, owned by api-agent) has not been implemented yet. These
- * shapes are best-effort guesses based on the pipeline's phase/state model
- * described in design.md. They must be reconciled against the real backend
- * responses once the FastAPI routes land (see context/discoveries.md).
+ * `Run` and `PipelineEvent` are reconciled against the real backend
+ * (`src/api/`, owned by api-agent) — see docs/api.md's "RunSummary shape"
+ * and "GET /api/runs/{id}/events" sections, and
+ * context/discoveries/T-034.md / T-035.md for the reconciliation history.
+ *
+ * PROVISIONAL: the remaining types below (`ChatMessage`, `CreateRunPayload`,
+ * `ResumePayload`, `SubmitResponse`, `MlflowOpenResponse`) are still
+ * best-effort guesses based on design.md's endpoint contract, not yet
+ * checked against a real backend response.
  */
 
 /** High-level lifecycle status of a pipeline run. */
@@ -15,14 +18,16 @@ export type RunStatus =
 
 /** Summary of a single pipeline run, as returned by GET/POST /api/runs. */
 export interface Run {
-  id: string
-  competitionName: string
+  run_id: string
+  competition_name: string
+  workspace_path: string
   status: RunStatus
-  currentPhase: string | null
-  currentIteration: number
-  bestScore: number | null
-  createdAt: string
-  updatedAt: string
+  /** Always a string — `""` before any phase has run, never `null`. */
+  phase: string
+  current_iteration: number
+  best_score: number | null
+  created_at: string
+  updated_at: string
 }
 
 /** Payload for POST /api/runs. */
@@ -35,16 +40,15 @@ export interface CreateRunPayload {
 /** A single event streamed over GET /api/runs/{id}/events (SSE). */
 export interface PipelineEvent {
   timestamp: string
-  runId: string
-  iteration: number
-  phase: string
+  run_id: string
+  iteration: number | null
+  phase: string | null
   node: string
-  event: 'start' | 'end' | 'error'
-  durationMs?: number
-  tokensIn?: number
-  tokensOut?: number
-  model?: string
-  outputSummary?: string
+  event: 'start' | 'end'
+  /** `null` on `start`, populated on the matching `end`. */
+  duration_ms: number | null
+  /** `null` on `start`, populated on the matching `end`. */
+  output_summary: string | null
 }
 
 /** A single chat message exchanged over WS /api/runs/{id}/chat. */

@@ -39,8 +39,14 @@ function computeDelta(cvScore: number, baselineScore: number | null | undefined)
 
 function formatDelta(delta: number | null): string {
   if (delta === null) return '—'
-  const sign = delta >= 0 ? '+' : ''
-  return `${sign}${delta.toFixed(4)}`
+  // Round first, then derive the sign from the rounded value — not from the
+  // raw `delta` — so an exact tie or a sub-precision negative delta (e.g.
+  // -0.00001) both display as a neutral "0.0000" instead of "+0.0000" or
+  // the misleading "-0.0000".
+  const rounded = Number(delta.toFixed(4))
+  if (rounded === 0) return '0.0000'
+  const sign = rounded > 0 ? '+' : ''
+  return `${sign}${rounded.toFixed(4)}`
 }
 
 export function ExperimentsTable({ experiments, baselineScore }: ExperimentsTableProps) {
@@ -72,6 +78,11 @@ export function ExperimentsTable({ experiments, baselineScore }: ExperimentsTabl
     }
   }
 
+  function ariaSortFor(column: SortColumn): 'ascending' | 'descending' | 'none' {
+    if (sortColumn !== column) return 'none'
+    return sortDirection === 'asc' ? 'ascending' : 'descending'
+  }
+
   const hasBaseline = baselineScore !== null && baselineScore !== undefined
 
   return (
@@ -81,12 +92,12 @@ export function ExperimentsTable({ experiments, baselineScore }: ExperimentsTabl
         <thead>
           <tr>
             <th>Model</th>
-            <th>
+            <th aria-sort={ariaSortFor('score')}>
               <button type="button" onClick={() => handleSort('score')}>
                 Score
               </button>
             </th>
-            <th>
+            <th aria-sort={ariaSortFor('iteration')}>
               <button type="button" onClick={() => handleSort('iteration')}>
                 Iteration
               </button>

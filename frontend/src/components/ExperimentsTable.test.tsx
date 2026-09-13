@@ -105,6 +105,28 @@ describe('ExperimentsTable — delta vs baseline', () => {
     expect(screen.getByText('+0.1000')).toBeInTheDocument()
     expect(screen.getByText('-0.1000')).toBeInTheDocument()
   })
+
+  it('renders an unsigned "0.0000" for an exact tie with the baseline', () => {
+    const experiments = [makeExperiment({ id: 'exp-1', model: 'Tied', cv_score: 0.75, iteration: 1 })]
+
+    render(<ExperimentsTable experiments={experiments} baselineScore={0.75} />)
+
+    expect(screen.getByText('0.0000')).toBeInTheDocument()
+    expect(screen.queryByText('+0.0000')).toBeNull()
+    expect(screen.queryByText('-0.0000')).toBeNull()
+  })
+
+  it('renders an unsigned "0.0000" for a sub-precision negative delta instead of "-0.0000"', () => {
+    const experiments = [
+      makeExperiment({ id: 'exp-1', model: 'NearTie', cv_score: 0.75 - 0.000001, iteration: 1 }),
+    ]
+
+    render(<ExperimentsTable experiments={experiments} baselineScore={0.75} />)
+
+    expect(screen.getByText('0.0000')).toBeInTheDocument()
+    expect(screen.queryByText('-0.0000')).toBeNull()
+    expect(screen.queryByText('+0.0000')).toBeNull()
+  })
 })
 
 describe('ExperimentsTable — no baseline', () => {
@@ -187,5 +209,38 @@ describe('ExperimentsTable — sorting by iteration', () => {
     expect(rows[2]).toHaveTextContent('High')
     expect(rows[3]).toHaveTextContent('Mid')
     expect(rows[4]).toHaveTextContent('Low')
+  })
+})
+
+describe('ExperimentsTable — aria-sort', () => {
+  it('reflects the active sort column and direction on the sortable headers', async () => {
+    const user = userEvent.setup()
+    const experiments = [
+      makeExperiment({ id: 'exp-1', model: 'Mid', cv_score: 0.8, iteration: 1 }),
+      makeExperiment({ id: 'exp-2', model: 'High', cv_score: 0.9, iteration: 2 }),
+    ]
+
+    render(<ExperimentsTable experiments={experiments} baselineScore={0.5} />)
+
+    const scoreHeader = screen.getByRole('columnheader', { name: 'Score' })
+    const iterationHeader = screen.getByRole('columnheader', { name: 'Iteration' })
+
+    expect(scoreHeader).toHaveAttribute('aria-sort', 'none')
+    expect(iterationHeader).toHaveAttribute('aria-sort', 'none')
+
+    await user.click(screen.getByRole('button', { name: 'Score' }))
+
+    expect(scoreHeader).toHaveAttribute('aria-sort', 'ascending')
+    expect(iterationHeader).toHaveAttribute('aria-sort', 'none')
+
+    await user.click(screen.getByRole('button', { name: 'Score' }))
+
+    expect(scoreHeader).toHaveAttribute('aria-sort', 'descending')
+    expect(iterationHeader).toHaveAttribute('aria-sort', 'none')
+
+    await user.click(screen.getByRole('button', { name: 'Iteration' }))
+
+    expect(scoreHeader).toHaveAttribute('aria-sort', 'none')
+    expect(iterationHeader).toHaveAttribute('aria-sort', 'ascending')
   })
 })

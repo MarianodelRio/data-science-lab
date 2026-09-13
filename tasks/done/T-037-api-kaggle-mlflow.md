@@ -7,7 +7,7 @@ status: done
 folders: ["src/api/"]
 outputs: [POST /api/runs/{id}/submit, GET /api/mlflow/url]
 size: S
-branch: feature/T-037-api-kaggle-mlflow
+branch: ~
 pr: https://github.com/MarianodelRio/data-science-lab/pull/41
 ---
 

@@ -4,11 +4,21 @@ import {
   createRun,
   getRun,
   listRuns,
+  openMlflow,
   resumeRun,
+  submitRun,
   subscribeToRunEvents,
+  type ApiError,
   type FetchLike,
 } from './client'
-import type { ChatClientFrame, ChatServerFrame, PipelineEvent, Run } from './types'
+import type {
+  ChatClientFrame,
+  ChatServerFrame,
+  MlflowOpenResponse,
+  PipelineEvent,
+  Run,
+  SubmitResponse,
+} from './types'
 
 /**
  * These tests exercise client.ts without a mocking framework — every method
@@ -101,6 +111,36 @@ describe('REST methods', () => {
     await expect(listRuns(fetchImpl)).rejects.toThrow(/status 500/)
   })
 
+  it('submitRun issues a POST to /api/runs/{id}/submit and returns the parsed SubmitResponse', async () => {
+    const submitted: SubmitResponse = {
+      public_score: 42.5,
+      submission_file: 'submission.csv',
+      message: null,
+    }
+    const fetchImpl = vi
+      .fn<FetchLike>()
+      .mockResolvedValue(jsonResponse(submitted))
+
+    const result = await submitRun('run-1', fetchImpl)
+
+    expect(result).toEqual(submitted)
+    const [url, init] = fetchImpl.mock.calls[0]
+    expect(url).toBe('/api/runs/run-1/submit')
+    expect(init).toMatchObject({ method: 'POST' })
+  })
+
+  it('openMlflow issues a GET to /api/mlflow/url and returns the parsed JSON', async () => {
+    const mlflow: MlflowOpenResponse = { url: 'http://localhost:5000' }
+    const fetchImpl = vi.fn<FetchLike>().mockResolvedValue(jsonResponse(mlflow))
+
+    const result = await openMlflow(fetchImpl)
+
+    expect(result).toEqual(mlflow)
+    const [url, init] = fetchImpl.mock.calls[0]
+    expect(url).toBe('/api/mlflow/url')
+    expect(init).toMatchObject({ method: 'GET' })
+  })
+
   it('getRun issues a GET to /api/runs/{id} and returns the parsed JSON', async () => {
     const run: Run = {
       run_id: 'run-1',
@@ -122,6 +162,59 @@ describe('REST methods', () => {
     const [url, init] = fetchImpl.mock.calls[0]
     expect(url).toBe('/api/runs/run-1')
     expect(init).toMatchObject({ method: 'GET' })
+  })
+})
+
+describe('request<T>() error-detail attachment', () => {
+  function errorResponse(status: number, body: unknown): Response {
+    return {
+      ok: false,
+      status,
+      json: () => Promise.resolve(body),
+    } as Response
+  }
+
+  it('attaches status and the backend detail to the thrown error, without changing its message', async () => {
+    const fetchImpl = vi
+      .fn<FetchLike>()
+      .mockResolvedValue(errorResponse(409, { detail: 'no best experiment yet' }))
+
+    try {
+      await submitRun('run-1', fetchImpl)
+      expect.unreachable('submitRun should have thrown')
+    } catch (error) {
+      const apiError = error as ApiError
+      expect(apiError.message).toBe(
+        'Request to /api/runs/run-1/submit failed with status 409',
+      )
+      expect(apiError.status).toBe(409)
+      expect(apiError.detail).toBe('no best experiment yet')
+    }
+  })
+
+  it('leaves detail undefined and throws only once when the error body is not valid JSON', async () => {
+    const fetchImpl = vi.fn<FetchLike>().mockResolvedValue({
+      ok: false,
+      status: 502,
+      json: () => Promise.reject(new SyntaxError('Unexpected end of JSON input')),
+    } as unknown as Response)
+
+    await expect(submitRun('run-1', fetchImpl)).rejects.toThrow(
+      'Request to /api/runs/run-1/submit failed with status 502',
+    )
+  })
+
+  it('leaves detail undefined when the JSON error body has no detail key', async () => {
+    const fetchImpl = vi.fn<FetchLike>().mockResolvedValue(errorResponse(500, {}))
+
+    try {
+      await submitRun('run-1', fetchImpl)
+      expect.unreachable('submitRun should have thrown')
+    } catch (error) {
+      const apiError = error as ApiError
+      expect(apiError.status).toBe(500)
+      expect(apiError.detail).toBeUndefined()
+    }
   })
 })
 

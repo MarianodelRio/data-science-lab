@@ -7,12 +7,16 @@
  * context/discoveries/T-034.md / T-035.md for the reconciliation history.
  *
  * PROVISIONAL: the remaining types below (`CreateRunPayload`,
- * `ResumePayload`, `SubmitResponse`, `MlflowOpenResponse`, `Experiment`) are
- * still best-effort guesses based on design.md's endpoint contract, not yet
- * checked against a real backend response. `Experiment` is a stronger case
- * than the rest: no HTTP response has ever carried this shape — it mirrors
- * `LabState.experiments` (src/state.py) verbatim pending a real endpoint
- * (see context/discoveries/T-040.md).
+ * `ResumePayload`, `Experiment`) are still best-effort guesses based on
+ * design.md's endpoint contract, not yet checked against a real backend
+ * response. `Experiment` is a stronger case than the rest: no HTTP response
+ * has ever carried this shape — it mirrors `LabState.experiments`
+ * (src/state.py) verbatim pending a real endpoint (see
+ * context/discoveries/T-040.md).
+ *
+ * `SubmitResponse` and `MlflowOpenResponse` are reconciled against the real
+ * backend (`src/api/models.py::SubmitResponse`/`MlflowUrlResponse`, T-037) —
+ * see T-042's reconciliation commit.
  *
  * `ChatClientFrame`/`ChatServerFrame` are reconciled against the live
  * backend (`docs/api.md` § WebSocket / `src/api/routers/chat.py`), not
@@ -90,14 +94,19 @@ export interface ResumePayload {
   humanFeedback: string
 }
 
-/** Response for POST /api/runs/{id}/submit. */
+/**
+ * Response for POST /api/runs/{id}/submit. `public_score` is `null` when
+ * Kaggle has accepted the submission but not yet scored it — the normal
+ * state in the seconds-to-minutes window right after submitting, not an
+ * error; it must never be coerced to `0`.
+ */
 export interface SubmitResponse {
-  submitted: boolean
-  kaggleSubmissionId?: string
-  message?: string
+  public_score: number | null
+  submission_file: string
+  message: string | null
 }
 
-/** Response for POST /api/mlflow/open. */
+/** Response for GET /api/mlflow/url. */
 export interface MlflowOpenResponse {
   url: string
 }

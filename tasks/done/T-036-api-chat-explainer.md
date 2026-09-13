@@ -7,7 +7,7 @@ status: done
 folders: ["src/api/", "config/agents/explainer.yaml", "config/prompts/explainer/", "docs/api.md"]
 outputs: [WS /api/runs/{id}/chat, explainer agent subgraph]
 size: M
-branch: feature/T-036-api-chat-explainer
+branch: ~
 pr: https://github.com/MarianodelRio/data-science-lab/pull/40
 ---
 

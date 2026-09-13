@@ -7,7 +7,7 @@ status: done
 folders: ["frontend/"]
 outputs: [FileViewer component, ActionBar component]
 size: S
-branch: feature/T-042-frontend-fileviewer-actionbar
+branch: ~
 pr: https://github.com/MarianodelRio/data-science-lab/pull/47
 ---
 

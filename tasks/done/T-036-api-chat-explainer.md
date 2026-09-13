@@ -3,7 +3,7 @@ id: T-036
 phase: 3
 agent: api-agent
 depends_on: [T-034, T-010]
-status: pr-open
+status: done
 folders: ["src/api/", "config/agents/explainer.yaml", "config/prompts/explainer/", "docs/api.md"]
 outputs: [WS /api/runs/{id}/chat, explainer agent subgraph]
 size: M

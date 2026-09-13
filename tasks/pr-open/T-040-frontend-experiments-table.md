@@ -110,3 +110,43 @@ pr: https://github.com/MarianodelRio/data-science-lab/pull/44
 - Verification: `npm run lint` (eslint, clean), `npm test` (vitest — 4 files, 49/49 tests
   passed: 15 `client.test.ts`, 18 `PipelineView.test.tsx`, 10 `ExperimentsTable.test.tsx`, 6
   `Layout.test.tsx`), `npm run build` (`tsc -b && vite build`, succeeded).
+
+### Review-fix round
+
+Adversarial review flagged two issues to fix before PR open, plus one documentation-only
+finding. Both code fixes are in `frontend/src/components/ExperimentsTable.tsx`, with test
+coverage added in `frontend/src/components/ExperimentsTable.test.tsx`; no other files touched
+by this round.
+
+- **ADV-65bf4393 (MEDIUM — delta sign/zero handling):** `formatDelta` previously derived its
+  `+`/`-` sign from the raw `delta` (`delta >= 0 ? '+' : ''`), which misrepresented two cases:
+  an exact tie (`delta === 0`) rendered as `"+0.0000"` (reads as an improvement, not a tie),
+  and a sub-precision negative delta (e.g. `-0.00001`) rendered as `"-0.0000"` via
+  `toFixed`'s sign-preserving rounding (reads as a display glitch). Fixed by rounding first
+  (`Number(delta.toFixed(4))`) and branching sign display on the *rounded* value: `> 0` gets
+  `"+"`, `< 0` gets `"-"`, and `=== 0` gets no sign at all — rendering the neutral `"0.0000"`.
+  The existing `—` no-data glyph for a missing baseline is untouched; this only changes the
+  computed, non-null delta path. Added two tests: an exact-tie case (`cv_score ===
+  baselineScore`) and a sub-precision-negative case (`cv_score = 0.75 - 0.000001`,
+  `baselineScore = 0.75`), both asserting `"0.0000"` with no sign and explicitly asserting
+  neither `"+0.0000"` nor `"-0.0000"` is present.
+
+- **ADV-b5ef67ba (LOW — missing `aria-sort`):** the sortable Score/Iteration `<th>` elements
+  toggled sort state but never exposed it to assistive tech. Added an `ariaSortFor(column)`
+  helper deriving `"ascending" | "descending" | "none"` from `sortColumn`/`sortDirection`,
+  applied only to the Score and Iteration `<th>` elements (Model, Delta vs Baseline, and Best
+  remain without `aria-sort`, as they are not sortable). Added a test clicking both headers in
+  sequence and asserting `aria-sort` transitions correctly on each (`none` → `ascending` →
+  `descending` for the clicked column, `none` throughout for the other).
+
+- **Finding 2 (LOW, documentation only — no code change):** appended a short addendum to the
+  existing `context/discoveries/T-040.md` entry (below its `Status: open` line) noting that
+  `experiment.id` is used as the React list key with no uniqueness guarantee from the backend
+  contract, and that the proposed `GET /api/runs/{run_id}/experiments` endpoint should
+  guarantee `id` uniqueness, or a future consumer should key defensively on a composite (e.g.
+  `${id}-${iteration}`) if it can't be.
+
+- Verification (same Docker workaround as the original round, ambient Node still v16/v12):
+  `npm run lint` (eslint, clean), `npm test` (vitest — 4 files, 52/52 tests passed, including
+  13 in `ExperimentsTable.test.tsx`), `npm run build` (`tsc -b && vite build`, succeeded). No
+  incidental `package-lock.json` diff this round.

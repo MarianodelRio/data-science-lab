@@ -84,3 +84,12 @@ curl http://localhost:8000/api/runs   # → [] on a clean install
 
 Chroma's indexed data persists across `docker compose down` / `up` in the named
 `chroma_data` volume (only `down -v` removes it).
+
+### CI
+
+GitHub Actions (`.github/workflows/ci.yml`) runs on every pull request and push to
+`main`: `test` (pytest + coverage, ≥70% via `--cov-fail-under=70`), `lint` (ruff),
+`type_check` (mypy), and `frontend` (`npm ci && npm run lint && npm run build`).
+No real API keys are required — tests that touch `Settings.load()` inject dummy
+values via `monkeypatch`. The `test` job caches `~/.cache/huggingface` so the
+`sentence-transformers` embedding model isn't re-downloaded on every run.

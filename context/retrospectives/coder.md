@@ -61,3 +61,8 @@
 **Folders:** src/api/
 **Lesson:** When testing an endpoint whose actual state-mutating work runs inside a background `asyncio.create_task` scheduled before the response is sent, never assert on that work's side effects immediately after receiving the response — poll for it (e.g. a `_wait_until` helper) instead, since the response is sent once the task is registered, not once it completes.
 **Signal:** "test_approve_triggers_resume and test_redirect_forwards_feedback_text asserted on fake_graph.update_state_calls[-1] immediately after receiving the "resumed" frame, but graph.update_state(...) runs inside a background asyncio.create_task-scheduled coroutine that is not guaranteed to have completed by then." *(source: ## Completed)*
+
+## L-013 | T-037 | 2026-09-13 | Weight: 1
+**Folders:** src/api/
+**Lesson:** When a shared dependency's constructor has an established, codebase-wide side effect (e.g. always creating a directory tree), don't try to work around it locally in a new caller — check whether every other call site already accepts the same behavior and whether the side effect is actually a no-op given your caller's real preconditions before treating it as a problem to solve.
+**Signal:** "every other `WorkspaceManager` call site in the codebase (all pipeline nodes) accepts the same constructor-creates-root behavior" *(source: ## Completed)*

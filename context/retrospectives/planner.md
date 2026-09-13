@@ -26,3 +26,8 @@
 **Folders:** src/nodes/llm/, config/agents/, config/prompts/
 **Lesson:** When a prompt names the terms a validator enforces, require a test that every named term actually matches — drift in the direction of the prompt over-claiming makes the model trust a guard that is not there.
 **Signal:** "`most_frequent_imputer` returned `None` although the prompt promised \"the same three forms for `mean_`, `mode_` and `most_frequent_`\", the exact prompt/validator drift T-022's decision record exists to prevent." *(source: context/decisions)*
+
+## L-006 | T-037 | 2026-09-13 | Weight: 2
+**Folders:** src/api/
+**Lesson:** When planning to extract a shared private helper out of a router/module into a new file, check `tasks/in-progress/` for other tasks touching the same file or folder — a concurrently in-progress task can independently widen or relocate the same functions before your branch merges, turning what should be a clean extraction into a rebase conflict the Orchestrator has to resolve by hand.
+**Signal:** "This conflicted mechanically with the Coder's `src/api/graph_access.py` extraction of the same functions (under the narrower pre-T-036 `Request` typing)." *(source: ## Completed)*

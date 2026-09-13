@@ -81,3 +81,8 @@
 **Folders:** src/api/
 **Lesson:** A handler that captures a status/state snapshot before running slow sequential async setup work, then gates a client-visible decision on that snapshot at the end, has a real staleness race — re-check the status fresh immediately before acting on it, not from the pre-setup snapshot. This generalizes to any future live-data endpoint with an async session-build step between connect and first decision.
 **Signal:** "the automatic checkpoint frame was gated on record.status captured before _build_explainer_session ran. That helper does several sequential asyncio.to_thread calls (graph lookup — a cache-miss sqlite3.connect(), WorkspaceManager construction, RAG store factory — can build a real Chroma client) that take real, unbounded wall-clock time, so record.status could be stale by the time the checkpoint-frame decision ran" *(source: ## Completed)*
+
+## L-017 | T-037 | 2026-09-13 | Weight: 3
+**Folders:** src/api/
+**Lesson:** When ruling that a task must reimplement a thin subset of another agent's private logic instead of importing it (to respect a folder-ownership boundary), require an open discovery documenting the resulting duplication and a concrete trigger for promoting it to a shared module — don't let the boundary-respecting call silently create an unrecorded second implementation of the same shape.
+**Signal:** "The two implementations now duplicate this shape (not the code — the node's version also handles a previous-iteration fallback the API route deliberately does not use, see decision #4)." *(source: context/discoveries)*

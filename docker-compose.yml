@@ -1,0 +1,79 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    ports: ["8000:8000"]
+    volumes:
+      - ${WORKSPACE_ROOT:-~/competitions}:/competitions
+      - ./runs:/app/runs
+      - ./config:/app/config
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      KAGGLE_USERNAME: ${KAGGLE_USERNAME}
+      KAGGLE_KEY: ${KAGGLE_KEY}
+      # CHROMA_HOST/MLFLOW_TRACKING_URI from design.md are unread by src/ — addresses come
+      # from config/settings.yaml (chroma:8000, mlflow:5000), already correct for this
+      # compose network's service DNS names.
+      MLFLOW_PUBLIC_URL: ${MLFLOW_PUBLIC_URL:-http://localhost:5000}
+      LANGCHAIN_TRACING_V2: ${LANGCHAIN_TRACING_V2:-false}
+      LANGCHAIN_API_KEY: ${LANGCHAIN_API_KEY:-}
+    depends_on:
+      chroma:
+        condition: service_healthy
+      mlflow:
+        condition: service_started
+    healthcheck:
+      # No /health route exists in src/api/main.py (outside this task's ownership to add —
+      # see docs/adr/0003-...); probes GET /api/runs instead, using the api image's own
+      # Python interpreter (no curl/wget needed, unlike chroma's image).
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/runs', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports: ["5173:80"]
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  chroma:
+    # Pinned to match the chromadb Python client version resolved from pyproject.toml
+    # at task time (chromadb is unpinned there — see context/discoveries/T-043.md).
+    image: chromadb/chroma:1.5.9
+    ports: ["8001:8000"]
+    volumes:
+      - chroma_data:/chroma/chroma
+    healthcheck:
+      # chromadb/chroma:1.5.9 ships neither curl nor wget nor python (verified empirically —
+      # see tasks/*/T-043-docker-compose.md's ## Completed section); it does ship bash, so
+      # the heartbeat is probed via bash's /dev/tcp instead of an external HTTP client.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8000 && printf 'GET /api/v2/heartbeat HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q '200 OK' <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.22.4
+    ports: ["5000:5000"]
+    volumes:
+      - ${WORKSPACE_ROOT:-~/competitions}:/mlflow-data
+    command: >
+      mlflow server
+      --host 0.0.0.0
+      --backend-store-uri /mlflow-data/mlruns
+      --artifacts-destination /mlflow-data/artifacts
+    restart: unless-stopped
+
+volumes:
+  chroma_data:

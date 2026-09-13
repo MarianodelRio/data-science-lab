@@ -15,7 +15,8 @@ dist/
 htmlcov/
 
 # Project-specific
-runs/
+runs/*
+!runs/.gitkeep
 .dt-index.json
 .dt-index.json.tmp
 chroma_data/

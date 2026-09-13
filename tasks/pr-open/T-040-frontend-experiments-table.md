@@ -3,12 +3,12 @@ id: T-040
 phase: 4
 agent: frontend-agent
 depends_on: [T-038]
-status: in-progress
+status: pr-open
 folders: ["frontend/"]
 outputs: [ExperimentsTable component]
 size: S
 branch: feature/T-040-frontend-experiments-table
-pr: ~
+pr: https://github.com/MarianodelRio/data-science-lab/pull/44
 ---
 
 ## ExperimentsTable component (frontend/)

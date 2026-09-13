@@ -25,6 +25,15 @@ services:
         condition: service_healthy
       mlflow:
         condition: service_started
+    healthcheck:
+      # No /health route exists in src/api/main.py (outside this task's ownership to add —
+      # see docs/adr/0003-...); probes GET /api/runs instead, using the api image's own
+      # Python interpreter (no curl/wget needed, unlike chroma's image).
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/runs', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     restart: unless-stopped
 
   frontend:
@@ -32,7 +41,9 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     ports: ["5173:80"]
-    depends_on: [api]
+    depends_on:
+      api:
+        condition: service_healthy
     restart: unless-stopped
 
   chroma:

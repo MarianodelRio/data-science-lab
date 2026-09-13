@@ -3,12 +3,12 @@ id: T-041
 phase: 4
 agent: frontend-agent
 depends_on: [T-038]
-status: in-progress
+status: pr-open
 folders: ["frontend/"]
 outputs: [Chat component over WebSocket]
 size: M
 branch: feature/T-041-frontend-chat
-pr: ~
+pr: https://github.com/MarianodelRio/data-science-lab/pull/46
 ---
 
 ## Chat component (frontend/)

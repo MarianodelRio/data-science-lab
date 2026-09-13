@@ -75,6 +75,33 @@ after resuming.
 |---|---|
 | `WS /api/runs/{id}/chat` | Bidirectional chat with explainer agent |
 
+### WS /api/runs/{id}/chat
+Bidirectional JSON-frame chat with the read-only explainer agent, and the channel through
+which a human's approve/redirect decision at an interrupt is forwarded into the pipeline.
+`404`-equivalent (error frame + socket close) if `id` is unknown.
+
+**Client → server frames** (JSON text frames):
+- `{"type": "question", "text": "..."}` — ask the explainer a question about this run.
+- `{"type": "approve", "feedback": "..."}` — approve the current interrupt; `feedback` may
+  be `""` ("proceed, no comment").
+- `{"type": "redirect", "feedback": "..."}` — same operation as `approve`, differing only in
+  the `feedback` text: corrective guidance for the pipeline to read in later phases. It does
+  **not** re-run the phase that just completed.
+
+**Server → client frames:**
+- `{"type": "checkpoint", "phase": ..., "summary": ...}` — sent automatically, once, right
+  after connecting, only if the run is currently interrupted.
+- `{"type": "answer", "text": "..."}` — the explainer's answer to a `"question"`.
+- `{"type": "resumed", "run_id": ..., "status": "running"}` — an `approve`/`redirect` was
+  accepted; same underlying call as `POST /api/runs/{id}/resume`.
+- `{"type": "error", "detail": "..."}` — malformed frame, unknown `type`, or a rejected
+  `approve`/`redirect` (run not interrupted / another run active). The socket stays open
+  after an error frame, except for an unknown `run_id`, which closes the connection.
+
+Conversation history is kept in memory for the lifetime of the WebSocket connection only —
+it is never written to `LabState` or persisted. The explainer never calls `update_state` and
+never writes to the workspace; see `docs/adr/0002-explainer-is-not-an-llmnode.md`.
+
 ## Frontend client
 
 `frontend/src/api/client.ts` is the single point of backend access from the React app —

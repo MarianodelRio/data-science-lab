@@ -3,7 +3,7 @@ id: T-044
 phase: 5
 agent: infra-agent
 depends_on: [T-001]
-status: pr-open
+status: done
 folders: [".github/", "README.md"]
 outputs: [.github/workflows/ci.yml]
 size: S

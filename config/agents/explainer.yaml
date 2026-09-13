@@ -1,0 +1,6 @@
+name: explainer
+model_role: reasoning
+prompt_version: v1
+tools: []
+output_file_pattern: ""
+max_tokens: 1024

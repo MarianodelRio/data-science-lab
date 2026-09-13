@@ -11,15 +11,19 @@ that injects its own factory.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol, cast
 
 from fastapi import FastAPI
 
+from src.api.routers.chat import router as chat_router
 from src.api.routers.events import router as events_router
 from src.api.routers.runs import router as runs_router
 from src.config.paths import REPO_ROOT
+
+logger = logging.getLogger(__name__)
 
 
 class CompiledGraphLike(Protocol):
@@ -31,7 +35,26 @@ class CompiledGraphLike(Protocol):
     def update_state(self, config: dict, values: dict) -> Any: ...
 
 
+class ExplainerLike(Protocol):
+    """The subset of `src.api.explainer.Explainer`'s interface the chat
+    router relies on — small enough that a fake test double can implement it
+    directly."""
+
+    def answer(self, question: str, *, history: list[dict[str, str]] | None = None) -> str: ...
+
+
+class ExplainerFactory(Protocol):
+    def __call__(
+        self,
+        *,
+        workspace: Any,
+        state_reader: Callable[[], dict[str, Any]],
+        rag_store: Any | None,
+    ) -> ExplainerLike: ...
+
+
 GraphFactory = Callable[[str, "Path | None"], CompiledGraphLike]
+RagStoreFactory = Callable[[str], Any | None]
 
 
 def _default_graph_factory() -> GraphFactory:
@@ -47,7 +70,40 @@ def _default_graph_factory() -> GraphFactory:
     return cast(GraphFactory, GraphBuilder().build)
 
 
-def create_app(runs_dir: Path | None = None, graph_factory: GraphFactory | None = None) -> FastAPI:
+def _default_explainer_factory() -> ExplainerFactory:
+    # Local import: keeps this out of every test that injects its own
+    # explainer_factory (mirrors `_default_graph_factory`'s rationale).
+    from src.api.explainer import Explainer
+
+    # `Explainer.__init__`'s keyword-only signature matches `ExplainerFactory`
+    # exactly, so the class itself is a valid factory callable.
+    return Explainer
+
+
+def _default_rag_store_factory() -> RagStoreFactory:
+    def _build(competition_name: str) -> Any | None:
+        # Local import: `RagStore`'s embedding function can trigger a model
+        # download on first use, which must never happen as a side effect of
+        # importing this module or running the unit test suite.
+        from src.tools.rag import RagStore
+
+        try:
+            return RagStore(competition_name)
+        except Exception:
+            logger.warning(
+                "RagStore unavailable for %r; chat will run without RAG", competition_name
+            )
+            return None
+
+    return _build
+
+
+def create_app(
+    runs_dir: Path | None = None,
+    graph_factory: GraphFactory | None = None,
+    explainer_factory: ExplainerFactory | None = None,
+    rag_store_factory: RagStoreFactory | None = None,
+) -> FastAPI:
     """Build the FastAPI app.
 
     `runs_dir` and `graph_factory` are injectable so tests can point the API
@@ -55,10 +111,17 @@ def create_app(runs_dir: Path | None = None, graph_factory: GraphFactory | None 
     dependency. `app.state.active_runs` is a process-local cache of live
     background tasks (never the source of truth — the on-disk registry is)
     used only to reject a second concurrent run with 409.
+
+    `explainer_factory` and `rag_store_factory` are the same kind of
+    injection seam for the chat WebSocket (`src/api/routers/chat.py`): tests
+    inject a factory returning a fake explainer / `None` rag store, with zero
+    LLM/network/model-download dependency.
     """
     app = FastAPI(title="Data Science Lab API")
     app.state.runs_dir = runs_dir if runs_dir is not None else REPO_ROOT / "runs"
     app.state.graph_factory = graph_factory or _default_graph_factory()
+    app.state.explainer_factory = explainer_factory or _default_explainer_factory()
+    app.state.rag_store_factory = rag_store_factory or _default_rag_store_factory()
     active_runs: dict[str, asyncio.Task] = {}
     app.state.active_runs = active_runs
     # Built graphs (and, in the real factory, their underlying sqlite
@@ -75,6 +138,7 @@ def create_app(runs_dir: Path | None = None, graph_factory: GraphFactory | None 
     app.state.event_queues = event_queues
     app.include_router(runs_router)
     app.include_router(events_router)
+    app.include_router(chat_router)
     return app
 
 

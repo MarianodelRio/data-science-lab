@@ -23,6 +23,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request, Response
 from langchain_core.callbacks import BaseCallbackHandler
 from pydantic import BaseModel, TypeAdapter
+from starlette.requests import HTTPConnection
 
 from src.api import registry
 from src.api.event_emitter import (
@@ -89,7 +90,7 @@ def _live_values(graph: Any, run_id: str) -> dict[str, Any]:
     return values if values else {}
 
 
-def _get_or_build_graph(request: Request, run_id: str) -> Any:
+def _get_or_build_graph(connection: HTTPConnection, run_id: str) -> Any:
     """Return the cached compiled graph for `run_id`, building it (via
     `graph_factory`) only on first use.
 
@@ -100,23 +101,27 @@ def _get_or_build_graph(request: Request, run_id: str) -> Any:
     leaked one sqlite connection per run per request, unbounded. Caching by
     `run_id` on `app.state.graph_cache` bounds this to at most one graph
     (and one connection) per distinct run ever touched by this process,
-    and lets `create_run`, `list_runs`, `get_run` and `resume_run` all
-    share the same graph object for a given run instead of each holding
-    its own connection to the same checkpoint file.
+    and lets `create_run`, `list_runs`, `get_run`, `resume_run` and the
+    chat WebSocket handler all share the same graph object for a given run
+    instead of each holding its own connection to the same checkpoint file.
+
+    Takes `HTTPConnection` (the common base of `Request` and `WebSocket`)
+    rather than `Request` so the chat WebSocket handler in
+    `src/api/routers/chat.py` can call it too.
     """
-    cache: dict[str, Any] = request.app.state.graph_cache
+    cache: dict[str, Any] = connection.app.state.graph_cache
     if run_id not in cache:
-        cache[run_id] = request.app.state.graph_factory(run_id, request.app.state.runs_dir)
+        cache[run_id] = connection.app.state.graph_factory(run_id, connection.app.state.runs_dir)
     return cache[run_id]
 
 
-def _get_or_build_graph_values(request: Request, run_id: str) -> dict[str, Any]:
+def _get_or_build_graph_values(connection: HTTPConnection, run_id: str) -> dict[str, Any]:
     """Lookup-or-build the graph and read its live state, as one blocking
     unit. Run via `asyncio.to_thread` (like `_run_and_track` already does
     for `invoke`/`get_state`) so a cache-miss `sqlite3.connect()` — or a
     blocking checkpoint read inside `get_state` — never runs on the event
     loop."""
-    graph = _get_or_build_graph(request, run_id)
+    graph = _get_or_build_graph(connection, run_id)
     return _live_values(graph, run_id)
 
 
@@ -134,12 +139,12 @@ def _to_summary(record: RunRecord, values: dict[str, Any]) -> RunSummary:
     )
 
 
-def _has_active_run(request: Request) -> str | None:
+def _has_active_run(connection: HTTPConnection) -> str | None:
     """Return the first run_id with a not-yet-`.done()` background task, or
     `None` if no run is currently active. This is a cheap in-memory check —
     run it before any filesystem/registry work in `create_run` so a
     conflicting request never touches disk."""
-    active_runs: dict[str, asyncio.Task] = request.app.state.active_runs
+    active_runs: dict[str, asyncio.Task] = connection.app.state.active_runs
     for run_id, task in active_runs.items():
         if not task.done():
             return run_id
@@ -263,15 +268,42 @@ async def _resume_and_track(
     await _run_and_track(runs_dir, run_id, graph, config, None, event_queue)
 
 
-@router.post("/{run_id}/resume", response_model=ResumeResponse)
-async def resume_run(run_id: str, body: ResumeRequest, request: Request) -> Response:
-    runs_dir: Path = request.app.state.runs_dir
+async def do_resume(connection: HTTPConnection, run_id: str, feedback: str) -> ResumeResponse:
+    """Validate and kick off a resume for `run_id`, injecting `feedback` as
+    `human_feedback` into the paused checkpoint.
+
+    Shared by `POST /api/runs/{id}/resume` (`resume_run`, below) and the chat
+    WebSocket handler's `"approve"`/`"redirect"` frames (`src/api/routers/chat.py`)
+    — one implementation for both callers, per
+    `docs/adr/0002-explainer-is-not-an-llmnode.md`'s decision that forwarding
+    a human interrupt decision is not the explainer's job.
+
+    Takes `HTTPConnection` (the common base of `Request` and `WebSocket`) so
+    both callers can pass their own connection object through unchanged.
+
+    Note on the TOCTOU race this guards: see the module comment above
+    `_resume_and_track`.
+
+    `read_run_record` and `_get_or_build_graph` both do blocking I/O
+    (registry file read; on a cache miss, `sqlite3.connect()`), so both run
+    via `asyncio.to_thread` — same rationale as `_get_or_build_graph_values`
+    above. They run *before* the `_has_active_run`/interrupted-status checks
+    rather than between the checks and `active_runs` registration: an
+    `await` in that gap would reopen the TOCTOU race the zero-await sequence
+    below exists to close. Neither call depends on the checks' outcome (a
+    404 or 409 below simply discards the already-built `record`/`graph`),
+    so reordering them earlier costs nothing but an occasional wasted
+    lookup on the error paths.
+    """
+    runs_dir: Path = connection.app.state.runs_dir
     try:
-        record = registry.read_run_record(runs_dir, run_id)
+        record = await asyncio.to_thread(registry.read_run_record, runs_dir, run_id)
     except RunNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    if _has_active_run(request) is not None:
+    graph = await asyncio.to_thread(_get_or_build_graph, connection, run_id)
+
+    if _has_active_run(connection) is not None:
         raise HTTPException(status_code=409, detail="another run is already active")
 
     if record.status != "interrupted":
@@ -280,7 +312,6 @@ async def resume_run(run_id: str, body: ResumeRequest, request: Request) -> Resp
             detail=f"run {run_id!r} is not interrupted (status={record.status!r})",
         )
 
-    graph = _get_or_build_graph(request, run_id)
     # The checkpoint write (inside `_resume_and_track`) is not a node
     # execution, so it carries no callback — only the subsequent tracked run
     # is instrumented.
@@ -292,7 +323,7 @@ async def resume_run(run_id: str, body: ResumeRequest, request: Request) -> Resp
     # (accepted: SSE is an explicitly lossy live view, not a durable
     # channel; see context/decisions/T-035.md).
     event_queue = create_event_queue()
-    request.app.state.event_queues[run_id] = event_queue
+    connection.app.state.event_queues[run_id] = event_queue
     emitter = EventEmitter(run_id, event_queue, loop)
     config = _build_config(run_id, [callback, emitter])
 
@@ -301,8 +332,14 @@ async def resume_run(run_id: str, body: ResumeRequest, request: Request) -> Resp
     # otherwise both pass the checks above before either task registration
     # took effect). The checkpoint write itself now happens inside the task.
     task = asyncio.create_task(
-        _resume_and_track(runs_dir, run_id, graph, config, body.feedback, event_queue)
+        _resume_and_track(runs_dir, run_id, graph, config, feedback, event_queue)
     )
-    request.app.state.active_runs[run_id] = task
+    connection.app.state.active_runs[run_id] = task
 
-    return _json(ResumeResponse(run_id=run_id, status="running"))
+    return ResumeResponse(run_id=run_id, status="running")
+
+
+@router.post("/{run_id}/resume", response_model=ResumeResponse)
+async def resume_run(run_id: str, body: ResumeRequest, request: Request) -> Response:
+    result = await do_resume(request, run_id, body.feedback)
+    return _json(result)

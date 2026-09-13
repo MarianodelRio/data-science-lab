@@ -4,6 +4,7 @@ FastAPI app and `TestClient`, with zero LangGraph/sqlite/network dependency.
 
 from collections.abc import Iterator
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -18,8 +19,25 @@ def fake_graph() -> FakeCompiledGraph:
 
 
 @pytest.fixture
-def app(tmp_path: Path, fake_graph: FakeCompiledGraph):
-    return create_app(runs_dir=tmp_path, graph_factory=lambda *_args, **_kwargs: fake_graph)
+def fake_explainer() -> MagicMock:
+    explainer = MagicMock()
+    explainer.answer.return_value = "mocked explainer answer"
+    return explainer
+
+
+@pytest.fixture
+def explainer_factory(fake_explainer: MagicMock) -> MagicMock:
+    return MagicMock(return_value=fake_explainer)
+
+
+@pytest.fixture
+def app(tmp_path: Path, fake_graph: FakeCompiledGraph, explainer_factory: MagicMock):
+    return create_app(
+        runs_dir=tmp_path,
+        graph_factory=lambda *_args, **_kwargs: fake_graph,
+        explainer_factory=explainer_factory,
+        rag_store_factory=lambda _name: None,
+    )
 
 
 @pytest.fixture

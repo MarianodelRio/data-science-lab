@@ -7,7 +7,7 @@ status: done
 folders: ["docker/", ".", "frontend/"]
 outputs: [docker-compose.yml, Dockerfile.api, frontend/Dockerfile, chroma + mlflow services]
 size: M
-branch: feature/T-043-docker-compose
+branch: ~
 pr: https://github.com/MarianodelRio/data-science-lab/pull/43
 ---
 

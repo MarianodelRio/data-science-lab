@@ -7,7 +7,7 @@ status: done
 folders: [frontend/]
 outputs: [reconciled client.ts/types.ts, functional Sidebar, ActionBar mounted in Layout]
 size: L
-branch: feature/T-050-frontend-reconcile-and-wire
+branch: ~
 pr: https://github.com/MarianodelRio/data-science-lab/pull/51
 ---
 

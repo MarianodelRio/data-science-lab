@@ -14,10 +14,10 @@ parallel tasks.
 
 | Agent | Owns | Tasks |
 |---|---|---|
-| `infra-agent` | `src/state.py`, `src/config/`, `src/llm/`, `src/tools/`, `src/workspace/`, `src/memory/`, `src/observability/`, root scaffold, `docker/`, CI | T-001..T-008, T-012, T-043, T-044 |
-| `pipeline-agent` | `src/graph/`, `src/nodes/`, `config/agents/`, `config/phases/`, `config/prompts/` | T-009..T-011, T-013..T-033, T-045, T-046, T-047 |
-| `api-agent` | `src/api/` | T-034..T-037 |
-| `frontend-agent` | `frontend/` | T-038..T-042 |
+| `infra-agent` | `src/state.py`, `src/config/`, `src/llm/`, `src/tools/`, `src/workspace/`, `src/memory/`, `src/observability/`, root scaffold, `docker/`, CI | T-001..T-008, T-012, T-043, T-044, T-048, T-051 |
+| `pipeline-agent` | `src/graph/`, `src/nodes/`, `config/agents/`, `config/phases/`, `config/prompts/` | T-009..T-011, T-013..T-033, T-045, T-046, T-047, T-052 |
+| `api-agent` | `src/api/` | T-034..T-037, T-049 |
+| `frontend-agent` | `frontend/` | T-038..T-042, T-050 |
 
 Phase composition (`config/phases/*.yaml`) is created **once** by T-009 with the
 full node list per phase. Node tasks never edit a shared phase YAML — the
@@ -107,6 +107,24 @@ Shared contracts. Small but they block most of the tree.
 
 ---
 
+## Build Phase 6 — Post-launch hardening
+
+Added post-hoc after a full-repo review found the pipeline/API/frontend functionally
+complete but not fully wired together, plus a handful of real-run correctness gaps.
+T-046 (smoke test) is deliberately deferred and stays the closing task of the original
+plan; these tasks close everything else needed for the app to be usable and correct
+before that final smoke test is attempted.
+
+| Task | Title | Size | Depends |
+|---|---|---|---|
+| T-048 | API key preflight validation + align pyproject deps (PyTorch) with Docker | M | — |
+| T-049 | Experiments + file-content endpoints; validate API keys at startup | M | T-034, T-048 |
+| T-050 | Reconcile frontend API client with real backend; wire Sidebar/ActionBar/runId | L | T-038, T-049 |
+| T-051 | ⚠️ Protected contract — persist `score_direction` on `LabState` (human-approved 2026-09-14) | S | T-002 |
+| T-052 | Pipeline hardening — fail-fast `model_family` validation + consume `score_direction` | M | T-048, T-023, T-051, T-031 |
+
+---
+
 ## Dependency analysis
 
 **Critical path:**
@@ -131,6 +149,9 @@ T-001 → T-003 → T-004 → T-010 → T-029 (coder) → T-046 (smoke)
   a stale endpoint contract)
 - **Wave 6:** T-043, T-046
 - **Post-wave (added mid-project):** T-047 (follow-up on T-022)
+- **Wave 7 (Build Phase 6, added post-hoc after full-repo review):** T-048, T-051 →
+  T-049 → T-050; T-048 + T-051 also → T-052. T-046 (smoke) remains deferred and is not
+  a dependency of this wave.
 
 **Parallel-but-sequenced check:** none — the dependency graph is already
 optimally parallel. All same-wave tasks share no dependency between them.
@@ -156,4 +177,11 @@ T-034 → T-035, T-036, T-037, T-043
 T-037 → T-042
 T-038 → T-039, T-040, T-041, T-042, T-043
 (T-013..T-033, T-034, T-035) → T-046
+T-034 → T-049
+T-048 → T-049, T-052
+T-023 → T-052
+T-002 → T-051
+T-051 → T-052
+T-038 → T-050
+T-049 → T-050
 ```

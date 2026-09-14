@@ -3,12 +3,12 @@ id: T-050
 phase: 6
 agent: frontend-agent
 depends_on: [T-038, T-049]
-status: in-progress
+status: pr-open
 folders: [frontend/]
 outputs: [reconciled client.ts/types.ts, functional Sidebar, ActionBar mounted in Layout]
 size: L
 branch: feature/T-050-frontend-reconcile-and-wire
-pr: ~
+pr: https://github.com/MarianodelRio/data-science-lab/pull/51
 ---
 
 ## Reconcile API client with real backend and wire the dashboard end-to-end

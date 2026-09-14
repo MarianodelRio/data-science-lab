@@ -3,11 +3,11 @@ id: T-051
 phase: 6
 agent: infra-agent
 depends_on: [T-002]
-status: available
+status: in-progress
 folders: [src/state.py]
 outputs: [LabState.score_direction]
 size: S
-branch: ~
+branch: feature/T-051-labstate-score-direction
 pr: ~
 ---
 

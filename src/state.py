@@ -9,9 +9,20 @@ and CLAUDE.md's "Protected contracts" list.
 `LabState` is intentionally lightweight: it holds file paths, scalar scores,
 and control fields only. Large data (EDA reports, experiment results, code)
 lives on disk in the workspace; the state only holds pointers to it.
+
+`score_direction` records which way a given `best_score`/`last_score` was
+normalized ("minimize" or "maximize"). `None` means *not yet established* —
+it is not a synonym for "maximize" and must never be treated as one. The
+sole writer is `score_evaluator` (introduced in T-052); no other node may
+set this field. Readers must access it via `state.get("score_direction")`,
+never `state["score_direction"]` — checkpoints persisted before this field
+existed and later rehydrated from SQLite will not have the key, permanently,
+not just during a migration window. This "write-once" behavior is a
+documented contract, not one `TypedDict`/LangGraph's `LastValue` channel can
+enforce at the type level.
 """
 
-from typing import Annotated, TypedDict
+from typing import Annotated, Literal, TypedDict
 
 from langgraph.graph.message import add_messages
 
@@ -40,6 +51,8 @@ class LabState(TypedDict):
     best_score: float
     last_score: float
     score_delta: float
+    # None = not yet established; see module docstring for the write-once contract
+    score_direction: Literal["minimize", "maximize"] | None
 
     # Experiment index (metadata only, full results in workspace files)
     experiments: list[dict]  # [{id, path, cv_score, iteration, model}]
@@ -59,7 +72,8 @@ def new_state(competition_name: str, workspace_path: str, *, max_iterations: int
     All scores/paths start at their zero values; `best_score` starts at
     negative infinity so the first real experiment always counts as an
     improvement. `max_iterations` defaults to 10, matching
-    `config/settings.yaml`'s `execution.max_iterations`.
+    `config/settings.yaml`'s `execution.max_iterations`. `score_direction`
+    starts as `None`, meaning direction has not yet been established.
     """
     return LabState(
         competition_name=competition_name,
@@ -78,6 +92,7 @@ def new_state(competition_name: str, workspace_path: str, *, max_iterations: int
         best_score=float("-inf"),
         last_score=0.0,
         score_delta=0.0,
+        score_direction=None,
         experiments=[],
         best_experiment_path="",
         checkpoint_summary="",

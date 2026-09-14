@@ -2,11 +2,6 @@
 <!-- max 25 entries; prune lowest-weight (oldest on tie) when exceeded -->
 <!-- Weight: 3 = cross-module/architectural, 2 = design/planning, 1 = implementation detail -->
 
-## L-003 | T-032 | 2026-08-19 | Weight: 3
-**Folders:** src/nodes/llm/, config/agents/, config/prompts/
-**Lesson:** Two modules that name the same artifact family by different rules will diverge silently — when approving a task that reads a sibling's output, verify both sides derive the filename from the same source of truth.
-**Signal:** "**The two artifact-numbering schemes inside Phase 6 can disagree.**" *(source: context/discoveries)*
-
 ## L-004 | T-032 | 2026-08-19 | Weight: 3
 **Folders:** src/nodes/llm/, config/agents/, config/prompts/
 **Lesson:** Approving a task that ships producers with no consumer is legitimate incremental delivery, but the missing read side must be logged as an open discovery in the same PR or it will never be wired.
@@ -126,3 +121,8 @@
 **Folders:** src/api/
 **Lesson:** When an API endpoint exposes data another module already writes (e.g. pipeline-produced `LabState` fields), rule that it must pass the data through unchanged rather than reshaping, renumbering or deduplicating it at the API boundary — repairing upstream data in a read-only endpoint both risks breaking other consumers' assumptions about that data's identity and hides a real pipeline bug instead of surfacing it.
 **Signal:** "Rewriting them in the API would break the `id` ↔ `experiments/exp_{N}/` directory correspondence that `ensemble_specialist`, `error_analyst` and `_experiment_design` rely on, and would put the API in the business of repairing pipeline state it does not own." *(source: context/decisions)*
+
+## L-032 | T-050 | 2026-09-14 | Weight: 3
+**Folders:** frontend/
+**Lesson:** A reconciliation/type-fixing task's own claimed list of what's wrong can be both over- and under-inclusive — verify every claimed mismatch, and the parts it doesn't mention, against the actual producer source (backend response models, the sole writer of the data) rather than trusting the task file's framing; a wrong return type or a stale request-body key can compile clean and hide a live runtime bug behind a green build.
+**Signal:** "the Sidebar would read `.competition_name` off a two-field object and render `undefined` with a green build. Found by reading `src/api/models.py` directly rather than trusting the task's mismatch list." *(source: context/decisions)*

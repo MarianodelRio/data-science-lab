@@ -17,20 +17,10 @@
 **Lesson:** When a cheap local check can prevent an external call entirely, order it first and pin the ordering with a test asserting zero calls — in a suite where the real SDK is installed and credentials are faked, ordering is the only thing keeping the tests offline.
 **Signal:** "The submission file's existence is checked before the first Kaggle API call." *(source: ## Completed)*
 
-## L-005 | T-033 | 2026-08-19 | Weight: 1
-**Folders:** src/nodes/llm/, src/nodes/compute/, config/agents/, config/prompts/
-**Lesson:** An `except` written for one known cause will silently swallow every other cause raising the same type — before reusing a narrow handler, ask what else raises it, and word the message so it stays honest for all of them.
-**Signal:** "`float(latest.public_score)` on a `None` score raises `TypeError`, which the branch written for the T-007 `max(..., key=.date)` hazard swallowed and diagnosed as a `date` problem." *(source: ## Completed)*
-
 ## L-006 | T-047 | 2026-08-20 | Weight: 2
 **Folders:** src/nodes/llm/, config/agents/, config/prompts/
 **Lesson:** When you extend a normalization step, match against the old and the new form both — a normalization that only replaces the old one silently drops matches that depended on the previous reading.
 **Signal:** "`CatBoost encoding` splits to `cat boost encoding`, which no longer matches the concatenated `catboost` keyword — so the split is added on top of the old reading rather than traded for it." *(source: context/decisions)*
-
-## L-007 | T-029 | 2026-08-31 | Weight: 1
-**Folders:** src/nodes/llm/, config/agents/, config/prompts/
-**Lesson:** When a validated field can legitimately be absent or malformed without that being a hard failure, fall back to the module family's established well-known-filename convention rather than treating it as a validation error — match the degrade style sibling readers already use, don't invent a new one.
-**Signal:** "`_oof_artifact_exists` treats a non-string/blank `results.json[\"oof_path\"]` as \"absent\" and falls back to checking the well-known fallback filename, rather than treating it as a hard validation failure — matches the plan's \"falls back... when that path is unset/unusable\" framing used elsewhere in this module family (e.g. `resolve_feature_spec_ref`)." *(source: ## Completed)*
 
 ## L-008 | T-029 | 2026-08-31 | Weight: 1
 **Folders:** src/nodes/llm/, config/agents/, config/prompts/
@@ -126,3 +116,13 @@
 **Folders:** src/api/
 **Lesson:** When adding an `except` handler for a broad exception type alongside a handler for one of its stdlib subclasses, place the subclass handler first — Python matches `except` clauses in order, so a subclass's handler placed after its own superclass's is unreachable and the object silently falls through to the superclass's (wrong) response.
 **Signal:** "`except ValueError` in `files.py::get_file` was originally ordered before `except UnicodeDecodeError`. Since `UnicodeDecodeError` is a `ValueError` subclass, a non-UTF-8 file was being reported as `400` instead of the required `415`." *(source: ## Completed)*
+
+## L-027 | T-050 | 2026-09-14 | Weight: 1
+**Folders:** frontend/
+**Lesson:** When more than one component in a rendered tree independently calls `client.ts` directly (rather than receiving an injected fetch), unit-testing that tree requires mocking the whole client module (`vi.mock`) rather than per-component fetch injection — the project's established injectable-fetch convention doesn't scale once several sibling components each own their own network call.
+**Signal:** "none of `Sidebar`/`PipelineView`/`Chat`/`ActionBar` receive one from `Layout`, each already opens its own connection via `client.ts` directly, so a wholesale module mock was the only way to keep the existing "no real network calls in unit tests" invariant once `Sidebar` (self-fetching) and `ActionBar` (unconditional MLflow fetch on mount) are both live in every `Layout` render." *(source: ## Completed)*
+
+## L-028 | T-050 | 2026-09-14 | Weight: 2
+**Folders:** frontend/
+**Lesson:** When a previously-unmounted or previously-static component newly starts receiving a prop that now varies over its lifetime (e.g. `runId`), audit its own internal state for staleness the same way a data-fetching hook would be audited — the component "looks unchanged" since its own code wasn't touched, which is exactly why this class of bug survives code-quality review and needs an adversarial pass to catch.
+**Signal:** "Since this PR mounts `ActionBar` unconditionally in `Layout` (previously it was never mounted), its `submitState`/`submitResult`/`submitError` now persist across run switches with nothing resetting them, so a stale result/error from run A kept showing after switching to run B." *(source: ## Completed)*

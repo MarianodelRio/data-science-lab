@@ -3,7 +3,7 @@ id: T-050
 phase: 6
 agent: frontend-agent
 depends_on: [T-038, T-049]
-status: pr-open
+status: done
 folders: [frontend/]
 outputs: [reconciled client.ts/types.ts, functional Sidebar, ActionBar mounted in Layout]
 size: L

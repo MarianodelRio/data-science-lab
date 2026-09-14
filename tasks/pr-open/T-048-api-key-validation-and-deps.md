@@ -96,3 +96,49 @@ the container.
   transitively via `coverage`'s `python_version<'3.11'` dependency on Python
   3.10, and stdlib `tomllib` on Python ≥3.11; no new dependency manifest entry
   was needed for it).
+
+### Review fix round 1
+
+- What was wrong (ADV-61c41fff, MEDIUM): `_missing_api_key_descriptors` rejected
+  any non-string raw value (`not isinstance(raw_value, str)`) as "missing",
+  including a present, non-`None` value like an unquoted YAML int
+  (`kaggle_username: 123456`, parsed by `yaml.safe_load` as `int`) or a bool.
+  But `Settings.load()`'s actual acceptance path (`_require_field`) has no type
+  check — it only rejects absent-or-`None` — so `Settings.load()` succeeds on
+  such a file while `validate_required_keys()` falsely reported the field as
+  missing. A stricter preflight than `load()` itself defeats the check's
+  purpose (catch real misconfiguration, not invent new ones) and could block a
+  boot that would have succeeded.
+- What changed: `_missing_api_key_descriptors` in `src/config/settings.py` now
+  checks `field_name not in raw_api_keys or raw_value is None` first (matching
+  `_require_field`'s own "absent or `None`" semantics) — this alone fails a
+  field outright. A present, non-`None`, non-string value now passes with no
+  further check, since `Settings.load()` accepts it as-is and
+  `_resolve_env_vars` leaves non-`str`/`dict`/`list` values unchanged (nothing
+  to resolve). The `${VAR}`-reference and empty-string checks remain, now
+  scoped inside the `isinstance(raw_value, str)` branch, since a non-string
+  value can't contain a `${VAR}` placeholder in the first place. No change to
+  `_resolve_env_vars`, `_require_section`, `_require_field`,
+  `_build_model_role_config`, or any dataclass — `Settings.load()` behavior is
+  unchanged (C4 preserved).
+- Tests: added `test_missing_api_key_descriptors_accepts_nonstring_present_value`
+  (parametrized over `123456` and `True` — not flagged; this is the test that
+  would have caught ADV-61c41fff) and
+  `test_validate_required_keys_accepts_nonstring_value_that_load_also_accepts`
+  (round-trip fixture with `kaggle_username: 123456`: asserts both
+  `Settings.load()` succeeds with `api_keys.kaggle_username == 123456` and
+  `Settings.validate_required_keys()` on the same file does not raise — locks
+  in that the two functions agree). Also replaced the pre-existing
+  `test_missing_api_key_descriptors_flags_non_string_value` (parametrized
+  `[None, 123]`, asserting both flagged) with
+  `test_missing_api_key_descriptors_flags_none_value` (`None` only, still
+  flagged, distinct from the "absent from dict" case) — the removed
+  parametrization directly encoded the bug being fixed (asserting `123` must
+  be flagged), so it could not remain unmodified once the false-positive was
+  corrected; this is a deliberate, narrow exception to "pre-existing tests
+  pass unmodified," made because the test in question was asserting the
+  incorrect behavior the fix removes. All other pre-existing tests in
+  `tests/unit/config/test_settings.py` pass unchanged.
+- Verification: full suite (2269 tests, `pytest --cov=src --cov-fail-under=70`,
+  97.26% coverage), `ruff check .` / `ruff format --check .`, and `mypy src/`
+  all pass.

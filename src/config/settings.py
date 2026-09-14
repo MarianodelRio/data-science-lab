@@ -146,8 +146,12 @@ def _missing_api_key_descriptors(raw_api_keys: dict[str, Any]) -> list[str]:
     """For each ApiKeysConfig field, resolve which value it would receive and
     report it as failing if that value is missing or empty. A field's raw
     settings.yaml value may:
-      - be absent from the mapping, non-string, or an empty string -> fails
-        outright (descriptor: "api_keys.{field}").
+      - be absent from the mapping, or explicitly null -> fails outright
+        (descriptor: "api_keys.{field}"), matching _require_field's own
+        "key not in section or section[key] is None" check.
+      - be an empty string -> fails outright, same descriptor. A bare empty
+        string literal is treated the same as _resolve_env_vars treats a
+        resolved-to-empty ${VAR}: both are unusable API keys.
       - reference one or more ${ENV_VAR} placeholders (the normal case, e.g.
         "${DEEPSEEK_API_KEY}") -> each referenced var is checked directly
         against os.environ; any unset-or-empty var fails the field
@@ -156,6 +160,12 @@ def _missing_api_key_descriptors(raw_api_keys: dict[str, Any]) -> list[str]:
       - be a literal string with no ${...} placeholder at all -> already
         "resolved" (mirrors _resolve_env_vars, which leaves a string with no
         pattern match unchanged); non-empty is enough, it passes.
+      - be present, non-None, and not a string (e.g. an int like 123456, or a
+        bool) -> passes. Settings.load()'s _require_field has no type check
+        and accepts it, and _resolve_env_vars leaves non-str/dict/list values
+        unchanged (nothing to resolve) -> this check must not be stricter
+        than load() actually is, or it can block a boot that would have
+        succeeded.
 
     Does not raise. Returns the list of failing descriptors so the caller can
     report every failure in one ConfigError, unlike _resolve_env_vars's
@@ -166,7 +176,14 @@ def _missing_api_key_descriptors(raw_api_keys: dict[str, Any]) -> list[str]:
         field_name = f.name
         raw_value = raw_api_keys.get(field_name)
 
-        if not isinstance(raw_value, str) or raw_value == "":
+        if field_name not in raw_api_keys or raw_value is None:
+            missing.append(f"api_keys.{field_name}")
+            continue
+
+        if not isinstance(raw_value, str):
+            continue  # present, non-None, non-string -> load() accepts it as-is
+
+        if raw_value == "":
             missing.append(f"api_keys.{field_name}")
             continue
 

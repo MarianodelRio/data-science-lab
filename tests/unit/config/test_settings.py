@@ -504,6 +504,28 @@ def test_validate_required_keys_does_not_require_prior_settings_load(
     assert Settings.validate_required_keys(path) is None
 
 
+def test_validate_required_keys_accepts_nonstring_value_that_load_also_accepts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression test for ADV-61c41fff: validate_required_keys() and load()
+    must agree on what's a valid api_keys value. A bare unquoted numeric
+    literal (e.g. `kaggle_username: 123456`) is parsed by yaml.safe_load as a
+    Python int -- Settings.load() accepts it (dataclasses don't enforce field
+    types at runtime), so the preflight check must accept it too, not flag it
+    as a false-positive "missing" key.
+    """
+    _set_all_required_env_vars(monkeypatch)
+    yaml_text = VALID_SETTINGS_YAML.replace(
+        "kaggle_username: ${KAGGLE_USERNAME}", "kaggle_username: 123456"
+    )
+    path = _write_settings_yaml(tmp_path, yaml_text)
+
+    settings = Settings.load(path)
+
+    assert settings.api_keys.kaggle_username == 123456  # type: ignore[comparison-overlap]
+    assert Settings.validate_required_keys(path) is None
+
+
 # --- T-048: _missing_api_key_descriptors() -----------------------------------
 
 
@@ -587,8 +609,33 @@ def test_missing_api_key_descriptors_flags_empty_literal_value() -> None:
     assert _missing_api_key_descriptors(raw_api_keys) == ["api_keys.anthropic"]
 
 
-@pytest.mark.parametrize("raw_value", [None, 123])
-def test_missing_api_key_descriptors_flags_non_string_value(raw_value: object) -> None:
+def test_missing_api_key_descriptors_flags_none_value() -> None:
+    """A field explicitly set to null in YAML must be flagged, distinct from a
+    field absent from the dict entirely (see
+    test_missing_api_key_descriptors_flags_field_absent_from_dict) -- both
+    collapse to the same "present and not None" check but are worth locking
+    in as separate cases.
+    """
+    raw_api_keys = {
+        "anthropic": None,
+        "deepseek": "literal-deepseek",
+        "groq": "literal-groq",
+        "kaggle_username": "literal-kaggle-user",
+        "kaggle_key": "literal-kaggle-key",
+    }
+
+    assert _missing_api_key_descriptors(raw_api_keys) == ["api_keys.anthropic"]
+
+
+@pytest.mark.parametrize("raw_value", [123456, True])
+def test_missing_api_key_descriptors_accepts_nonstring_present_value(raw_value: object) -> None:
+    """Regression test for ADV-61c41fff: a present, non-None, non-string value
+    (e.g. an int like a numeric Kaggle username, or a bool) must NOT be
+    flagged as missing. Settings.load()'s _require_field has no type check
+    and accepts any present, non-None value, and _resolve_env_vars leaves
+    non-str/dict/list values unchanged -- this preflight check must not be
+    stricter than what load() itself actually accepts.
+    """
     raw_api_keys = {
         "anthropic": raw_value,
         "deepseek": "literal-deepseek",
@@ -597,7 +644,7 @@ def test_missing_api_key_descriptors_flags_non_string_value(raw_value: object) -
         "kaggle_key": "literal-kaggle-key",
     }
 
-    assert _missing_api_key_descriptors(raw_api_keys) == ["api_keys.anthropic"]
+    assert _missing_api_key_descriptors(raw_api_keys) == []
 
 
 def test_missing_api_key_descriptors_flags_only_the_unset_var_in_a_multi_var_field(

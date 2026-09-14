@@ -97,11 +97,6 @@
 **Lesson:** Before letting a task provision a CI service container for a dependency design.md describes as tested against a real instance, verify some test in the repo actually connects to it programmatically — an aspirational testing-strategy sentence is not evidence the wiring exists, and an unexercised service container is cost plus a false coverage signal.
 **Signal:** "Provisioning a GitHub Actions service container would therefore start a Chroma nobody dials." *(source: context/decisions)*
 
-## L-022 | T-044 | 2026-09-13 | Weight: 2
-**Folders:** .github/, README.md
-**Lesson:** When a task's own Done-when checklist references a file or path outside its declared `folders:`, treat that as a Rule-1 self-contradiction to resolve in Phase 1 (widen `folders:` to the minimum needed) rather than leaving it for the Coder to either violate Rule 1 or silently fail the criterion.
-**Signal:** "Rule 1 (\"never write outside assigned folders:\") would otherwise make the task self-contradictory." *(source: context/decisions)*
-
 ## L-023 | T-044 | 2026-09-13 | Weight: 3
 **Folders:** .github/, README.md
 **Lesson:** CLAUDE.md's protected-contracts clause governs *changes* to an already-established contract, not the designated task that brings it into existence for the first time (e.g. a `batteries: true`-driven scaffold task) — reading it as requiring separate approval for the creation itself would make every battery task unexecutable; the standard Phase 1 checkpoint is the approval.
@@ -112,11 +107,6 @@
 **Lesson:** Before approving a task's scope on the strength of spec.md's "out of scope / not yet built" claim for a dependency module, verify that claim against `tasks/done/` and the actual repo state — spec.md can silently lag behind merged work until a `/refine` pass catches up, and an unrevisited stale section can misdirect a task into repeating an already-obsolete pattern (e.g. building a presentational-only component because a dependency API "doesn't exist" when it has, in fact, already shipped).
 **Signal:** "`spec.md`'s \"API backend (`src/api/`)\" section states `src/api/` \"contains only an empty `__init__.py`\" and lists T-034–T-037 as not yet built; in reality all four are merged and `src/api/routers/{chat,runs,events,kaggle,mlflow}.py` exist." *(source: context/decisions)*
 
-## L-025 | T-041 | 2026-09-13 | Weight: 2
-**Folders:** frontend/
-**Lesson:** When a task resembles a recently-approved sibling task's precedent (e.g. "ship presentational-only, no backend endpoint exists"), re-verify the precedent's underlying condition against current repo state for *this* task rather than assuming the ruling carries over automatically — the condition that justified it for the sibling may no longer hold, or may never have applied here.
-**Signal:** "T-040's \"no endpoint exists, so ship presentational\" rationale does not transfer." *(source: context/decisions)*
-
 ## L-026 | T-042 | 2026-09-13 | Weight: 3
 **Folders:** frontend/
 **Lesson:** When approving a task that both corrects a stale API contract (a client type or method) and builds new UI code against that contract, require the correction to land in its own commit before any dependent code is written — so the type-checker enforces the fix on the new code rather than the new code merely encoding an assumption that could still be wrong.
@@ -126,3 +116,13 @@
 **Folders:** src/config/, pyproject.toml, docs/configuration.md
 **Lesson:** Before approving a task, verify its stated problem premise against the current code — a task's investigation-time description of a bug or gap can have been partially or wholly resolved by the time it's picked up, turning what reads as "add a missing check" into "the check already exists, but nothing calls it at the right time."
 **Signal:** "both halves of the task rest on premises that are partly false against the current code." *(source: context/decisions)*
+
+## L-028 | T-051 | 2026-09-14 | Weight: 3
+**Folders:** src/state.py
+**Lesson:** When a task's Done-when checklist crosses into another agent's owned file, deferring the item to an already-identified downstream task (rather than widening `folders:`, L-022's default) is the right call only if the current doc stays operatively true in the interval — verify the stale-sounding sentence still describes real behavior until the downstream task lands, not just that a downstream task exists to eventually fix it.
+**Signal:** "The § State passage that needs rewriting (\"the state contract itself has no polarity field, so `score_evaluator` is responsible for sign-flipping\") stays *operatively true* after T-051 — the field exists but nothing writes or reads it until T-052 — so deferring the doc edit to T-052 leaves no interval of incorrect documentation." *(source: context/decisions)*
+
+## L-029 | T-051 | 2026-09-14 | Weight: 3
+**Folders:** src/state.py
+**Lesson:** A protected state contract cannot enforce a "write-once" or "set-once" invariant at the type level (TypedDict + LangGraph's LastValue channel accept any last write) — when approving a task that adds such a field, require the contract to document the invariant only and point enforcement at whichever node becomes the field's sole writer, matching the existing `validation_config_path`/`ValidationStrategistNode` precedent rather than inventing guard code the state module structurally cannot host.
+**Signal:** "A TypedDict cannot make a field write-once; `validation_config_path`'s immutability is likewise enforced in `ValidationStrategistNode`, not in the state contract. T-051 can deliver the field plus a docstring stating the contract; the enforcement lives in `score_evaluator` (T-052)." *(source: context/decisions)*

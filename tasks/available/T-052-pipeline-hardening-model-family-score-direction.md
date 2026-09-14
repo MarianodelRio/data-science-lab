@@ -3,7 +3,7 @@ id: T-052
 phase: 6
 agent: pipeline-agent
 depends_on: [T-048, T-023, T-051, T-031]
-status: blocked
+status: available
 folders: [src/nodes/]
 outputs: [specialist_selector fail-fast validation, score_evaluator score_direction consumption]
 size: M

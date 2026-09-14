@@ -3,7 +3,7 @@ id: T-051
 phase: 6
 agent: infra-agent
 depends_on: [T-002]
-status: pr-open
+status: done
 folders: [src/state.py]
 outputs: [LabState.score_direction]
 size: S

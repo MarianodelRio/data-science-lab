@@ -3,12 +3,12 @@ id: T-049
 phase: 6
 agent: api-agent
 depends_on: [T-034, T-048]
-status: in-progress
+status: pr-open
 folders: [src/api/]
 outputs: ["GET /api/runs/{run_id}/experiments", "GET /api/runs/{run_id}/files/{path}"]
 size: M
 branch: feature/T-049-experiments-file-endpoints
-pr: ~
+pr: https://github.com/MarianodelRio/data-science-lab/pull/50
 ---
 
 ## Experiments + file-content endpoints; validate API keys at startup

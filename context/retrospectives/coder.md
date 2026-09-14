@@ -2,11 +2,6 @@
 <!-- max 25 entries; prune lowest-weight (oldest on tie) when exceeded -->
 <!-- Weight: 3 = cross-module/architectural, 2 = design/planning, 1 = implementation detail -->
 
-## L-001 | T-032 | 2026-08-19 | Weight: 1
-**Folders:** src/nodes/llm/, config/agents/, config/prompts/
-**Lesson:** When a node needs a path another module already resolved, read the resolved value out of that module's artifact instead of importing its resolver or re-deriving the path yourself.
-**Signal:** "The resolved experiment directory is read out of `score_evaluation_{N}.json`'s `experiment_dir`, never re-derived; `src/nodes/compute/_evaluation_common.py` is neither imported nor reimplemented." *(source: ## Completed)*
-
 ## L-002 | T-032 | 2026-08-19 | Weight: 3
 **Folders:** src/nodes/llm/, config/agents/, config/prompts/
 **Lesson:** A reader that degrades instead of raising must leave a machine-readable trace of what it could not read — record each missing input in the artifact you write, or the failure becomes invisible downstream.
@@ -126,3 +121,8 @@
 **Folders:** src/config/, pyproject.toml, docs/configuration.md
 **Lesson:** When writing a new validator meant to preflight or mirror an existing loader's acceptance path, match the loader's actual type-checking semantics rather than adding a stricter check — a validator stricter than the code it precedes can reject input the real loader would accept, producing a false positive instead of catching a real gap.
 **Signal:** "A stricter preflight than `load()` itself defeats the check's purpose (catch real misconfiguration, not invent new ones) and could block a boot that would have succeeded." *(source: ## Completed)*
+
+## L-026 | T-049 | 2026-09-14 | Weight: 1
+**Folders:** src/api/
+**Lesson:** When adding an `except` handler for a broad exception type alongside a handler for one of its stdlib subclasses, place the subclass handler first — Python matches `except` clauses in order, so a subclass's handler placed after its own superclass's is unreachable and the object silently falls through to the superclass's (wrong) response.
+**Signal:** "`except ValueError` in `files.py::get_file` was originally ordered before `except UnicodeDecodeError`. Since `UnicodeDecodeError` is a `ValueError` subclass, a non-UTF-8 file was being reported as `400` instead of the required `415`." *(source: ## Completed)*

@@ -2,16 +2,6 @@
 <!-- max 25 entries; prune lowest-weight (oldest on tie) when exceeded -->
 <!-- Weight: 3 = cross-module/architectural, 2 = design/planning, 1 = implementation detail -->
 
-## L-001 | T-032 | 2026-08-19 | Weight: 3
-**Folders:** src/nodes/llm/, config/agents/, config/prompts/
-**Lesson:** A state field that many modules read but no module writes is a latent pipeline-wide bug, not a gap to fill later — assign the writer to a named task as soon as the asymmetry is spotted, and check which already-landed modules are silently broken by it.
-**Signal:** "Before this, every `{iteration}`-suffixed artifact (`design/iteration_{N}/solution_plan.json`, `feature_spec.json`, `experiments/exp_{N}/design.json`, `reports/score_evaluation_{N}.json`) overwrote its predecessor forever, and the already-landed `ensemble_specialist` could not run at all" *(source: context/decisions)*
-
-## L-002 | T-032 | 2026-08-19 | Weight: 3
-**Folders:** src/nodes/llm/, config/agents/, config/prompts/
-**Lesson:** "Legal under the module DAG" is not sufficient grounds to allow an import — check whether a prior task deliberately decoupled the two modules, and prefer consuming the sibling's output over importing or copying its logic.
-**Signal:** "Importing `src/nodes/compute/_evaluation_common.py` from an LLM node is legal under invariant #8 but contradicts T-031's documented ported-not-imported decoupling, and a fresh copy of `resolve_output_iteration`/`candidate_experiment_dirs` could reintroduce the experiment-directory mislabeling bug T-031's adversarial review fixed." *(source: context/decisions)*
-
 ## L-003 | T-032 | 2026-08-19 | Weight: 3
 **Folders:** src/nodes/llm/, config/agents/, config/prompts/
 **Lesson:** Two modules that name the same artifact family by different rules will diverge silently — when approving a task that reads a sibling's output, verify both sides derive the filename from the same source of truth.
@@ -126,3 +116,13 @@
 **Folders:** src/state.py
 **Lesson:** A protected state contract cannot enforce a "write-once" or "set-once" invariant at the type level (TypedDict + LangGraph's LastValue channel accept any last write) — when approving a task that adds such a field, require the contract to document the invariant only and point enforcement at whichever node becomes the field's sole writer, matching the existing `validation_config_path`/`ValidationStrategistNode` precedent rather than inventing guard code the state module structurally cannot host.
 **Signal:** "A TypedDict cannot make a field write-once; `validation_config_path`'s immutability is likewise enforced in `ValidationStrategistNode`, not in the state contract. T-051 can deliver the field plus a docstring stating the contract; the enforcement lives in `score_evaluator` (T-052)." *(source: context/decisions)*
+
+## L-030 | T-049 | 2026-09-14 | Weight: 3
+**Folders:** src/api/
+**Lesson:** When approving a task that wires a new startup-time check into a shared app factory (e.g. `create_app`), require an injectable seam with a test-safe default before allowing a literal call — `TestClient(app)` triggers the ASGI lifespan for every test that constructs the app, so an unconditional check silently turns the whole existing test suite red across every call site, not just the fixture.
+**Signal:** "`src/api/main.py:173` runs `app = create_app()` at import time, and `tests/unit/api/conftest.py:51` enters `with TestClient(app)`, which executes the ASGI lifespan for every API unit test. CI ... sets no `ANTHROPIC_API_KEY`/`DEEPSEEK_API_KEY`/`GROQ_API_KEY`/`KAGGLE_*` env vars and no conftest provides them, so an un-injectable validator on either path turns the whole `tests/unit/api/` suite red." *(source: context/decisions)*
+
+## L-031 | T-049 | 2026-09-14 | Weight: 3
+**Folders:** src/api/
+**Lesson:** When an API endpoint exposes data another module already writes (e.g. pipeline-produced `LabState` fields), rule that it must pass the data through unchanged rather than reshaping, renumbering or deduplicating it at the API boundary — repairing upstream data in a read-only endpoint both risks breaking other consumers' assumptions about that data's identity and hides a real pipeline bug instead of surfacing it.
+**Signal:** "Rewriting them in the API would break the `id` ↔ `experiments/exp_{N}/` directory correspondence that `ensemble_specialist`, `error_analyst` and `_experiment_design` rely on, and would put the API in the business of repairing pipeline state it does not own." *(source: context/decisions)*

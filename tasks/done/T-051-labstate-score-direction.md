@@ -7,7 +7,7 @@ status: done
 folders: [src/state.py]
 outputs: [LabState.score_direction]
 size: S
-branch: feature/T-051-labstate-score-direction
+branch: ~
 pr: https://github.com/MarianodelRio/data-science-lab/pull/49
 ---
 

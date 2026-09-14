@@ -168,3 +168,40 @@ disk, readable by anything that still references them.
 
 A missing prompt file raises the stdlib `FileNotFoundError` from `Path.read_text()` — unwrapped —
 so its message already contains the path that was looked up.
+
+## API key preflight validation
+
+`Settings.validate_required_keys(path: str | Path = SETTINGS_PATH)` is a classmethod that checks
+every required API key is present and non-empty *before* anything else in the pipeline runs — it
+does not require a prior successful `Settings.load()`. The required-key set is exactly the fields
+of `ApiKeysConfig` (`anthropic`, `deepseek`, `groq`, `kaggle_username`, `kaggle_key`), derived via
+`dataclasses.fields(ApiKeysConfig)`, never a second hardcoded list and never derived from
+`models.*` roles.
+
+Why it's separate from `Settings.load()`: `load()` already fails loudly on a missing/empty
+`${ENV_VAR}` via `_resolve_env_vars`, but only on the *first* one it hits while resolving the
+whole file, and only once something actually calls `load()` / `LLMFactory.get()` — today that
+happens lazily, mid-pipeline. `validate_required_keys()` reads only the `api_keys` section and
+reports *every* missing/empty key in one error, e.g.:
+
+```
+ConfigError: Missing or empty required API key(s) in config/settings.yaml: api_keys.deepseek (${DEEPSEEK_API_KEY}), api_keys.kaggle_key (${KAGGLE_KEY})
+```
+
+It intentionally ignores errors in every other section (`models`, `context`, `workspace`,
+`optuna`, `execution`) — it's a keys-only preflight, not a substitute for `load()`. Intended
+caller: an API startup hook (tracked separately in T-049) that runs this before serving any
+request, so a misconfigured deployment fails at boot instead of mid-run.
+
+## Dependencies
+
+`torch` is declared directly in `[project.dependencies]` (`pyproject.toml`, `torch>=2.0`),
+matching what `Dockerfile.api` installs. It previously arrived only transitively via
+`sentence-transformers`; declaring it directly keeps `pip install -e ".[dev]"` outside Docker
+consistent with the container's dependency set, and gives code that imports `torch` directly
+(e.g. `deep_learning_specialist`-generated code) an explicit, visible dependency instead of
+relying on someone else's transitive one. The version bound is a permissive lower bound with no
+exact pin — `Dockerfile.api`'s CPU wheel carries a `+cpu` local version suffix that would never
+satisfy an exact PyPI pin. `Dockerfile.api` itself is unchanged: its two-step install (CPU-wheel
+`torch` pre-install, then `pip install .`) exists specifically to avoid pulling PyTorch's default
+CUDA-bundled wheel.

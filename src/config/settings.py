@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
@@ -142,6 +142,46 @@ def _build_model_role_config(
     )
 
 
+def _missing_api_key_descriptors(raw_api_keys: dict[str, Any]) -> list[str]:
+    """For each ApiKeysConfig field, resolve which value it would receive and
+    report it as failing if that value is missing or empty. A field's raw
+    settings.yaml value may:
+      - be absent from the mapping, non-string, or an empty string -> fails
+        outright (descriptor: "api_keys.{field}").
+      - reference one or more ${ENV_VAR} placeholders (the normal case, e.g.
+        "${DEEPSEEK_API_KEY}") -> each referenced var is checked directly
+        against os.environ; any unset-or-empty var fails the field
+        (descriptor: "api_keys.{field} (${VAR1}, ${VAR2})" listing only the
+        failing vars).
+      - be a literal string with no ${...} placeholder at all -> already
+        "resolved" (mirrors _resolve_env_vars, which leaves a string with no
+        pattern match unchanged); non-empty is enough, it passes.
+
+    Does not raise. Returns the list of failing descriptors so the caller can
+    report every failure in one ConfigError, unlike _resolve_env_vars's
+    raise-on-first-miss repl() closure, which cannot be reused here.
+    """
+    missing: list[str] = []
+    for f in fields(ApiKeysConfig):
+        field_name = f.name
+        raw_value = raw_api_keys.get(field_name)
+
+        if not isinstance(raw_value, str) or raw_value == "":
+            missing.append(f"api_keys.{field_name}")
+            continue
+
+        var_names = _ENV_VAR_PATTERN.findall(raw_value)
+        if not var_names:
+            continue  # literal value, already non-empty -> fine
+
+        unset = [v for v in var_names if not os.environ.get(v)]
+        if unset:
+            rendered = ", ".join("${" + v + "}" for v in unset)
+            missing.append(f"api_keys.{field_name} ({rendered})")
+
+    return missing
+
+
 @dataclass(frozen=True)
 class Settings:
     models: ModelsConfig
@@ -245,3 +285,29 @@ class Settings:
             optuna=optuna,
             execution=execution,
         )
+
+    @classmethod
+    def validate_required_keys(cls, path: str | Path = SETTINGS_PATH) -> None:
+        """Preflight check for required API keys — callable before any successful
+        Settings.load(). Re-reads settings.yaml from disk on every call, same as
+        load() (no caching/singleton, per T-003 precedent).
+
+        Unlike load()'s _resolve_env_vars, which raises ConfigError on the first
+        missing/empty ${VAR} it hits while resolving the WHOLE file, this checks
+        only the api_keys section and reports every missing/empty required key
+        in one ConfigError. It does not validate any other section (models,
+        context, workspace, optuna, execution) — it is a narrower, faster,
+        keys-only check, not a substitute for load().
+        """
+        source = path
+        raw_text = Path(path).read_text(encoding="utf-8")
+        raw = yaml.safe_load(raw_text) or {}
+        if not isinstance(raw, dict):
+            raise ConfigError(f"Expected a YAML mapping at the top level of {source}")
+
+        raw_api_keys = _require_section(raw, "api_keys", source=source)
+        missing = _missing_api_key_descriptors(raw_api_keys)
+        if missing:
+            raise ConfigError(
+                f"Missing or empty required API key(s) in {source}: " + ", ".join(missing)
+            )

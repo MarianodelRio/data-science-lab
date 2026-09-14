@@ -17,6 +17,7 @@ dependencies = [
     "langchain-google-genai",
     "chromadb",
     "sentence-transformers",
+    "torch>=2.0",
     "optuna",
     "mlflow",
     "kaggle",

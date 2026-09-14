@@ -121,3 +121,8 @@
 **Folders:** frontend/
 **Lesson:** Before locking in a parser for an external response's error-body shape (e.g. assuming a `{"detail": ...}` key), verify the assumption by grepping the actual producer's code for how it raises errors, and always degrade gracefully — never throw a second error — if the body doesn't match.
 **Signal:** "confirmed via `grep -rn HTTPException src/api/` that every raise site uses FastAPI's default `{\"detail\": ...}` shape and no `src/api/` router installs a custom exception handler that would override it." *(source: ## Completed)*
+
+## L-025 | T-048 | 2026-09-14 | Weight: 1
+**Folders:** src/config/, pyproject.toml, docs/configuration.md
+**Lesson:** When writing a new validator meant to preflight or mirror an existing loader's acceptance path, match the loader's actual type-checking semantics rather than adding a stricter check — a validator stricter than the code it precedes can reject input the real loader would accept, producing a false positive instead of catching a real gap.
+**Signal:** "A stricter preflight than `load()` itself defeats the check's purpose (catch real misconfiguration, not invent new ones) and could block a boot that would have succeeded." *(source: ## Completed)*

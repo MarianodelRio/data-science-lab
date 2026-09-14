@@ -7,7 +7,7 @@ status: done
 folders: [src/api/]
 outputs: ["GET /api/runs/{run_id}/experiments", "GET /api/runs/{run_id}/files/{path}"]
 size: M
-branch: feature/T-049-experiments-file-endpoints
+branch: ~
 pr: https://github.com/MarianodelRio/data-science-lab/pull/50
 ---
 

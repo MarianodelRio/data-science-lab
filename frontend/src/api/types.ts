@@ -1,26 +1,12 @@
 /**
  * Client-side API types.
  *
- * `Run` and `PipelineEvent` are reconciled against the real backend
- * (`src/api/`, owned by api-agent) — see docs/api.md's "RunSummary shape"
- * and "GET /api/runs/{id}/events" sections, and
- * context/discoveries/T-034.md / T-035.md for the reconciliation history.
- *
- * PROVISIONAL: the remaining types below (`CreateRunPayload`,
- * `ResumePayload`, `Experiment`) are still best-effort guesses based on
- * design.md's endpoint contract, not yet checked against a real backend
- * response. `Experiment` is a stronger case than the rest: no HTTP response
- * has ever carried this shape — it mirrors `LabState.experiments`
- * (src/state.py) verbatim pending a real endpoint (see
- * context/discoveries/T-040.md).
- *
- * `SubmitResponse` and `MlflowOpenResponse` are reconciled against the real
- * backend (`src/api/models.py::SubmitResponse`/`MlflowUrlResponse`, T-037) —
- * see T-042's reconciliation commit.
- *
- * `ChatClientFrame`/`ChatServerFrame` are reconciled against the live
- * backend (`docs/api.md` § WebSocket / `src/api/routers/chat.py`), not
- * provisional.
+ * All types below are reconciled against the live backend (`src/api/`, owned
+ * by api-agent) — see `docs/api.md` for the endpoint reference. `Run` and
+ * `PipelineEvent` were reconciled in earlier tasks (T-034/T-035); `Experiment`,
+ * `CreateRunPayload`/`CreateRunResponse`, `ResumePayload`/`ResumeResponse`,
+ * `ExperimentsResponse`, `SubmitResponse`, `MlflowOpenResponse`, and
+ * `ChatClientFrame`/`ChatServerFrame` were reconciled in T-037/T-041/T-042/T-050.
  */
 
 /** High-level lifecycle status of a pipeline run. */
@@ -43,9 +29,15 @@ export interface Run {
 
 /** Payload for POST /api/runs. */
 export interface CreateRunPayload {
-  competitionName: string
-  problemStatement: string
-  datasetPath: string
+  competition_name: string
+  workspace_path: string
+  max_iterations?: number
+}
+
+/** Response for POST /api/runs — a 201 with only the new run's id and status. */
+export interface CreateRunResponse {
+  run_id: string
+  status: RunStatus
 }
 
 /** A single event streamed over GET /api/runs/{id}/events (SSE). */
@@ -65,8 +57,8 @@ export interface PipelineEvent {
 /**
  * A single completed experiment, as recorded server-side in
  * `LabState.experiments` (src/state.py) — mirrored verbatim, snake_case.
- * PROVISIONAL: no HTTP endpoint currently returns this shape (see
- * context/discoveries/T-040.md).
+ * `id` is unique by construction (verified against `src/nodes/llm/coder.py`,
+ * the sole writer, which appends exactly this shape per experiment).
  */
 export interface Experiment {
   id: string
@@ -74,6 +66,15 @@ export interface Experiment {
   cv_score: number
   iteration: number
   model: string
+}
+
+/** Response for GET /api/runs/{id}/experiments. */
+export interface ExperimentsResponse {
+  experiments: Experiment[]
+  /** `null` until the run's baseline has actually run — never the raw `0.0` seed. */
+  baseline_score: number | null
+  /** `""` for a run with no improved experiment yet. */
+  best_experiment_path: string
 }
 
 /** A single client -> server frame sent over WS /api/runs/{id}/chat. */
@@ -91,7 +92,13 @@ export type ChatServerFrame =
 
 /** Payload for POST /api/runs/{id}/resume. */
 export interface ResumePayload {
-  humanFeedback: string
+  feedback: string
+}
+
+/** Response for POST /api/runs/{id}/resume. */
+export interface ResumeResponse {
+  run_id: string
+  status: RunStatus
 }
 
 /**

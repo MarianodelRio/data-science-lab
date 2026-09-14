@@ -13,8 +13,11 @@ import type {
   ChatClientFrame,
   ChatServerFrame,
   CreateRunPayload,
+  CreateRunResponse,
+  ExperimentsResponse,
   MlflowOpenResponse,
   PipelineEvent,
+  ResumeResponse,
   Run,
   SubmitResponse,
 } from './types'
@@ -92,8 +95,8 @@ export function listRuns(fetchImpl: FetchLike = fetch): Promise<Run[]> {
 export function createRun(
   payload: CreateRunPayload,
   fetchImpl: FetchLike = fetch,
-): Promise<Run> {
-  return request<Run>(
+): Promise<CreateRunResponse> {
+  return request<CreateRunResponse>(
     '/api/runs',
     { method: 'POST', body: JSON.stringify(payload) },
     fetchImpl,
@@ -205,17 +208,66 @@ export function connectChat(
   }
 }
 
-/** POST /api/runs/{id}/resume — submit human_feedback, resume from interrupt. */
+/** POST /api/runs/{id}/resume — submit feedback, resume from interrupt. */
 export function resumeRun(
   runId: string,
   feedback: string,
   fetchImpl: FetchLike = fetch,
-): Promise<void> {
-  return request<void>(
+): Promise<ResumeResponse> {
+  return request<ResumeResponse>(
     `/api/runs/${encodeURIComponent(runId)}/resume`,
-    { method: 'POST', body: JSON.stringify({ humanFeedback: feedback }) },
+    { method: 'POST', body: JSON.stringify({ feedback }) },
     fetchImpl,
   )
+}
+
+/** GET /api/runs/{id}/experiments — the run's experiments plus baseline score. */
+export function getExperiments(
+  runId: string,
+  fetchImpl: FetchLike = fetch,
+): Promise<ExperimentsResponse> {
+  return request<ExperimentsResponse>(
+    `/api/runs/${encodeURIComponent(runId)}/experiments`,
+    { method: 'GET' },
+    fetchImpl,
+  )
+}
+
+/**
+ * GET /api/runs/{id}/files/{path} — a workspace file's raw text content, for
+ * `FileViewer`. Bypasses `request<T>()`: the response is `text/plain`, not
+ * JSON, so it must not go through `.json()`. On failure, mirrors
+ * `request<T>()`'s error shape (a real `Error` with `.status`/`.detail`
+ * attached) so callers can branch on `.status` identically to every other
+ * client call — in particular, the caller treats `.status === 404` as "not
+ * generated yet," not a genuine error.
+ *
+ * `path` is not URI-encoded: the backend route (`{path:path}`,
+ * `src/api/routers/files.py`) is a FastAPI/Starlette "path" converter that
+ * matches literal `/`-containing values directly (e.g. `reports/eda_report.md`)
+ * — encoding the slashes would break route matching instead of fixing it.
+ */
+export async function getFileContent(
+  runId: string,
+  path: string,
+  fetchImpl: FetchLike = fetch,
+): Promise<string> {
+  const response = await fetchImpl(
+    `${API_BASE}/api/runs/${encodeURIComponent(runId)}/files/${path}`,
+    { method: 'GET' },
+  )
+
+  if (!response.ok) {
+    const detail = await extractErrorDetail(response)
+    const error = new Error(
+      `Request to /api/runs/${runId}/files/${path} failed with status ${response.status}`,
+    ) as ApiError
+    error.status = response.status
+    error.detail = detail
+    throw error
+  }
+
+  return response.text()
 }
 
 /** POST /api/runs/{id}/submit — trigger Kaggle submission. */

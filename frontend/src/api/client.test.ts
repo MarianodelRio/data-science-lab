@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   connectChat,
   createRun,
+  getExperiments,
+  getFileContent,
   getRun,
   listRuns,
   openMlflow,
@@ -14,8 +16,11 @@ import {
 import type {
   ChatClientFrame,
   ChatServerFrame,
+  CreateRunResponse,
+  ExperimentsResponse,
   MlflowOpenResponse,
   PipelineEvent,
+  ResumeResponse,
   Run,
   SubmitResponse,
 } from './types'
@@ -63,26 +68,16 @@ describe('REST methods', () => {
     )
   })
 
-  it('createRun issues a POST with a JSON-encoded body', async () => {
+  it('createRun issues a POST with a snake_case JSON-encoded body and returns {run_id, status}', async () => {
     const payload = {
-      competitionName: 'titanic',
-      problemStatement: 'predict survival',
-      datasetPath: '/data/titanic',
-    }
-    const created: Run = {
-      run_id: 'run-2',
-      competition_name: payload.competitionName,
+      competition_name: 'titanic',
       workspace_path: '/workspaces/titanic',
-      status: 'pending',
-      phase: '',
-      current_iteration: 0,
-      best_score: null,
-      created_at: '2026-08-04T00:00:00Z',
-      updated_at: '2026-08-04T00:00:00Z',
+      max_iterations: 5,
     }
+    const created: CreateRunResponse = { run_id: 'run-2', status: 'pending' }
     const fetchImpl = vi
       .fn<FetchLike>()
-      .mockResolvedValue(jsonResponse(created))
+      .mockResolvedValue(jsonResponse(created, 201))
 
     const result = await createRun(payload, fetchImpl)
 
@@ -162,6 +157,73 @@ describe('REST methods', () => {
     const [url, init] = fetchImpl.mock.calls[0]
     expect(url).toBe('/api/runs/run-1')
     expect(init).toMatchObject({ method: 'GET' })
+  })
+
+  it('resumeRun sends exactly {feedback} and returns {run_id, status}', async () => {
+    const response: ResumeResponse = { run_id: 'run-1', status: 'running' }
+    const fetchImpl = vi.fn<FetchLike>().mockResolvedValue(jsonResponse(response))
+
+    const result = await resumeRun('run-1', 'looks good', fetchImpl)
+
+    expect(result).toEqual(response)
+    const [url, init] = fetchImpl.mock.calls[0]
+    expect(url).toBe('/api/runs/run-1/resume')
+    expect(init?.body).toBe(JSON.stringify({ feedback: 'looks good' }))
+  })
+
+  it('getExperiments issues a GET to /api/runs/{id}/experiments and round-trips a null baseline_score', async () => {
+    const response: ExperimentsResponse = {
+      experiments: [
+        { id: 'exp_0', path: 'experiments/exp_0', cv_score: 0.8, iteration: 0, model: 'lgbm' },
+      ],
+      baseline_score: null,
+      best_experiment_path: '',
+    }
+    const fetchImpl = vi.fn<FetchLike>().mockResolvedValue(jsonResponse(response))
+
+    const result = await getExperiments('run-1', fetchImpl)
+
+    expect(result).toEqual(response)
+    expect(result.baseline_score).toBeNull()
+    const [url, init] = fetchImpl.mock.calls[0]
+    expect(url).toBe('/api/runs/run-1/experiments')
+    expect(init).toMatchObject({ method: 'GET' })
+  })
+})
+
+describe('getFileContent', () => {
+  it('returns the raw text body and never calls response.json()', async () => {
+    const jsonSpy = vi.fn()
+    const fetchImpl = vi.fn<FetchLike>().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: () => Promise.resolve('# markdown'),
+      json: jsonSpy,
+    } as unknown as Response)
+
+    const result = await getFileContent('run-1', 'reports/eda_report.md', fetchImpl)
+
+    expect(result).toBe('# markdown')
+    expect(jsonSpy).not.toHaveBeenCalled()
+    const [url] = fetchImpl.mock.calls[0]
+    expect(url).toBe('/api/runs/run-1/files/reports/eda_report.md')
+  })
+
+  it('rejects with a .status === 404 error on a not-found response', async () => {
+    const fetchImpl = vi.fn<FetchLike>().mockResolvedValue({
+      ok: false,
+      status: 404,
+      json: () => Promise.resolve({ detail: 'not found' }),
+    } as unknown as Response)
+
+    try {
+      await getFileContent('run-1', 'reports/eda_report.md', fetchImpl)
+      expect.unreachable('getFileContent should have thrown')
+    } catch (error) {
+      const apiError = error as ApiError
+      expect(apiError.status).toBe(404)
+      expect(apiError.detail).toBe('not found')
+    }
   })
 })
 

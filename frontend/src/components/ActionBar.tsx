@@ -61,6 +61,21 @@ export function ActionBar({
   const [submitResult, setSubmitResult] = useState<SubmitResponse | null>(null)
   const [submitError, setSubmitError] = useState<SubmitError | null>(null)
 
+  // Reset submit state during render when `runId` changes — same pattern as
+  // useExperiments.ts/useFileContent.ts, to avoid an unconditional setState
+  // at the top of an effect (react-hooks/set-state-in-effect). ActionBar now
+  // stays mounted across run switches (T-050), so without this a stale
+  // result/error from a previous run's submission would keep showing under
+  // the newly selected run. `mlflowUrl` is intentionally not reset here — it
+  // is fetched once on mount and does not vary per run.
+  const [prevRunId, setPrevRunId] = useState(runId)
+  if (runId !== prevRunId) {
+    setPrevRunId(runId)
+    setSubmitState('idle')
+    setSubmitResult(null)
+    setSubmitError(null)
+  }
+
   // Fetched once on mount — never inside the MLflow click handler — so that
   // handler can call `window.open` as the first synchronous statement,
   // avoiding popup-blocker rejection of an `open()` call that follows an

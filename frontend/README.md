@@ -58,33 +58,32 @@ as a real connection drop, but as a JS `Error` instead of a DOM `Event` — `Pip
 runs the `getRun` disambiguation above for a genuine `Event`; an `Error` is ignored, since the
 stream itself is still alive.
 
-## Experiments table: presentational, fixture-driven (unwired)
+## Experiments table: presentational, hook-driven
 
 `ExperimentsTable` (`src/components/ExperimentsTable.tsx`) takes two optional props —
 `experiments?: Experiment[]` and `baselineScore?: number | null` — and has no fetch, API
-client function, or SSE/WebSocket subscription of its own. There is currently no backend
-endpoint that returns an experiments list or a baseline score (`GET /api/runs/{id}` only
-returns a scalar `best_score`), so `Layout.tsx` renders `<ExperimentsTable />` with no
-props and the component always shows its "No experiments yet." empty state in the running
-app today.
+client function, or SSE/WebSocket subscription of its own (Architect decision, T-050): a
+container owns the fetch lifecycle and passes plain data down, keeping the dependency
+direction one-way. `Layout.tsx` is that container — it calls `useExperiments(selectedRunId)`
+(`src/hooks/useExperiments.ts`, wrapping `GET /api/runs/{id}/experiments`) and passes the
+result straight through. With no run selected, the hook returns `undefined` fields and
+`ExperimentsTable` renders its "No experiments yet." empty state, same as before.
 
-The component itself is fully built and tested against fixture data
-(`ExperimentsTable.test.tsx`): it renders one row per experiment plus a pinned baseline
-row, marks the highest-`cv_score` experiment (ties broken by lowest `iteration`) as best,
-computes `delta = cv_score - baselineScore` with an explicit sign, renders `—` for the
-delta and a "No baseline yet" baseline row when `baselineScore` is `null`/`undefined`, and
-supports sorting by score and by iteration.
-
-See `context/discoveries/T-040.md` for the proposed `GET /api/runs/{run_id}/experiments`
-endpoint that would wire this component up for real.
+The component itself is fully tested against fixture data (`ExperimentsTable.test.tsx`): it
+renders one row per experiment plus a pinned baseline row, marks the highest-`cv_score`
+experiment (ties broken by lowest `iteration`) as best, computes `delta = cv_score -
+baselineScore` with an explicit sign, renders `—` for the delta and a "No baseline yet"
+baseline row when `baselineScore` is `null`/`undefined`, and supports sorting by score and
+by iteration.
 
 ## Chat: WebSocket protocol, reconnect, and history ownership
 
 `Chat` (`src/components/Chat.tsx`) opens a bidirectional connection to
 `WS /api/runs/{id}/chat` via `connectChat` (`src/api/client.ts`) whenever it
 receives a `runId` prop; with no `runId` it renders a "No run selected."
-empty state and never opens a socket (mirrors `PipelineView`'s pattern —
-see `Layout.tsx`, which still renders `<Chat />` propless for now).
+empty state and never opens a socket (mirrors `PipelineView`'s pattern).
+`Layout.tsx` passes `runId={selectedRunId ?? undefined}` directly — see
+"Run selection & panel wiring" above.
 
 ### Frame protocol
 
@@ -144,10 +143,11 @@ deduplicated rather than appended twice.
 ## FileViewer: markdown & JSON rendering
 
 `FileViewer` (`src/components/FileViewer.tsx`) is purely presentational — no
-fetch, no `client.ts` call, no SSE/WebSocket subscription. No backend endpoint
-serves workspace file content today (e.g. `eda_report.md`, `final_report.md`,
-`feature_importance.json`), so the caller is responsible for sourcing
-`content` and passing it in as a prop.
+fetch, no `client.ts` call, no SSE/WebSocket subscription. The caller is
+responsible for sourcing `content` and passing it in as a prop — `Layout.tsx`
+does this via `useFileContent` (`src/hooks/useFileContent.ts`, wrapping
+`GET /api/runs/{id}/files/{path}`) over a curated set of report paths; see
+"Files tab: curated report picker" above.
 
 Which renderer runs is chosen via the required `format` prop (`'markdown'` or
 `'json'`) — never auto-detected from `content`'s shape:
@@ -187,3 +187,72 @@ and must never be coerced into that branch. Submit errors (404 unknown run,
 409 no best experiment / submission already in progress, 503 Kaggle
 credentials not configured, 502 Kaggle submission or scoring failure) surface
 the backend's `detail` field from `client.ts`'s `ApiError`.
+
+## Sidebar: run list & creation (T-050)
+
+`Sidebar` (`src/components/Sidebar.tsx`) is self-fetching — unlike
+`ExperimentsTable`/`FileViewer`, which stay presentational and are driven by
+`Layout` — because listing and creating runs is inherently Sidebar's own
+concern, with no other consumer of that data. On mount it calls `listRuns()`
+and renders the result with distinct loading/error/empty states. It also
+renders a minimal create-run form (`competition_name`, `workspace_path`, an
+optional `max_iterations`) that posts through `createRun()`.
+
+`POST /api/runs` returns only `{run_id, status}` (`CreateRunResponse`), not a
+full `Run` — so on a successful create, Sidebar does **not** synthesize a run
+row from that response. It calls `listRuns()` again to pick up the real
+`RunSummary` the server now has, then reports the new run's id to its parent
+via `onSelectRun`. Selecting an existing run (clicking its row) goes through
+the same `onSelectRun` callback — Sidebar owns no selection state itself;
+`Layout` does (see below).
+
+## Run selection & panel wiring (T-050)
+
+`Layout` owns `selectedRunId` (not `App.tsx` — `Layout` is the sole container
+for `Sidebar`, the four panels, and `ActionBar`, so there is no other
+consumer for this state). Selecting or creating a run in `Sidebar` updates
+`selectedRunId`, which threads into every panel:
+
+- `PipelineView`/`Chat` receive `runId={selectedRunId ?? undefined}` directly
+  — they already accept an optional `runId` prop and open their own SSE/WS
+  connections.
+- `ExperimentsTable`/`FileViewer` stay presentational (Architect decision,
+  T-050): `Layout` fetches through two hooks, `useExperiments` and
+  `useFileContent` (`src/hooks/`), and passes plain data down as props. This
+  keeps a one-way dependency direction — leaf components depend on props
+  only, never on `client.ts` — and avoids four independent components each
+  owning a fetch lifecycle for the same run.
+- `ActionBar` is mounted unconditionally in the header, not inside any
+  `selectedRunId`-gated block — it fetches the MLflow URL once on mount
+  (T-042), so a run-conditional mount would refetch it on every run switch.
+  Its "Submit to Kaggle" button is disabled whenever no run is selected, via
+  its own existing `runId` prop.
+
+`baseline_score` (`useExperiments`) and file content that 404s
+(`useFileContent`) both follow the same "distinguish absence from error"
+convention already established elsewhere in this app: `baseline_score`
+threads through as `number | null` and is never coerced with `?? 0` (`null`
+means "no baseline has run yet", a real `0` is a real score); a `404` from
+`GET /api/runs/{id}/files/{path}` (file not generated yet) sets `content` to
+`null` with `error` left `null` — `FileViewer`'s existing empty state renders,
+not an error banner. Only a non-404 failure sets `error`.
+
+### Files tab: curated report picker
+
+No backend endpoint lists a run's workspace files, and `RunSummary` exposes
+no report paths either. `FileViewer`'s Files tab therefore offers a **fixed,
+curated** list of known workspace-relative report paths (`CURATED_REPORTS` in
+`Layout.tsx`) rather than trying to discover files:
+
+- `reports/eda_report.md` — EDA Report (markdown)
+- `reports/final_report.md` — Final Report (markdown)
+- `reports/leakage_audit.json` — Leakage Audit (JSON)
+
+Switching the picker only changes which curated path `useFileContent`
+fetches — it is a UI tab position, not run-scoped state, so it is **not**
+reset when `selectedRunId` changes; `useFileContent` naturally refetches
+because its effect is keyed on `[runId, path]` and `runId` changed.
+`best_experiment_path` (from `GET /api/runs/{id}/experiments`) is deliberately
+never offered as a `FileViewer` path — it names a directory
+(`experiments/exp_N/`), and the backend maps `IsADirectoryError` to `404`, so
+it would always fail.

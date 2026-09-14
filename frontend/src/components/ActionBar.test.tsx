@@ -119,6 +119,40 @@ describe('ActionBar — submit', () => {
     },
   )
 
+  it('clears a stale submit result when runId changes to a different run', async () => {
+    const fetchImpl = stubFetch({
+      submit: () =>
+        jsonResponse({ public_score: 0.812, submission_file: 'x.csv', message: null }),
+    })
+    const { rerender } = render(<ActionBar runId="run-1" fetchImpl={fetchImpl} />)
+
+    await clickSubmit()
+    await waitFor(() =>
+      expect(screen.getByText(/public score: 0\.812/i)).toBeInTheDocument(),
+    )
+
+    rerender(<ActionBar runId="run-2" fetchImpl={fetchImpl} />)
+
+    expect(screen.queryByText(/public score/i)).not.toBeInTheDocument()
+  })
+
+  it('clears a stale submit error when runId changes to a different run', async () => {
+    const fetchImpl = stubFetch({
+      submit: () => jsonResponse({ detail: 'submission failed with 409' }, 409),
+    })
+    const { rerender } = render(<ActionBar runId="run-1" fetchImpl={fetchImpl} />)
+
+    await clickSubmit()
+    expect(
+      await screen.findByText(/submission failed with 409/i),
+    ).toBeInTheDocument()
+
+    rerender(<ActionBar runId="run-2" fetchImpl={fetchImpl} />)
+
+    expect(screen.queryByText(/submission failed with 409/i)).not.toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
   it('disables the submit button and is a no-op when runId is undefined', async () => {
     const fetchImpl = stubFetch({ submit: () => jsonResponse({}) })
     render(<ActionBar fetchImpl={fetchImpl} />)

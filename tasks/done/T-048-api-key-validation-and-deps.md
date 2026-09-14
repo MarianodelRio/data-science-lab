@@ -3,7 +3,7 @@ id: T-048
 phase: 6
 agent: infra-agent
 depends_on: []
-status: pr-open
+status: done
 folders: [src/config/, pyproject.toml, docs/configuration.md]
 outputs: [Settings.validate_required_keys()]
 size: M

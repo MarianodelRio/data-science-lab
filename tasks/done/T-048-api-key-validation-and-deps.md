@@ -7,7 +7,7 @@ status: done
 folders: [src/config/, pyproject.toml, docs/configuration.md]
 outputs: [Settings.validate_required_keys()]
 size: M
-branch: feature/T-048-api-key-validation-and-deps
+branch: ~
 pr: https://github.com/MarianodelRio/data-science-lab/pull/48
 ---
 

@@ -3,12 +3,12 @@ id: T-048
 phase: 6
 agent: infra-agent
 depends_on: []
-status: in-progress
+status: pr-open
 folders: [src/config/, pyproject.toml, docs/configuration.md]
 outputs: [Settings.validate_required_keys()]
 size: M
 branch: feature/T-048-api-key-validation-and-deps
-pr: ~
+pr: https://github.com/MarianodelRio/data-science-lab/pull/48
 ---
 
 ## Startup hardening: API key preflight validation + align dependencies with Docker

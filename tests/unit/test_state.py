@@ -86,6 +86,29 @@ def test_new_state_lists_not_shared_across_calls():
     assert state_b["messages"] == []
 
 
+def test_new_state_score_direction_defaults_to_none():
+    state = new_state("comp", "/tmp/comp")
+    assert state["score_direction"] is None
+    assert state["score_direction"] != "maximize"
+    assert state["score_direction"] != "minimize"
+
+
+@pytest.mark.parametrize("direction", ["minimize", "maximize"])
+def test_score_direction_literal_round_trip(direction):
+    state = new_state("comp", "/tmp/comp")
+    state["score_direction"] = direction
+    assert state["score_direction"] == direction
+    assert state["score_direction"] is not None
+    other = "maximize" if direction == "minimize" else "minimize"
+    assert state["score_direction"] != other
+
+
+def test_score_direction_missing_key_uses_get_safely():
+    state = new_state("comp", "/tmp/comp")
+    del state["score_direction"]
+    assert state.get("score_direction") is None
+
+
 def test_new_state_no_io(monkeypatch):
     def _raise(*args, **kwargs):
         raise AssertionError("new_state() must not perform I/O")

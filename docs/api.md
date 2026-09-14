@@ -12,6 +12,8 @@ changes an endpoint.
 | `GET /api/runs/{id}` | One run's state summary |
 | `POST /api/runs/{id}/resume` | Submit human_feedback, resume from interrupt |
 | `POST /api/runs/{id}/submit` | Trigger Kaggle submission |
+| `GET /api/runs/{id}/experiments` | List the run's experiments plus baseline score |
+| `GET /api/runs/{id}/files/{path}` | Return a workspace file's text content |
 | `GET /api/mlflow/url` | Return the browser-reachable MLflow UI URL |
 
 ### POST /api/runs
@@ -54,6 +56,39 @@ Note: this reads the live checkpoint's `best_experiment_path`, never
 `reports/kaggle_submission.json` (that file is a separate record of the automated Phase 7
 submission flow, not this endpoint's input) and never falls back to
 `experiments/exp_{current_iteration - 1}/submission.csv` — an absent file is always a 409.
+
+### GET /api/runs/{id}/experiments
+The run's `LabState.experiments` list plus baseline score, for the frontend `ExperimentsTable`.
+Reads the live checkpoint state (same source as `GET /api/runs/{id}`), not a stored/derived copy.
+
+Returns `200 {experiments: [dict, ...], baseline_score: float | null, best_experiment_path: string}`.
+- `experiments` is `LabState.experiments` passed through unchanged — ids are unique by
+  construction, so there is no server-side rewriting or dedup. Each dict's shape is whatever
+  the pipeline wrote (see `docs/pipeline.md`), including any extra/unexpected keys.
+- `baseline_score` is `null` until the run's baseline has actually run (i.e. until
+  `baseline_results_path` is set) — never the raw `0.0` `LabState` seeds it with.
+- `best_experiment_path` is `""` for a run with no improved experiment yet.
+- A corrupted/failed experiment's `cv_score` of `inf`/`nan` serializes as JSON `null`
+  (`ser_json_inf_nan="null"`, same mechanism as `RunSummary.best_score`), never the invalid
+  `-Infinity`/`NaN` token.
+- `404` if `id` is unknown.
+
+### GET /api/runs/{id}/files/{path}
+Serve one workspace file's content as `text/plain; charset=utf-8`, for the frontend
+`FileViewer`. `path` is relative to the run's workspace root and read via
+`WorkspaceManager.read_text` directly — no content-type sniffing by extension.
+
+- `400` — rejected path: empty, absolute, or containing a `..` traversal component.
+- `404` — unknown `run_id`; file not found; path resolves to a directory.
+- `415` — file content is not valid UTF-8 text.
+
+## Startup
+The API validates required provider/Kaggle keys (`Settings.validate_required_keys()`) via a
+FastAPI lifespan startup handler. A missing or empty required key aborts startup with a clear
+`ConfigError` — the server never comes up half-configured. This check runs only when the ASGI
+lifespan actually starts (a real server, or an entered `TestClient(app)` context manager),
+never at import time and never merely from calling `create_app(...)`. Tests inject a no-op (or
+a real check against a `tmp_path` settings file) via `create_app(key_validator=...)`.
 
 ### GET /api/mlflow/url
 Return the browser-reachable MLflow UI URL — never `workspace.mlflow_tracking_uri`

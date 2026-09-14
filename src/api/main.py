@@ -13,7 +13,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Protocol, cast
 
@@ -21,10 +22,13 @@ from fastapi import FastAPI
 
 from src.api.routers.chat import router as chat_router
 from src.api.routers.events import router as events_router
+from src.api.routers.experiments import router as experiments_router
+from src.api.routers.files import router as files_router
 from src.api.routers.kaggle import router as kaggle_router
 from src.api.routers.mlflow import router as mlflow_router
 from src.api.routers.runs import router as runs_router
 from src.config.paths import REPO_ROOT
+from src.config.settings import Settings
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +65,7 @@ class ExplainerFactory(Protocol):
 
 GraphFactory = Callable[[str, "Path | None"], CompiledGraphLike]
 RagStoreFactory = Callable[[str], Any | None]
+KeyValidator = Callable[[], None]
 
 
 def _default_graph_factory() -> GraphFactory:
@@ -110,6 +115,7 @@ def create_app(
     explainer_factory: ExplainerFactory | None = None,
     rag_store_factory: RagStoreFactory | None = None,
     mlflow_url: str | None = None,
+    key_validator: KeyValidator | None = None,
 ) -> FastAPI:
     """Build the FastAPI app.
 
@@ -131,8 +137,24 @@ def create_app(
     `mlflow_url` seeds `app.state.mlflow_url` (read by `GET /api/mlflow/url`):
     the param takes precedence over the `MLFLOW_PUBLIC_URL` env var, which
     takes precedence over the `http://localhost:5000` default.
+
+    `key_validator` is the injection seam for the startup key check below:
+    tests substitute a no-op (or a real check against a `tmp_path` settings
+    file) with zero dependency on the repo's real `config/settings.yaml`.
+    Defaults to `Settings.validate_required_keys`, which aborts startup with
+    `ConfigError` if a required provider/Kaggle key is missing or empty. It
+    runs from the ASGI lifespan (below), never at import time or merely from
+    calling `create_app` — only a real server start or an entered
+    `TestClient` context manager triggers it.
     """
-    app = FastAPI(title="Data Science Lab API")
+    resolved_key_validator: KeyValidator = key_validator or Settings.validate_required_keys
+
+    @asynccontextmanager
+    async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        await asyncio.to_thread(resolved_key_validator)
+        yield
+
+    app = FastAPI(title="Data Science Lab API", lifespan=_lifespan)
     app.state.runs_dir = runs_dir if runs_dir is not None else REPO_ROOT / "runs"
     app.state.graph_factory = graph_factory or _default_graph_factory()
     app.state.explainer_factory = explainer_factory or _default_explainer_factory()
@@ -167,6 +189,8 @@ def create_app(
     app.include_router(chat_router)
     app.include_router(kaggle_router)
     app.include_router(mlflow_router)
+    app.include_router(experiments_router)
+    app.include_router(files_router)
     return app
 
 

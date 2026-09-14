@@ -3,11 +3,11 @@ id: T-050
 phase: 6
 agent: frontend-agent
 depends_on: [T-038, T-049]
-status: available
+status: in-progress
 folders: [frontend/]
 outputs: [reconciled client.ts/types.ts, functional Sidebar, ActionBar mounted in Layout]
 size: L
-branch: ~
+branch: feature/T-050-frontend-reconcile-and-wire
 pr: ~
 ---
 

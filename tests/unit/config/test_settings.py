@@ -5,7 +5,12 @@ from pathlib import Path
 import pytest
 
 from src.config.errors import ConfigError
-from src.config.settings import ApiKeysConfig, Settings, _resolve_env_vars
+from src.config.settings import (
+    ApiKeysConfig,
+    Settings,
+    _missing_api_key_descriptors,
+    _resolve_env_vars,
+)
 
 # A self-contained, valid settings.yaml fixture used by tmp_path-based tests so
 # they're isolated from future edits to the real config/settings.yaml (see
@@ -384,3 +389,280 @@ def test_falsy_but_valid_value_is_not_rejected(
     settings = Settings.load(path)
 
     assert settings.execution.max_critic_retries == 0
+
+
+# --- T-048: Settings.validate_required_keys() -------------------------------
+
+
+def test_validate_required_keys_passes_when_all_keys_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _set_all_required_env_vars(monkeypatch)
+    path = _write_settings_yaml(tmp_path, VALID_SETTINGS_YAML)
+
+    assert Settings.validate_required_keys(path) is None
+
+
+def test_validate_required_keys_raises_when_one_key_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _set_all_required_env_vars(monkeypatch)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    path = _write_settings_yaml(tmp_path, VALID_SETTINGS_YAML)
+
+    with pytest.raises(ConfigError, match="DEEPSEEK_API_KEY"):
+        Settings.validate_required_keys(path)
+
+
+def test_validate_required_keys_raises_when_one_key_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _set_all_required_env_vars(monkeypatch)
+    monkeypatch.setenv("GROQ_API_KEY", "")
+    path = _write_settings_yaml(tmp_path, VALID_SETTINGS_YAML)
+
+    with pytest.raises(ConfigError, match="GROQ_API_KEY"):
+        Settings.validate_required_keys(path)
+
+
+def test_validate_required_keys_reports_all_missing_keys_at_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The test that actually proves the core requirement: both failures must
+    appear in the same ConfigError. A test that only checked one substring
+    would still pass if the implementation regressed to raise-on-first.
+    """
+    _set_all_required_env_vars(monkeypatch)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("KAGGLE_KEY", "")
+    path = _write_settings_yaml(tmp_path, VALID_SETTINGS_YAML)
+
+    with pytest.raises(ConfigError) as exc_info:
+        Settings.validate_required_keys(path)
+
+    assert "ANTHROPIC_API_KEY" in str(exc_info.value)
+    assert "KAGGLE_KEY" in str(exc_info.value)
+
+
+def test_validate_required_keys_raises_when_api_keys_section_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _set_all_required_env_vars(monkeypatch)
+    yaml_text = _remove(
+        VALID_SETTINGS_YAML,
+        "api_keys:\n"
+        "  anthropic: ${ANTHROPIC_API_KEY}\n"
+        "  deepseek: ${DEEPSEEK_API_KEY}\n"
+        "  groq: ${GROQ_API_KEY}\n"
+        "  kaggle_username: ${KAGGLE_USERNAME}\n"
+        "  kaggle_key: ${KAGGLE_KEY}\n\n",
+    )
+    path = _write_settings_yaml(tmp_path, yaml_text)
+
+    with pytest.raises(ConfigError, match="api_keys"):
+        Settings.validate_required_keys(path)
+
+
+def test_validate_required_keys_ignores_errors_in_other_sections(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Locks in the keys-only preflight design decision: a malformed section
+    outside `api_keys` must not fail validate_required_keys(), even though the
+    same fixture fails Settings.load().
+    """
+    _set_all_required_env_vars(monkeypatch)
+    yaml_text = _remove(
+        VALID_SETTINGS_YAML,
+        "\noptuna:\n  n_trials: 50\n  early_stopping_patience: 20\n",
+    )
+    path = _write_settings_yaml(tmp_path, yaml_text)
+
+    assert Settings.validate_required_keys(path) is None
+    with pytest.raises(ConfigError, match="optuna"):
+        Settings.load(path)
+
+
+def test_validate_required_keys_default_path_uses_real_settings_yaml(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mirrors test_load_real_settings_yaml_smoke: confirms the classmethod
+    works against the real config/settings.yaml, not just fixtures.
+    """
+    _set_all_required_env_vars(monkeypatch)
+
+    assert Settings.validate_required_keys() is None
+
+
+def test_validate_required_keys_does_not_require_prior_settings_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The point of this test: validate_required_keys() is called as the very
+    # first line of the test body, with no preceding Settings.load() anywhere.
+    _set_all_required_env_vars(monkeypatch)
+    path = _write_settings_yaml(tmp_path, VALID_SETTINGS_YAML)
+
+    assert Settings.validate_required_keys(path) is None
+
+
+def test_validate_required_keys_accepts_nonstring_value_that_load_also_accepts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression test for ADV-61c41fff: validate_required_keys() and load()
+    must agree on what's a valid api_keys value. A bare unquoted numeric
+    literal (e.g. `kaggle_username: 123456`) is parsed by yaml.safe_load as a
+    Python int -- Settings.load() accepts it (dataclasses don't enforce field
+    types at runtime), so the preflight check must accept it too, not flag it
+    as a false-positive "missing" key.
+    """
+    _set_all_required_env_vars(monkeypatch)
+    yaml_text = VALID_SETTINGS_YAML.replace(
+        "kaggle_username: ${KAGGLE_USERNAME}", "kaggle_username: 123456"
+    )
+    path = _write_settings_yaml(tmp_path, yaml_text)
+
+    settings = Settings.load(path)
+
+    assert settings.api_keys.kaggle_username == 123456  # type: ignore[comparison-overlap]
+    assert Settings.validate_required_keys(path) is None
+
+
+# --- T-048: _missing_api_key_descriptors() -----------------------------------
+
+
+def test_missing_api_key_descriptors_returns_empty_when_all_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "a")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "b")
+    monkeypatch.setenv("GROQ_API_KEY", "c")
+    monkeypatch.setenv("KAGGLE_USERNAME", "d")
+    monkeypatch.setenv("KAGGLE_KEY", "e")
+    raw_api_keys = {
+        "anthropic": "${ANTHROPIC_API_KEY}",
+        "deepseek": "${DEEPSEEK_API_KEY}",
+        "groq": "${GROQ_API_KEY}",
+        "kaggle_username": "${KAGGLE_USERNAME}",
+        "kaggle_key": "${KAGGLE_KEY}",
+    }
+
+    assert _missing_api_key_descriptors(raw_api_keys) == []
+
+
+def test_missing_api_key_descriptors_flags_field_absent_from_dict() -> None:
+    raw_api_keys = {
+        "anthropic": "literal-anthropic",
+        "deepseek": "literal-deepseek",
+        "kaggle_username": "literal-kaggle-user",
+        "kaggle_key": "literal-kaggle-key",
+        # "groq" intentionally omitted entirely
+    }
+
+    assert _missing_api_key_descriptors(raw_api_keys) == ["api_keys.groq"]
+
+
+def test_missing_api_key_descriptors_flags_unset_env_var() -> None:
+    raw_api_keys = {
+        "anthropic": "${SOME_UNSET_VAR}",
+        "deepseek": "literal-deepseek",
+        "groq": "literal-groq",
+        "kaggle_username": "literal-kaggle-user",
+        "kaggle_key": "literal-kaggle-key",
+    }
+
+    assert _missing_api_key_descriptors(raw_api_keys) == ["api_keys.anthropic (${SOME_UNSET_VAR})"]
+
+
+def test_missing_api_key_descriptors_flags_empty_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EMPTY_KEY_VAR", "")
+    raw_api_keys = {
+        "anthropic": "${EMPTY_KEY_VAR}",
+        "deepseek": "literal-deepseek",
+        "groq": "literal-groq",
+        "kaggle_username": "literal-kaggle-user",
+        "kaggle_key": "literal-kaggle-key",
+    }
+
+    assert _missing_api_key_descriptors(raw_api_keys) == ["api_keys.anthropic (${EMPTY_KEY_VAR})"]
+
+
+def test_missing_api_key_descriptors_accepts_nonempty_literal_value() -> None:
+    raw_api_keys = {
+        "anthropic": "hardcoded-literal-value",
+        "deepseek": "literal-deepseek",
+        "groq": "literal-groq",
+        "kaggle_username": "literal-kaggle-user",
+        "kaggle_key": "literal-kaggle-key",
+    }
+
+    assert _missing_api_key_descriptors(raw_api_keys) == []
+
+
+def test_missing_api_key_descriptors_flags_empty_literal_value() -> None:
+    raw_api_keys = {
+        "anthropic": "",
+        "deepseek": "literal-deepseek",
+        "groq": "literal-groq",
+        "kaggle_username": "literal-kaggle-user",
+        "kaggle_key": "literal-kaggle-key",
+    }
+
+    assert _missing_api_key_descriptors(raw_api_keys) == ["api_keys.anthropic"]
+
+
+def test_missing_api_key_descriptors_flags_none_value() -> None:
+    """A field explicitly set to null in YAML must be flagged, distinct from a
+    field absent from the dict entirely (see
+    test_missing_api_key_descriptors_flags_field_absent_from_dict) -- both
+    collapse to the same "present and not None" check but are worth locking
+    in as separate cases.
+    """
+    raw_api_keys = {
+        "anthropic": None,
+        "deepseek": "literal-deepseek",
+        "groq": "literal-groq",
+        "kaggle_username": "literal-kaggle-user",
+        "kaggle_key": "literal-kaggle-key",
+    }
+
+    assert _missing_api_key_descriptors(raw_api_keys) == ["api_keys.anthropic"]
+
+
+@pytest.mark.parametrize("raw_value", [123456, True])
+def test_missing_api_key_descriptors_accepts_nonstring_present_value(raw_value: object) -> None:
+    """Regression test for ADV-61c41fff: a present, non-None, non-string value
+    (e.g. an int like a numeric Kaggle username, or a bool) must NOT be
+    flagged as missing. Settings.load()'s _require_field has no type check
+    and accepts any present, non-None value, and _resolve_env_vars leaves
+    non-str/dict/list values unchanged -- this preflight check must not be
+    stricter than what load() itself actually accepts.
+    """
+    raw_api_keys = {
+        "anthropic": raw_value,
+        "deepseek": "literal-deepseek",
+        "groq": "literal-groq",
+        "kaggle_username": "literal-kaggle-user",
+        "kaggle_key": "literal-kaggle-key",
+    }
+
+    assert _missing_api_key_descriptors(raw_api_keys) == []
+
+
+def test_missing_api_key_descriptors_flags_only_the_unset_var_in_a_multi_var_field(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Names deliberately share no substring with each other (unlike "SET_VAR"/
+    # "UNSET_VAR") so the assertions below can't pass on a substring accident.
+    monkeypatch.setenv("PRESENT_VAR", "value")
+    monkeypatch.delenv("MISSING_VAR", raising=False)
+    raw_api_keys = {
+        "anthropic": "${PRESENT_VAR}${MISSING_VAR}",
+        "deepseek": "literal-deepseek",
+        "groq": "literal-groq",
+        "kaggle_username": "literal-kaggle-user",
+        "kaggle_key": "literal-kaggle-key",
+    }
+
+    result = _missing_api_key_descriptors(raw_api_keys)
+
+    assert result == ["api_keys.anthropic (${MISSING_VAR})"]
+    assert "PRESENT_VAR" not in result[0]

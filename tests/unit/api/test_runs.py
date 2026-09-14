@@ -131,7 +131,9 @@ def test_create_run_conflicts_with_active_run_returns_409(tmp_path: Path) -> Non
             return super().invoke(input, config)
 
     slow_graph = SlowFakeGraph()
-    app = create_app(runs_dir=tmp_path, graph_factory=lambda *_a, **_k: slow_graph)
+    app = create_app(
+        runs_dir=tmp_path, graph_factory=lambda *_a, **_k: slow_graph, key_validator=lambda: None
+    )
     with TestClient(app) as client:
         first = _create_run(client)
         assert not app.state.active_runs[first["run_id"]].done()
@@ -156,7 +158,9 @@ def test_resume_conflicts_with_active_run_returns_409(tmp_path: Path) -> None:
             return super().invoke(input, config)
 
     slow_graph = SlowFakeGraph()
-    app = create_app(runs_dir=tmp_path, graph_factory=lambda *_a, **_k: slow_graph)
+    app = create_app(
+        runs_dir=tmp_path, graph_factory=lambda *_a, **_k: slow_graph, key_validator=lambda: None
+    )
     with TestClient(app) as client:
         active = _create_run(client)
         assert not app.state.active_runs[active["run_id"]].done()
@@ -199,7 +203,9 @@ def test_resume_same_run_twice_only_schedules_one_execution(tmp_path: Path) -> N
     registry.update_run_status(tmp_path, run_id, "interrupted")
 
     fake_graph = FakeCompiledGraph()
-    app = create_app(runs_dir=tmp_path, graph_factory=lambda *_a, **_k: fake_graph)
+    app = create_app(
+        runs_dir=tmp_path, graph_factory=lambda *_a, **_k: fake_graph, key_validator=lambda: None
+    )
     with TestClient(app) as client:
         first = client.post(f"/api/runs/{run_id}/resume", json={"feedback": "first"})
         second = client.post(f"/api/runs/{run_id}/resume", json={"feedback": "second"})
@@ -317,7 +323,7 @@ def test_get_run_builds_graph_at_most_once_across_repeated_requests(tmp_path: Pa
         build_calls.append(run_id)
         return FakeCompiledGraph()
 
-    app = create_app(runs_dir=tmp_path, graph_factory=counting_factory)
+    app = create_app(runs_dir=tmp_path, graph_factory=counting_factory, key_validator=lambda: None)
     with TestClient(app) as client:
         run_id = _create_run(client)["run_id"]
         _wait_for_run_task_done(app, run_id)
@@ -338,7 +344,7 @@ def test_list_runs_builds_each_graph_at_most_once_across_repeated_calls(tmp_path
         build_calls.append(run_id)
         return FakeCompiledGraph()
 
-    app = create_app(runs_dir=tmp_path, graph_factory=counting_factory)
+    app = create_app(runs_dir=tmp_path, graph_factory=counting_factory, key_validator=lambda: None)
     with TestClient(app) as client:
         run_id = _create_run(client)["run_id"]
         _wait_for_run_task_done(app, run_id)

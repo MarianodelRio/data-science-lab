@@ -38,6 +38,7 @@ def app(tmp_path: Path, fake_graph: FakeCompiledGraph, explainer_factory: MagicM
         explainer_factory=explainer_factory,
         rag_store_factory=lambda _name: None,
         mlflow_url="http://mlflow.example.test:5000",
+        key_validator=lambda: None,
     )
 
 

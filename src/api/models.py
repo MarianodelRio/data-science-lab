@@ -12,6 +12,8 @@ must call `model_dump_json()`/`dump_json()` directly — see
 `response_model=` to serialize the actual response body.
 """
 
+from typing import Any
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -73,3 +75,21 @@ class SubmitResponse(BaseModel):
 
 class MlflowUrlResponse(BaseModel):
     url: str
+
+
+class ExperimentsResponse(BaseModel):
+    """Response of `GET /api/runs/{id}/experiments`.
+
+    `experiments` passes `LabState.experiments` through unchanged — ids are
+    unique by construction, so no server-side rewriting/dedup happens here.
+    `baseline_score` is `null` until `baseline_results_path` is set, never
+    the raw `0.0` seed `LabState` starts with. `ser_json_inf_nan="null"`
+    guards not just `baseline_score` but also a corrupted/failed
+    experiment's `cv_score` inside `experiments`, which can be `inf`/`nan`.
+    """
+
+    model_config = ConfigDict(ser_json_inf_nan="null")
+
+    experiments: list[dict[str, Any]]
+    baseline_score: float | None
+    best_experiment_path: str

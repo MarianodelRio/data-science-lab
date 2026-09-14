@@ -20,7 +20,12 @@ def test_get_mlflow_url_defaults_to_localhost_5000_when_unset(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("MLFLOW_PUBLIC_URL", raising=False)
-    app = create_app(runs_dir=tmp_path, graph_factory=lambda *_a, **_k: None, mlflow_url=None)
+    app = create_app(
+        runs_dir=tmp_path,
+        graph_factory=lambda *_a, **_k: None,
+        mlflow_url=None,
+        key_validator=lambda: None,
+    )
 
     with TestClient(app) as test_client:
         response = test_client.get("/api/mlflow/url")
@@ -32,7 +37,12 @@ def test_get_mlflow_url_reads_env_var_when_param_not_given(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("MLFLOW_PUBLIC_URL", "http://mlflow.example.com:5000")
-    app = create_app(runs_dir=tmp_path, graph_factory=lambda *_a, **_k: None, mlflow_url=None)
+    app = create_app(
+        runs_dir=tmp_path,
+        graph_factory=lambda *_a, **_k: None,
+        mlflow_url=None,
+        key_validator=lambda: None,
+    )
 
     with TestClient(app) as test_client:
         response = test_client.get("/api/mlflow/url")
@@ -48,6 +58,7 @@ def test_get_mlflow_url_param_takes_precedence_over_env_var(
         runs_dir=tmp_path,
         graph_factory=lambda *_a, **_k: None,
         mlflow_url="http://param-value.example.com:5000",
+        key_validator=lambda: None,
     )
 
     with TestClient(app) as test_client:

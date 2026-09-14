@@ -168,6 +168,7 @@ def test_checkpoint_frame_reflects_status_at_send_time_not_at_connect_time(
         graph_factory=lambda *_a, **_k: fake_graph,
         explainer_factory=explainer_factory,
         rag_store_factory=resume_mid_build_rag_store_factory,
+        key_validator=lambda: None,
     )
     with TestClient(app) as client:
         _seed_run(tmp_path, "run-1", status="interrupted")
@@ -245,6 +246,7 @@ def test_approve_when_another_run_is_already_active_returns_error(tmp_path: Path
         graph_factory=lambda *_a, **_k: slow_graph,
         explainer_factory=lambda **_kwargs: MagicMock(),
         rag_store_factory=lambda _name: None,
+        key_validator=lambda: None,
     )
     with TestClient(app) as client:
         _seed_run(tmp_path, "active-run", status="pending")

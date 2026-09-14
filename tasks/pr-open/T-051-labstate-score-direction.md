@@ -3,12 +3,12 @@ id: T-051
 phase: 6
 agent: infra-agent
 depends_on: [T-002]
-status: in-progress
+status: pr-open
 folders: [src/state.py]
 outputs: [LabState.score_direction]
 size: S
 branch: feature/T-051-labstate-score-direction
-pr: ~
+pr: https://github.com/MarianodelRio/data-science-lab/pull/49
 ---
 
 ## ⚠️ Protected contract — persist score_direction on LabState
